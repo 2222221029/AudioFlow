@@ -4,14 +4,16 @@ services:
     container_name: audioflow
     restart: unless-stopped
     environment:
-      TZ: Asia/Shanghai
+      TZ: ${TZ:-Asia/Shanghai}
+      AUDIOFLOW_DEFAULT_USERNAME: ${AUDIOFLOW_DEFAULT_USERNAME:-admin}
       AUDIOFLOW_DEFAULT_PASSWORD: ${AUDIOFLOW_DEFAULT_PASSWORD:-admin}
       AUDIOFLOW_COOKIE_SECRET: ${AUDIOFLOW_COOKIE_SECRET:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY: ${AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY:-false}
     volumes:
-      - /vol1/1000/docker/audioflow/data:/app/data
-      - /vol1/1000/docker/audioflow/config:/app/config
-      - /vol1/1000/docker/audioflow/logs:/app/logs
-      - /vol1/1000/downloads/有声书:/app/downloads
+      - ${AUDIOFLOW_DATA_DIR:-./data}:/app/data
+      - ${AUDIOFLOW_CONFIG_DIR:-./config}:/app/config
+      - ${AUDIOFLOW_LOG_DIR:-./logs}:/app/logs
+      - ${AUDIOFLOW_DOWNLOAD_DIR:-./downloads}:/app/downloads
     ports:
-      - "8082:8082"
+      - "${WEB_PORT:-8082}:8082"

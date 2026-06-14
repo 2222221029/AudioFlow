@@ -90,6 +90,8 @@ task_lock = threading.Lock()
 task_workers = {}
 subscription_job_lock = threading.Lock()
 subscription_jobs = {}
+SUBSCRIPTION_JOB_TTL_SECONDS = int(os.getenv("SUBSCRIPTION_JOB_TTL_SECONDS", "3600") or "3600")
+SUBSCRIPTION_JOB_MAX_ITEMS = int(os.getenv("SUBSCRIPTION_JOB_MAX_ITEMS", "500") or "500")
 wecom_session_lock = threading.Lock()
 wecom_sessions = {}
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
@@ -598,8 +600,32 @@ def _subscription_job(job_id, sid, queue_missing):
             subscription_jobs[job_id].update({"status": "failed", "message": str(exc), "error": str(exc), "finished_at": time.time()})
 
 
+def cleanup_subscription_jobs(now=None):
+    now = time.time() if now is None else float(now)
+    terminal = {"done", "failed", "cancelled"}
+    for job_id, job in list(subscription_jobs.items()):
+        if job.get("status") in terminal:
+            finished_at = float(job.get("finished_at") or job.get("updated_at") or job.get("created_at") or 0)
+            if finished_at and now - finished_at > SUBSCRIPTION_JOB_TTL_SECONDS:
+                subscription_jobs.pop(job_id, None)
+    if len(subscription_jobs) <= SUBSCRIPTION_JOB_MAX_ITEMS:
+        return
+    ordered = sorted(
+        subscription_jobs.items(),
+        key=lambda item: float(item[1].get("finished_at") or item[1].get("created_at") or 0),
+    )
+    overflow = len(subscription_jobs) - SUBSCRIPTION_JOB_MAX_ITEMS
+    for job_id, job in ordered:
+        if overflow <= 0:
+            break
+        if job.get("status") in terminal:
+            subscription_jobs.pop(job_id, None)
+            overflow -= 1
+
+
 def start_subscription_job(sid, queue_missing=False):
     with subscription_job_lock:
+        cleanup_subscription_jobs()
         for existing in subscription_jobs.values():
             if (
                 existing.get("sid") == sid
@@ -2271,6 +2297,7 @@ def api_subscription_check(sid):
 @app.get("/api/subscriptions/jobs/<job_id>")
 def api_subscription_job(job_id):
     with subscription_job_lock:
+        cleanup_subscription_jobs()
         job = dict(subscription_jobs.get(job_id) or {})
     if not job:
         return json_error("订阅任务不存在", 404)

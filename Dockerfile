@@ -11,6 +11,8 @@ RUN npm run build
 FROM python:3.12-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG AUDIOFLOW_UID=1000
+ARG AUDIOFLOW_GID=1000
 
 ENV APP_MODE=server \
     HOST=0.0.0.0 \
@@ -36,6 +38,9 @@ RUN apt-get update -qq \
     && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd -g ${AUDIOFLOW_GID} audioflow \
+    && useradd -u ${AUDIOFLOW_UID} -g audioflow -d /app -s /usr/sbin/nologin audioflow
+
 COPY requirements.txt /app/requirements.txt
 RUN pip install \
     --timeout 600 \
@@ -44,10 +49,13 @@ RUN pip install \
     --trusted-host mirrors.aliyun.com \
     -r requirements.txt
 
-COPY . /app
-COPY --from=frontend-build /app/dist /app/frontend/dist
+COPY --chown=audioflow:audioflow . /app
+COPY --chown=audioflow:audioflow --from=frontend-build /app/dist /app/frontend/dist
 
-RUN mkdir -p /app/data /app/config /app/downloads /app/logs
+RUN mkdir -p /app/data /app/config /app/downloads /app/logs \
+    && chown -R audioflow:audioflow /app/data /app/config /app/downloads /app/logs
+
+USER audioflow
 
 EXPOSE 8082
 
