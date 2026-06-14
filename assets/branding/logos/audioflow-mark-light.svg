@@ -1,0 +1,20 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="markArc" x1="104" y1="78" x2="426" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset=".52" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="markWave" x1="184" y1="326" x2="328" y2="326" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4f46e5"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+  </defs>
+  <rect x="40" y="40" width="432" height="432" rx="128" fill="#f4f3fb"/>
+  <rect x="50" y="50" width="412" height="412" rx="118" stroke="#6366f1" stroke-opacity=".32" stroke-width="12"/>
+  <path d="M136 264c0-88 54-150 120-150s120 62 120 150" stroke="url(#markArc)" stroke-width="46" stroke-linecap="round"/>
+  <path d="M136 256h48c22 0 40 18 40 40v64h-40c-49 0-88-39-88-88v-12c0-2 2-4 4-4h36Z" fill="url(#markArc)"/>
+  <path d="M376 256h-48c-22 0-40 18-40 40v64h40c49 0 88-39 88-88v-12c0-2-2-4-4-4h-36Z" fill="url(#markArc)"/>
+  <path d="M184 328c20-21 41-21 62 0s43 21 66 0" stroke="url(#markWave)" stroke-width="28" stroke-linecap="round"/>
+  <path d="M200 408h112" stroke="#1c1e3a" stroke-opacity=".72" stroke-width="24" stroke-linecap="round"/>
+</svg>

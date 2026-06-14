@@ -1,0 +1,29 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#070a18"/>
+      <stop offset=".55" stop-color="#0c1130"/>
+      <stop offset="1" stop-color="#141a48"/>
+    </linearGradient>
+    <linearGradient id="markArc" x1="160" y1="156" x2="420" y2="436" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset=".52" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="markWave" x1="226" y1="352" x2="356" y2="352" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7cb6ff"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" rx="64" fill="url(#bg)"/>
+  <rect x="150" y="150" width="280" height="280" rx="80" fill="#11183f"/>
+  <rect x="158" y="158" width="264" height="264" rx="72" stroke="#4dd7f5" stroke-opacity=".42" stroke-width="8"/>
+  <path d="M212 296c0-57 35-98 78-98s78 41 78 98" stroke="url(#markArc)" stroke-width="30" stroke-linecap="round"/>
+  <path d="M212 292h31c14 0 26 12 26 26v42h-26c-32 0-58-26-58-58v-8c0-1 1-2 2-2h25Z" fill="url(#markArc)"/>
+  <path d="M368 292h-31c-14 0-26 12-26 26v42h26c32 0 58-26 58-58v-8c0-1-1-2-2-2h-25Z" fill="url(#markArc)"/>
+  <path d="M226 352c14-15 28-15 42 0s29 15 44 0" stroke="url(#markWave)" stroke-width="18" stroke-linecap="round"/>
+  <path d="M244 408h92" stroke="#eef1ff" stroke-opacity=".72" stroke-width="16" stroke-linecap="round"/>
+  <text x="500" y="292" fill="#f8fbff" font-family="Microsoft YaHei UI, PingFang SC, sans-serif" font-size="92" font-weight="800">AudioFlow</text>
+  <text x="504" y="356" fill="#aab1d6" font-family="Microsoft YaHei UI, PingFang SC, sans-serif" font-size="34">多平台有声书下载与媒体管理工作台</text>
+  <text x="504" y="414" fill="#7cb6ff" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="30" font-weight="600">Search · Download · Subscribe · Listen</text>
+</svg>

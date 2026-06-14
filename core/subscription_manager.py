@@ -1,0 +1,870 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import json
+import os
+import re
+import sqlite3
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+
+def utc_now_iso():
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def parse_iso(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def sanitize_filename(filename):
+    filename = str(filename or "")
+    for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
+        filename = filename.replace(char, "_")
+    filename = filename.strip()
+    if len(filename) > 200:
+        filename = filename[:200]
+    return filename or "unknown"
+
+
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav"}
+
+
+def normalize_match_text(value):
+    text = sanitize_filename(value).lower()
+    return re.sub(r"[\s_\-—–,，.。:：;；!！?？【】\[\]（）()《》<>|·'\"`~@#$%^&+=]+", "", text)
+
+
+def album_title_values(album):
+    values = []
+    for key in ("title", "album_title", "albumTitle", "book_name", "bookName", "name"):
+        value = album.get(key) if isinstance(album, dict) else None
+        if value is not None and str(value).strip():
+            values.append(str(value).strip())
+    return list(dict.fromkeys(values))
+
+
+def album_id_values(album):
+    values = []
+    for key in ("id", "album_id", "albumId", "book_id", "bookId"):
+        value = album.get(key) if isinstance(album, dict) else None
+        if value is not None and str(value).strip():
+            values.append(str(value).strip())
+    return list(dict.fromkeys(values))
+
+
+def album_dir_candidates(album, download_dir, dir_cache=None):
+    root = Path(download_dir)
+    if not root.exists():
+        return []
+    title_values = album_title_values(album)
+    norm_titles = [normalize_match_text(v) for v in title_values if normalize_match_text(v)]
+    id_values = album_id_values(album)
+    candidates = []
+
+    for title in title_values:
+        path = root / sanitize_filename(title)
+        if path.exists() and path.is_dir():
+            candidates.append(path)
+
+    if dir_cache is not None and str(root) in dir_cache:
+        dirs = dir_cache[str(root)]
+    else:
+        try:
+            dirs = [p for p in root.iterdir() if p.is_dir()]
+            for parent in list(dirs):
+                try:
+                    dirs.extend([p for p in parent.iterdir() if p.is_dir()])
+                except Exception:
+                    pass
+        except Exception:
+            dirs = []
+        if dir_cache is not None:
+            dir_cache[str(root)] = dirs
+
+    for path in dirs:
+        norm_name = normalize_match_text(path.name)
+        if not norm_name:
+            continue
+        if any(norm_name == t or norm_name in t or t in norm_name for t in norm_titles):
+            candidates.append(path)
+            continue
+        if any(str(value) and str(value) in path.name for value in id_values):
+            candidates.append(path)
+
+    seen = set()
+    result = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return result
+
+
+def chapter_title_values(chapter):
+    values = []
+    for key in ("title", "name", "chapter_title", "chapterTitle", "track_title", "trackTitle", "trackName"):
+        value = chapter.get(key) if isinstance(chapter, dict) else None
+        if value is not None and str(value).strip():
+            values.append(str(value).strip())
+    return list(dict.fromkeys(values))
+
+
+def chapter_number_variants(order):
+    variants = [str(order), f"{order:02d}", f"{order:03d}", f"{order:04d}"]
+    return list(dict.fromkeys(variants))
+
+
+def collect_album_audio_files(album, download_dir, dir_cache=None, file_cache=None):
+    root = Path(download_dir)
+    if not root.exists():
+        return []
+    search_dirs = album_dir_candidates(album, download_dir, dir_cache=dir_cache)
+    if not search_dirs:
+        search_dirs = [root]
+    files = []
+    seen = set()
+    for base in search_dirs:
+        cache_key = str(base)
+        if file_cache is not None and cache_key in file_cache:
+            for path in file_cache[cache_key]:
+                try:
+                    resolved = path.resolve()
+                except Exception:
+                    resolved = path
+                if resolved not in seen:
+                    seen.add(resolved)
+                    files.append(path)
+            continue
+        base_files = []
+        try:
+            iterator = base.rglob("*")
+            for path in iterator:
+                if not path.is_file() or path.suffix.lower() not in AUDIO_EXTENSIONS:
+                    continue
+                try:
+                    resolved = path.resolve()
+                except Exception:
+                    resolved = path
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                files.append(path)
+                base_files.append(path)
+        except Exception:
+            pass
+        if file_cache is not None:
+            file_cache[cache_key] = base_files
+    return files
+
+
+def local_audio_count(album, download_dir, dir_cache=None, file_cache=None):
+    files = []
+    for base in album_dir_candidates(album, download_dir, dir_cache=dir_cache):
+        cache_key = str(base)
+        if file_cache is not None and cache_key in file_cache:
+            files.extend(file_cache[cache_key])
+            continue
+        base_files = []
+        try:
+            base_files = [path for path in base.rglob("*") if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS]
+            files.extend(base_files)
+        except Exception:
+            pass
+        if file_cache is not None:
+            file_cache[cache_key] = base_files
+    return sum(1 for path in files if path.exists() and path.stat().st_size > 1024)
+
+
+def chapter_key(chapter):
+    for key in ("id", "track_id", "trackId", "chapter_id", "chapterId", "program_id", "programId", "acid"):
+        value = chapter.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    title = str(chapter.get("title") or chapter.get("name") or chapter.get("chapter_title") or "").strip()
+    order = chapter.get("order") or chapter.get("index") or chapter.get("sort") or chapter.get("episode")
+    return f"{order or ''}:{title}"
+
+
+def is_restricted_chapter(chapter):
+    if not isinstance(chapter, dict):
+        return False
+    if str(chapter.get("_error_type") or "").lower() == "restricted":
+        return True
+    for key in ("vip", "isVip", "is_vip", "needVip", "need_vip", "vipOnly", "vip_only", "isPlatinum", "is_platinum", "platinumOnly", "platinum_only"):
+        if str(chapter.get(key)).lower() in ("1", "true", "yes"):
+            return True
+    for key in ("isFree", "is_free", "isAuthorized", "is_authorized"):
+        value = chapter.get(key)
+        if value is not None and str(value).lower() in ("0", "false", "no"):
+            return True
+    for key in ("permission", "copyright", "trackType", "track_type"):
+        try:
+            if chapter.get(key) is not None and float(chapter.get(key)) > 0:
+                return True
+        except Exception:
+            pass
+    text = " ".join(str(chapter.get(key) or "") for key in ("title", "name", "_error", "msg", "message", "reason"))
+    return any(token in text for token in ("白金", "会员", "VIP", "vip", "付费", "权限不足", "无权限"))
+
+
+def chapter_title(chapter):
+    return str(chapter.get("title") or chapter.get("name") or chapter.get("chapter_title") or "unknown")
+
+
+def chapter_order(chapter, fallback):
+    for key in ("order_num", "order", "index", "sort", "episode", "chapter_index"):
+        value = chapter.get(key)
+        try:
+            if value is not None and int(value) > 0:
+                return int(value)
+        except Exception:
+            pass
+    match = re.search(r"(\d+)", chapter_title(chapter))
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            pass
+    return fallback
+
+
+def possible_chapter_files(album, chapter, index, download_dir, local_files=None):
+    album_title = sanitize_filename((album_title_values(album) or ["unknown"])[0])
+    titles = [sanitize_filename(v) for v in (chapter_title_values(chapter) or [chapter_title(chapter)])]
+    norm_titles = [normalize_match_text(v) for v in titles if normalize_match_text(v)]
+    order = chapter_order(chapter, index)
+    numbers = chapter_number_variants(order)
+    base_dirs = album_dir_candidates(album, download_dir) or [Path(download_dir) / album_title]
+    names = []
+    for ext in (".m4a", ".mp3", ".aac", ".flac", ".wav"):
+        for number in numbers:
+            for title in titles:
+                names.append(f"{number}-{title}{ext}")
+                names.append(f"{number} - {title}{ext}")
+                names.append(f"{number}_{title}{ext}")
+        for title in titles:
+            names.append(f"{title}{ext}")
+    candidates = [base_dir / name for base_dir in base_dirs for name in names]
+    scan_files = local_files if local_files is not None else collect_album_audio_files(album, download_dir)
+    has_album_scope = bool(base_dirs and any(base.exists() and base.is_dir() for base in base_dirs))
+    prefix_re = re.compile(rf"^0*{re.escape(str(order))}(\D|$)")
+    for path in scan_files:
+        try:
+            if not path.is_file() or path.suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
+            stem = path.stem
+            norm_stem = normalize_match_text(stem)
+            title_match = any(t and (t in norm_stem or (len(t) >= 6 and norm_stem in t)) for t in norm_titles)
+            prefix_match = (
+                prefix_re.search(stem)
+                or any(stem.startswith(f"{number}-") or stem.startswith(f"{number} -") or stem.startswith(f"{number}_") for number in numbers)
+            )
+            if path.name in names or title_match or (has_album_scope and prefix_match):
+                candidates.append(path)
+        except Exception:
+            pass
+    return candidates
+
+
+def is_chapter_file_complete(album, chapter, index, download_dir, local_files=None):
+    try:
+        for path in possible_chapter_files(album, chapter, index, download_dir, local_files=local_files):
+            if path.exists() and path.is_file() and path.stat().st_size > 1024:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+class SubscriptionManager:
+    def __init__(self, config_dir=None):
+        self.config_dir = Path(config_dir) if config_dir else Path.home() / ".audioflow"
+        self.config_file = self.config_dir / "subscriptions.json"
+        self.db_file = self.config_dir / "subscriptions.db"
+        self.index_file = self.config_dir / "local_audio_index.json"
+        self._audio_index_cache = None
+        self.data = {
+            "version": 1,
+            "settings": {
+                "enabled": True,
+                "auto_download_missing": True,
+                "interval_hours": 6,
+                "interval_minutes": 0,
+                "quality": "M4A 96K",
+            },
+            "subscriptions": {},
+        }
+        self.init_db()
+        self.load()
+
+    def init_db(self):
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.db_file) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS subscriptions ("
+                "id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', "
+                "updated_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status)")
+
+    def _db_has_data(self):
+        try:
+            with sqlite3.connect(self.db_file) as conn:
+                row = conn.execute("SELECT COUNT(*) FROM subscriptions").fetchone()
+                return bool(row and row[0])
+        except Exception:
+            return False
+
+    def load_from_db(self):
+        with sqlite3.connect(self.db_file) as conn:
+            settings = {}
+            for key, value in conn.execute("SELECT key, value FROM settings"):
+                try:
+                    settings[key] = json.loads(value)
+                except Exception:
+                    settings[key] = value
+            subscriptions = {}
+            for sid, payload in conn.execute("SELECT id, payload FROM subscriptions"):
+                try:
+                    item = json.loads(payload)
+                    subscriptions[sid] = item
+                except Exception:
+                    pass
+        if settings:
+            self.data["settings"].update(settings)
+        self.data["subscriptions"] = subscriptions
+
+    def save_to_db(self):
+        with sqlite3.connect(self.db_file) as conn:
+            for key, value in (self.data.get("settings") or {}).items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                    (key, json.dumps(value, ensure_ascii=False)),
+                )
+            for sid, item in (self.data.get("subscriptions") or {}).items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO subscriptions(id, status, updated_at, payload) VALUES(?, ?, ?, ?)",
+                    (
+                        sid,
+                        item.get("status", "active"),
+                        item.get("updated_at", ""),
+                        json.dumps(item, ensure_ascii=False),
+                    ),
+                )
+            known = set((self.data.get("subscriptions") or {}).keys())
+            if known:
+                placeholders = ",".join("?" for _ in known)
+                conn.execute(f"DELETE FROM subscriptions WHERE id NOT IN ({placeholders})", tuple(known))
+            else:
+                conn.execute("DELETE FROM subscriptions")
+
+    def load_audio_index(self):
+        if self._audio_index_cache is not None:
+            return self._audio_index_cache
+        try:
+            if self.index_file.exists():
+                with open(self.index_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._audio_index_cache = data
+                    return data
+        except Exception:
+            pass
+        self._audio_index_cache = {"version": 1, "roots": {}}
+        return self._audio_index_cache
+
+    def save_audio_index(self, data):
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            tmp_file = self.index_file.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp_file, self.index_file)
+            self._audio_index_cache = data
+        except Exception as exc:
+            print(f"Failed to save local audio index: {exc}")
+
+    def build_audio_index(self, download_dir, max_age=300, force=False):
+        root = Path(download_dir)
+        data = self.load_audio_index()
+        roots = data.setdefault("roots", {})
+        root_key = str(root)
+        now = time.time()
+        current = roots.get(root_key) or {}
+        if (
+            not force
+            and current.get("exists") is True
+            and now - float(current.get("updated_at") or 0) < max_age
+        ):
+            return current
+        files = []
+        exists = root.exists()
+        if exists:
+            try:
+                for path in root.rglob("*"):
+                    if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS and path.stat().st_size > 1024:
+                        files.append({
+                            "path": str(path),
+                            "name": path.name,
+                            "stem": path.stem,
+                            "parent": path.parent.name,
+                            "norm_name": normalize_match_text(path.name),
+                            "norm_parent": normalize_match_text(path.parent.name),
+                            "size": path.stat().st_size,
+                            "mtime": path.stat().st_mtime,
+                        })
+            except Exception as exc:
+                current = {"exists": exists, "error": str(exc), "files": [], "updated_at": now, "count": 0}
+                roots[root_key] = current
+                self.save_audio_index(data)
+                return current
+        current = {"exists": exists, "files": files, "updated_at": now, "count": len(files)}
+        roots[root_key] = current
+        self.save_audio_index(data)
+        return current
+
+    def index_album_file_count(self, album, download_dir, force=False):
+        index = self.build_audio_index(download_dir, force=force)
+        files = index.get("files") or []
+        if not files:
+            return 0
+        title_values = album_title_values(album)
+        norm_titles = [normalize_match_text(v) for v in title_values if normalize_match_text(v)]
+        id_values = album_id_values(album)
+        count = 0
+        for item in files:
+            norm_parent = item.get("norm_parent") or ""
+            path_text = str(item.get("path") or "")
+            if any(norm_parent == t or norm_parent in t or t in norm_parent for t in norm_titles):
+                count += 1
+                continue
+            if any(value and value in path_text for value in id_values):
+                count += 1
+        return count
+
+    def load(self):
+        if self._db_has_data():
+            try:
+                self.load_from_db()
+                return
+            except Exception as exc:
+                print(f"Failed to load subscriptions database: {exc}")
+        if not self.config_file.exists():
+            self.save()
+            return
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                self.data["settings"].update(loaded.get("settings") or {})
+                self.data["settings"].setdefault("enabled", True)
+                self.data["settings"].setdefault("auto_download_missing", True)
+                self.data["settings"].setdefault("interval_hours", 6)
+                self.data["settings"].setdefault("interval_minutes", 0)
+                self.data["subscriptions"] = loaded.get("subscriptions") or {}
+                self.save_to_db()
+        except Exception as exc:
+            print(f"Failed to load subscriptions: {exc}")
+
+    def save(self):
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            tmp_file = self.config_file.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, self.config_file)
+            self.save_to_db()
+        except Exception as exc:
+            print(f"Failed to save subscriptions: {exc}")
+
+    def settings(self):
+        return dict(self.data.get("settings") or {})
+
+    def update_settings(self, **kwargs):
+        settings = self.data.setdefault("settings", {})
+        for key, value in kwargs.items():
+            if value is not None:
+                settings[key] = value
+        self.save()
+
+    def subscription_id(self, album):
+        platform = str(album.get("platform") or album.get("source") or "unknown").strip()
+        album_id = str(album.get("id") or album.get("album_id") or album.get("book_id") or "").strip()
+        if not album_id:
+            album_id = sanitize_filename(album.get("title") or "unknown")
+        return f"{platform}:{album_id}"
+
+    def is_subscribed(self, album):
+        sid = self.subscription_id(album)
+        item = self.data.get("subscriptions", {}).get(sid)
+        return bool(item and item.get("status", "active") == "active")
+
+    def add_or_update(self, album, chapters=None, download_dir=None):
+        chapters = list(chapters or [])
+        sid = self.subscription_id(album)
+        now = utc_now_iso()
+        old = self.data.setdefault("subscriptions", {}).get(sid, {})
+        record = dict(old)
+        record.update({
+            "id": sid,
+            "album_id": str(album.get("id") or album.get("album_id") or album.get("book_id") or ""),
+            "title": album.get("title") or old.get("title") or "未知专辑",
+            "author": album.get("author") or album.get("anchor") or old.get("author") or "",
+            "platform": album.get("platform") or old.get("platform") or "",
+            "cover": (
+                album.get("cover") or album.get("cover_url") or album.get("coverUrl")
+                or album.get("cover_path") or album.get("coverPath")
+                or album.get("coverLarge") or album.get("coverMiddle") or album.get("coverSmall")
+                or album.get("largeCover") or album.get("smallCover")
+                or album.get("albumCover") or album.get("albumCoverUrl") or album.get("album_cover") or album.get("album_cover_url")
+                or album.get("pic") or album.get("picUrl") or album.get("image") or album.get("imageUrl")
+                or album.get("img") or album.get("imgPath")
+                or album.get("thumb_url") or album.get("thumb") or album.get("thumbUrl")
+                or album.get("thumbnail") or album.get("thumbnailUrl")
+                or album.get("itemCoverUrl") or album.get("itemSquareCoverUrl") or album.get("trackCoverPath")
+                or album.get("bookCover") or album.get("book_cover")
+                or album.get("poster") or album.get("posterUrl")
+                or album.get("hts_img")
+                or old.get("cover") or ""
+            ),
+            "source_url": album.get("url") or album.get("link") or album.get("source_url") or old.get("source_url") or "",
+            "album": dict(album or old.get("album") or {}),
+            "chapters": self.snapshot_chapters(chapters or old.get("chapters") or []),
+            "downloaded": old.get("downloaded") or {},
+            "created_at": old.get("created_at") or now,
+            "updated_at": now,
+            "last_check_at": old.get("last_check_at") or "",
+            "last_message": old.get("last_message") or "已订阅",
+            "status": "active",
+            "download_dir": download_dir or old.get("download_dir") or "",
+        })
+        self.data["subscriptions"][sid] = record
+        self.save()
+        return record
+
+    def cancel(self, subscription_id):
+        item = self.data.setdefault("subscriptions", {}).get(subscription_id)
+        if not item:
+            return False
+        item["status"] = "cancelled"
+        item["updated_at"] = utc_now_iso()
+        self.save()
+        return True
+
+    def active_subscriptions(self):
+        return [
+            item for item in self.data.get("subscriptions", {}).values()
+            if item.get("status", "active") == "active"
+        ]
+
+    def all_subscriptions(self, include_cancelled=False):
+        items = list(self.data.get("subscriptions", {}).values())
+        if include_cancelled:
+            return items
+        return [
+            item for item in items
+            if item.get("status", "active") == "active"
+        ]
+
+    def get(self, subscription_id):
+        return self.data.get("subscriptions", {}).get(subscription_id)
+
+    def interval_seconds(self):
+        settings = self.settings()
+        try:
+            hours = max(0, int(settings.get("interval_hours", 6) or 0))
+        except Exception:
+            hours = 6
+        try:
+            minutes = max(0, int(settings.get("interval_minutes", 0) or 0))
+        except Exception:
+            minutes = 0
+        total = hours * 3600 + minutes * 60
+        # 至少 1 分钟，避免 0 间隔
+        return max(60, total)
+
+    def due_subscriptions(self):
+        settings = self.settings()
+        if not settings.get("enabled", True):
+            return []
+        cutoff = datetime.utcnow() - timedelta(seconds=self.interval_seconds())
+        due = []
+        for item in self.active_subscriptions():
+            last = parse_iso(item.get("last_check_at"))
+            if last is None or last <= cutoff:
+                due.append(item)
+        return due
+
+    def next_check_at(self, subscription):
+        last = parse_iso((subscription or {}).get("last_check_at"))
+        if last is None:
+            return ""
+        return (last + timedelta(seconds=self.interval_seconds())).replace(microsecond=0).isoformat() + "Z"
+
+    def mark_check_error(self, subscription_id, message):
+        item = self.get(subscription_id)
+        if not item:
+            return
+        item["last_check_at"] = utc_now_iso()
+        item["updated_at"] = utc_now_iso()
+        item["last_message"] = message or "检测失败"
+        self.save()
+
+    def snapshot_chapters(self, chapters):
+        result = []
+        for idx, chapter in enumerate(chapters or [], start=1):
+            if not isinstance(chapter, dict):
+                continue
+            data = dict(chapter)
+            data["_subscription_key"] = chapter_key(data)
+            data["_snapshot_order"] = chapter_order(data, idx)
+            result.append(data)
+        return result
+
+    def diff_chapters(self, subscription, remote_chapters, download_dir, scan_cache=None, skip_local=False):
+        scan_cache = scan_cache if isinstance(scan_cache, dict) else {}
+        saved = subscription.get("chapters") or []
+        saved_keys = {chapter_key(ch): ch for ch in saved if isinstance(ch, dict)}
+        downloaded = subscription.setdefault("downloaded", {})
+        album = subscription.get("album") or subscription
+        local_files = [] if skip_local else collect_album_audio_files(
+            album,
+            download_dir,
+            dir_cache=scan_cache.setdefault("dirs", {}),
+            file_cache=scan_cache.setdefault("files", {}),
+        )
+        missing = []
+        matched_keys = set()
+        restricted_count = 0
+        new_count = 0
+        file_missing_count = 0
+        partial_count = 0
+        now = utc_now_iso()
+        for idx, chapter in enumerate(remote_chapters or [], start=1):
+            if not isinstance(chapter, dict):
+                continue
+            key = chapter_key(chapter)
+            is_new = key not in saved_keys
+            state = downloaded.get(key, {})
+            restricted_now = is_restricted_chapter(chapter)
+            state_restricted = state.get("status") == "restricted"
+            state_ok = state.get("status") in ("downloaded", "skipped")
+            local_ok = False if skip_local else is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files)
+            if skip_local and state_ok:
+                local_ok = True
+            if local_ok:
+                matched_keys.add(key)
+            if restricted_now and not local_ok:
+                restricted_count += 1
+                downloaded[key] = {
+                    "status": "restricted",
+                    "updated_at": now,
+                    "reason": "会员/白金专属章节，等待后续解锁",
+                }
+                continue
+            if is_new:
+                new_count += 1
+            if not local_ok:
+                file_missing_count += 1
+            if state and state.get("status") not in ("downloaded", "skipped") and not local_ok:
+                partial_count += 1
+            if is_new or not local_ok or state.get("status") in ("failed", "partial", "missing") or (state_restricted and not restricted_now):
+                item = dict(chapter)
+                item["_subscription_key"] = key
+                item["_missing_reason"] = "restricted_released" if state_restricted and not restricted_now else "new" if is_new else "missing_or_incomplete"
+                missing.append(item)
+        file_count = 0 if skip_local else local_audio_count(
+            album,
+            download_dir,
+            dir_cache=scan_cache.setdefault("dirs", {}),
+            file_cache=scan_cache.setdefault("files", {}),
+        )
+        if file_count > len(matched_keys):
+            known_local_count = min(len(remote_chapters or []), file_count)
+            assumed_keys = set()
+            now = utc_now_iso()
+            for idx, chapter in enumerate(remote_chapters or [], start=1):
+                if idx > known_local_count or not isinstance(chapter, dict):
+                    break
+                key = chapter_key(chapter)
+                assumed_keys.add(key)
+                downloaded[key] = {"status": "downloaded", "updated_at": now, "source": "local-count"}
+            if assumed_keys:
+                missing = [chapter for chapter in missing if chapter_key(chapter) not in assumed_keys]
+                file_missing_count = max(0, len(remote_chapters or []) - known_local_count)
+        return {
+            "missing": self.dedupe_chapters(missing),
+            "new_count": new_count,
+            "file_missing_count": file_missing_count,
+            "partial_count": partial_count,
+            "restricted_count": restricted_count,
+            "remote_total": len(remote_chapters or []),
+            "saved_total": len(saved),
+        }
+
+    def dedupe_chapters(self, chapters):
+        seen = set()
+        result = []
+        for chapter in chapters or []:
+            key = chapter_key(chapter)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(chapter)
+        return result
+
+    def update_check_result(self, subscription_id, remote_chapters, diff, message="已检查", scan_cache=None, refresh_local=True):
+        item = self.get(subscription_id)
+        if not item:
+            return
+        chapters = remote_chapters or item.get("chapters") or []
+        item["chapters"] = self.snapshot_chapters(chapters)
+        item["last_check_at"] = utc_now_iso()
+        item["updated_at"] = utc_now_iso()
+        item["last_message"] = message
+        stats = self.refresh_local_stats(item, item.get("download_dir") or "", save=False, scan_cache=scan_cache) if refresh_local and item.get("download_dir") else None
+        item["last_diff"] = {
+            "missing_count": (stats or {}).get("missing", len(diff.get("missing") or [])),
+            "new_count": diff.get("new_count", 0),
+            "file_missing_count": diff.get("file_missing_count", 0),
+            "partial_count": diff.get("partial_count", 0),
+            "restricted_count": diff.get("restricted_count", 0),
+            "remote_total": diff.get("remote_total", 0) or len(chapters),
+        }
+        self.save()
+
+    def mark_download_results(self, album, success_chapters=None, failed_chapters=None):
+        sid = self.subscription_id(album)
+        item = self.get(sid)
+        if not item:
+            return
+        downloaded = item.setdefault("downloaded", {})
+        now = utc_now_iso()
+        for chapter in success_chapters or []:
+            downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now}
+        for chapter in failed_chapters or []:
+            restricted = is_restricted_chapter(chapter)
+            downloaded[chapter_key(chapter)] = {
+                "status": "restricted" if restricted else "failed",
+                "updated_at": now,
+                "error": chapter.get("_error", "") if isinstance(chapter, dict) else "",
+                "reason": "会员/白金专属章节，等待后续解锁" if restricted else "",
+            }
+        item["updated_at"] = now
+        self.save()
+
+    def refresh_local_stats(self, subscription, download_dir, save=True, scan_cache=None):
+        scan_cache = scan_cache if isinstance(scan_cache, dict) else {}
+        chapters = subscription.get("chapters") or []
+        total = len(chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
+        album = subscription.get("album") or subscription
+        indexed_count = self.index_album_file_count(album, download_dir)
+        states = subscription.get("downloaded") or {}
+        restricted_count = sum(1 for state in states.values() if (state or {}).get("status") == "restricted")
+        if indexed_count > 0:
+            now = utc_now_iso()
+            downloaded_count = min(total, indexed_count) if total else indexed_count
+            local_stats = {
+                "total": total,
+                "downloaded": downloaded_count,
+                "missing": max(0, total - downloaded_count - restricted_count) if total else 0,
+                "restricted": restricted_count,
+                "matched": 0,
+                "file_count": indexed_count,
+                "source": "index",
+                "updated_at": now,
+            }
+            subscription["local_stats"] = local_stats
+            if save:
+                subscription["updated_at"] = now
+                self.save()
+            return local_stats
+        local_files = collect_album_audio_files(
+            album,
+            download_dir,
+            dir_cache=scan_cache.setdefault("dirs", {}),
+            file_cache=scan_cache.setdefault("files", {}),
+        )
+        matched = 0
+        downloaded = subscription.setdefault("downloaded", {})
+        now = utc_now_iso()
+        for idx, chapter in enumerate(chapters, start=1):
+            if is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files):
+                matched += 1
+                downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now, "source": "local"}
+        file_count = local_audio_count(
+            album,
+            download_dir,
+            dir_cache=scan_cache.setdefault("dirs", {}),
+            file_cache=scan_cache.setdefault("files", {}),
+        )
+        downloaded_count = min(total, max(matched, file_count))
+        restricted_count = sum(1 for state in downloaded.values() if (state or {}).get("status") == "restricted")
+        local_stats = {
+            "total": total,
+            "downloaded": downloaded_count,
+            "missing": max(0, total - downloaded_count - restricted_count),
+            "restricted": restricted_count,
+            "matched": matched,
+            "file_count": file_count,
+            "updated_at": now,
+        }
+        subscription["local_stats"] = local_stats
+        if save:
+            subscription["updated_at"] = now
+            self.save()
+        return local_stats
+
+    def stats_for(self, subscription, download_dir, fast=False, scan_cache=None):
+        chapters = subscription.get("chapters") or []
+        total = len(chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
+        downloaded = 0
+        restricted = 0
+        if fast:
+            states = subscription.get("downloaded") or {}
+            state_count = sum(1 for state in states.values() if (state or {}).get("status") in ("downloaded", "skipped"))
+            restricted = sum(1 for state in states.values() if (state or {}).get("status") == "restricted")
+            local_stats = subscription.get("local_stats") or {}
+            try:
+                local_count = int(local_stats.get("downloaded") or 0)
+            except Exception:
+                local_count = 0
+            if not local_count:
+                try:
+                    local_count = self.index_album_file_count(subscription.get("album") or subscription, download_dir)
+                except Exception:
+                    local_count = 0
+            downloaded = min(total, max(state_count, local_count))
+        else:
+            refreshed = self.refresh_local_stats(subscription, download_dir, save=True, scan_cache=scan_cache)
+            downloaded = refreshed["downloaded"]
+            restricted = int(refreshed.get("restricted") or 0)
+        missing = max(0, total - downloaded - restricted)
+        # 已补齐：上次检查发现缺失后，本次实际已下载到本地的数量
+        last_diff = subscription.get("last_diff") or {}
+        try:
+            last_missing = int(last_diff.get("missing_count") or 0)
+        except Exception:
+            last_missing = 0
+        completed = max(0, last_missing - missing)
+        return {
+            "total": total,
+            "downloaded": downloaded,
+            "missing": missing,
+            "restricted": restricted,
+            "completed": completed,
+            "last_missing": last_missing,
+        }

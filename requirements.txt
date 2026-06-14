@@ -1,0 +1,30 @@
+# AudioFlow v0.01 依赖
+# Python 3.12+ (必须)
+# 安装: pip install -r requirements.txt
+
+# HTTP & 网络
+requests>=2.31.0
+httpx>=0.27.0
+aiohttp>=3.9.0
+urllib3>=2.1.0
+websocket-client>=1.6.0
+
+# 加密
+cryptography>=41.0.0
+pycryptodome>=3.19.0
+
+# 解析
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+qrcode>=7.4.0  # 蜻蜓FM Web 扫码登录用：把 qrcode_url 字符串渲成 PNG
+
+# 压缩处理
+brotli>=1.0.0
+
+# 工具
+PyYAML>=6.0
+python-dateutil>=2.8.0
+Flask>=3.0.0
+waitress>=3.0.0
+chardet<6

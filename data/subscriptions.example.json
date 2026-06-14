@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "settings": {
+    "enabled": true,
+    "auto_download_missing": true,
+    "interval_hours": 6
+  },
+  "subscriptions": {}
+}

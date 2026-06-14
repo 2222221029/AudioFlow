@@ -1,0 +1,10 @@
+{
+  "brand": "AudioFlow",
+  "productName": "AudioFlow",
+  "positioning": "Modern multi-platform audiobook download and media management workspace",
+  "primaryLogo": "assets/branding/logos/audioflow-logo-dark.svg",
+  "lightLogo": "assets/branding/logos/audioflow-logo-light.svg",
+  "themeAwareMark": "assets/branding/logos/audioflow-mark.svg",
+  "appIcon": "assets/branding/icons/app_icon_512.png",
+  "favicon": "assets/branding/favicon/favicon.ico"
+}

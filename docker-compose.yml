@@ -1,0 +1,17 @@
+services:
+  audioflow:
+    build: .
+    container_name: audioflow
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      AUDIOFLOW_DEFAULT_PASSWORD: ${AUDIOFLOW_DEFAULT_PASSWORD:-admin}
+      AUDIOFLOW_COOKIE_SECRET: ${AUDIOFLOW_COOKIE_SECRET:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    volumes:
+      - /vol1/1000/docker/audioflow/data:/app/data
+      - /vol1/1000/docker/audioflow/config:/app/config
+      - /vol1/1000/docker/audioflow/logs:/app/logs
+      - /vol1/1000/downloads/有声书:/app/downloads
+    ports:
+      - "8082:8082"

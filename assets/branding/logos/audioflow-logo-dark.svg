@@ -1,0 +1,22 @@
+<svg width="1180" height="360" viewBox="0 0 1180 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="markArc" x1="72" y1="54" x2="306" y2="306" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset=".52" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="markWave" x1="128" y1="230" x2="232" y2="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7cb6ff"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect x="54" y="54" width="252" height="252" rx="72" fill="#11183f"/>
+  <rect x="60" y="60" width="240" height="240" rx="66" stroke="#4dd7f5" stroke-opacity=".42" stroke-width="8"/>
+  <path d="M110 184c0-51 31-86 70-86s70 35 70 86" stroke="url(#markArc)" stroke-width="26" stroke-linecap="round"/>
+  <path d="M110 180h28c13 0 23 10 23 23v38h-23c-29 0-52-23-52-52v-7c0-1 1-2 2-2h22Z" fill="url(#markArc)"/>
+  <path d="M250 180h-28c-13 0-23 10-23 23v38h23c29 0 52-23 52-52v-7c0-1-1-2-2-2h-22Z" fill="url(#markArc)"/>
+  <path d="M128 230c12-13 24-13 36 0s25 13 38 0" stroke="url(#markWave)" stroke-width="16" stroke-linecap="round"/>
+  <path d="M138 277h84" stroke="#eef1ff" stroke-opacity=".72" stroke-width="14" stroke-linecap="round"/>
+  <text x="370" y="171" fill="#eef1ff" font-family="Microsoft YaHei UI, PingFang SC, sans-serif" font-size="86" font-weight="800">AudioFlow</text>
+  <text x="372" y="228" fill="#aab1d6" font-family="Microsoft YaHei UI, PingFang SC, sans-serif" font-size="30" font-weight="500">多平台有声书下载与管理</text>
+</svg>
