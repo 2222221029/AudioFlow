@@ -6,6 +6,8 @@ import {NO_COOKIE_KEYS, PLATFORM_COOKIE_KEY} from '../utils/platforms.js';
 // ── 搜索历史
 const SEARCH_HISTORY_KEY = 'audioflow_search_history';
 const MAX_SEARCH_HISTORY = 12;
+const DOWNLOADS_CACHE_KEY = 'audioflow_downloads_cache';
+const SUBSCRIPTIONS_CACHE_KEY = 'audioflow_subscriptions_cache';
 function loadSearchHistory() {
   try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
 }
@@ -16,6 +18,19 @@ function pushSearchHistory(keyword) {
   const list = loadSearchHistory().filter((item) => item !== keyword);
   list.unshift(keyword);
   saveSearchHistory(list.slice(0, MAX_SEARCH_HISTORY));
+}
+function loadCachedList(key) {
+  try {
+    const data = JSON.parse(localStorage.getItem(key) || '{}');
+    return Array.isArray(data.items) ? data.items : [];
+  } catch {
+    return [];
+  }
+}
+function saveCachedList(key, items) {
+  try {
+    localStorage.setItem(key, JSON.stringify({items: Array.isArray(items) ? items : [], updated_at: Date.now()}));
+  } catch {}
 }
 
 // ── 音色记忆
@@ -120,8 +135,8 @@ export function useAudioFlowApp() {
   const [selectedChapters, setSelectedChapters] = useState(new Set());
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
-  const [downloads, setDownloads] = useState([]);
-  const [subscriptions, setSubscriptions] = useState([]);
+  const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
+  const [subscriptions, setSubscriptions] = useState(() => loadCachedList(SUBSCRIPTIONS_CACHE_KEY));
   const [subscriptionSettings, setSubscriptionSettings] = useState({});
   const [subscriptionScheduler, setSubscriptionScheduler] = useState({});
   const [subscriptionJobs, setSubscriptionJobs] = useState({});
@@ -142,6 +157,7 @@ export function useAudioFlowApp() {
   const loginResolveRef = useRef(null);
   const audioRef = useRef(null);
   const prevDownloadStatusRef = useRef({});
+  const foregroundRefreshRef = useRef(0);
 
   const showToast = useCallback((message, kind = 'ok') => {
     setToastState({message, kind, id: Date.now()});
@@ -211,7 +227,11 @@ export function useAudioFlowApp() {
 
   const loadDownloads = useCallback(async () => {
     const data = await api('/api/downloads');
-    setDownloads(data.tasks || []);
+    const tasks = data.tasks || [];
+    setDownloads(tasks);
+    saveCachedList(DOWNLOADS_CACHE_KEY, tasks);
+    prevDownloadStatusRef.current = Object.fromEntries(tasks.map((t) => [t.id, t.status]));
+    return tasks;
   }, []);
 
   const loadCookies = useCallback(async () => {
@@ -233,9 +253,12 @@ export function useAudioFlowApp() {
   const loadSubscriptions = useCallback(async (options = {}) => {
     const path = options.refreshLocal ? '/api/subscriptions?refresh_local=1' : '/api/subscriptions?fast=1';
     const data = await api(path);
-    setSubscriptions((data.subscriptions || []).filter((item) => (item.status || 'active') === 'active'));
+    const activeItems = (data.subscriptions || []).filter((item) => (item.status || 'active') === 'active');
+    setSubscriptions(activeItems);
+    saveCachedList(SUBSCRIPTIONS_CACHE_KEY, activeItems);
     setSubscriptionSettings(data.settings || {});
     setSubscriptionScheduler(data.scheduler || {});
+    return activeItems;
   }, []);
 
   const loadSubscriptionScheduler = useCallback(async () => {
@@ -708,6 +731,36 @@ export function useAudioFlowApp() {
   }, []);
 
   useEffect(() => {
+    const refreshVisibleData = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - foregroundRefreshRef.current < 1200) return;
+      foregroundRefreshRef.current = now;
+      if (page === 'downloads' || mobileView === 'downloads') {
+        loadDownloads().catch(() => {});
+        return;
+      }
+      if (page === 'subscriptions' || mobileView === 'subscriptions') {
+        loadSubscriptions().catch(() => {});
+        loadSubscriptionScheduler().catch(() => {});
+        return;
+      }
+      loadDownloads().catch(() => {});
+      loadSubscriptions().catch(() => {});
+    };
+    window.addEventListener('focus', refreshVisibleData);
+    window.addEventListener('pageshow', refreshVisibleData);
+    window.addEventListener('online', refreshVisibleData);
+    document.addEventListener('visibilitychange', refreshVisibleData);
+    return () => {
+      window.removeEventListener('focus', refreshVisibleData);
+      window.removeEventListener('pageshow', refreshVisibleData);
+      window.removeEventListener('online', refreshVisibleData);
+      document.removeEventListener('visibilitychange', refreshVisibleData);
+    };
+  }, [loadDownloads, loadSubscriptionScheduler, loadSubscriptions, mobileView, page]);
+
+  useEffect(() => {
     const timer = setInterval(async () => {
       if (page !== 'downloads' && mobileView !== 'downloads') return;
       const data = await api('/api/downloads').catch(() => null);
@@ -722,6 +775,7 @@ export function useAudioFlowApp() {
       }
       prevDownloadStatusRef.current = Object.fromEntries(tasks.map((t) => [t.id, t.status]));
       setDownloads(tasks);
+      saveCachedList(DOWNLOADS_CACHE_KEY, tasks);
     }, 3000);
     return () => clearInterval(timer);
   }, [mobileView, page, showToast]);
