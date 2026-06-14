@@ -605,9 +605,28 @@ export function useAudioFlowApp() {
     });
   }, [loadCookies, runBusy, showToast]);
 
-  const saveSettings = useCallback(async ({downloadDir, quality, downloadThreads}) => {
+  const saveSettings = useCallback(async ({
+    downloadDir,
+    quality,
+    downloadThreads,
+    organizeByPlatformEnabled,
+    splitChaptersEnabled,
+    chaptersPerFolder,
+    filenamePrefixFormat,
+  }) => {
     await runBusy('settings', async () => {
-      await api('/api/config', {method: 'POST', body: {download_dir: downloadDir, quality, download_threads: downloadThreads}});
+      await api('/api/config', {
+        method: 'POST',
+        body: {
+          download_dir: downloadDir,
+          quality,
+          download_threads: downloadThreads,
+          organize_by_platform_enabled: organizeByPlatformEnabled,
+          split_chapters_enabled: splitChaptersEnabled,
+          chapters_per_folder: chaptersPerFolder,
+          filename_prefix_format: filenamePrefixFormat,
+        },
+      });
       showToast('设置已保存', 'ok');
       loadConfig();
     }).catch((error) => {

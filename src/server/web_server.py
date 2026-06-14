@@ -157,6 +157,13 @@ def resolve_download_dir(value=None):
     return value or active_download_dir()
 
 
+def int_cookie_setting(key, default, minimum=1, maximum=10000):
+    try:
+        return max(minimum, min(maximum, int(cookie_manager.get_cookie(key) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def migrate_runtime_file(source, target):
     try:
         source = Path(source)
@@ -1225,6 +1232,10 @@ def api_config():
         cookie_encryption_enabled=bool(getattr(cookie_manager, "encryption_enabled", False)),
         download_threads=cookie_manager.get_download_threads(),
         quality=subscription_manager.settings().get("quality", "M4A 96K"),
+        organize_by_platform_enabled=cookie_manager.get_cookie("organize_by_platform_enabled") == "true",
+        split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
+        chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
+        filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
     )
 
 
@@ -1242,10 +1253,28 @@ def api_set_config():
             cookie_manager.set_cookie("download_threads", str(threads))
         except (ValueError, TypeError):
             pass
+    if "organize_by_platform_enabled" in payload:
+        cookie_manager.set_cookie("organize_by_platform_enabled", "true" if payload.get("organize_by_platform_enabled") else "false")
+    if "split_chapters_enabled" in payload:
+        cookie_manager.set_cookie("split_chapters_enabled", "true" if payload.get("split_chapters_enabled") else "false")
+    if "chapters_per_folder" in payload:
+        try:
+            count = max(1, min(10000, int(payload["chapters_per_folder"])))
+            cookie_manager.set_cookie("chapters_per_folder", str(count))
+        except (ValueError, TypeError):
+            pass
+    if "filename_prefix_format" in payload:
+        fmt = str(payload.get("filename_prefix_format") or "0001-").strip()
+        allowed = {"0001-", "001-", "01-", "1-", "0001.", "001.", "01.", "1.", "none"}
+        cookie_manager.set_cookie("filename_prefix_format", fmt if fmt in allowed else "0001-")
     return json_ok(
         download_dir=str(active_download_dir()),
         download_threads=cookie_manager.get_download_threads(),
         quality=subscription_manager.settings().get("quality", "M4A 96K"),
+        organize_by_platform_enabled=cookie_manager.get_cookie("organize_by_platform_enabled") == "true",
+        split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
+        chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
+        filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
     )
 
 

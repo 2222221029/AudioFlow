@@ -452,7 +452,11 @@ class SubscriptionManager:
         for item in files:
             norm_parent = item.get("norm_parent") or ""
             path_text = str(item.get("path") or "")
-            if any(norm_parent == t or norm_parent in t or t in norm_parent for t in norm_titles):
+            norm_path = normalize_match_text(path_text)
+            if any(
+                norm_parent == t or norm_parent in t or t in norm_parent or t in norm_path
+                for t in norm_titles
+            ):
                 count += 1
                 continue
             if any(value and value in path_text for value in id_values):

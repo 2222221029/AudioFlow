@@ -52,6 +52,48 @@ class DownloadWorker(QThread):
         from core.cookie_manager import CookieManager
         self.cookie_manager = CookieManager()
 
+    def _setting_enabled(self, key, default=False):
+        value = self.cookie_manager.get_cookie(key)
+        if value in ("", None):
+            return bool(default)
+        return str(value).lower() in ("1", "true", "yes", "on")
+
+    def _format_filename_prefix(self, order):
+        try:
+            order = max(1, int(order))
+        except (TypeError, ValueError):
+            order = 1
+        fmt = str(self.cookie_manager.get_cookie("filename_prefix_format") or "").strip()
+        if not fmt:
+            if self.cookie_manager.get_cookie("fixed_naming_enabled") == "true":
+                legacy = self.cookie_manager.get_cookie("fixed_naming_format") or "0001"
+                return f"{legacy}{order}-"
+            if self.cookie_manager.get_cookie("increment_naming_enabled") == "true":
+                legacy = self.cookie_manager.get_cookie("increment_naming_format") or "000"
+                width = {"000": 4, "00": 3, "0": 2}.get(legacy, max(1, len(legacy)))
+                return f"{str(order).zfill(width)}-"
+            fmt = "0001-"
+        if fmt.lower() in ("none", "no", "off"):
+            return ""
+        digits = sum(1 for char in fmt if char in "01")
+        width = digits if digits > 0 else len(str(order))
+        suffix = "".join(char for char in fmt if char not in "01")
+        return f"{str(order).zfill(width)}{suffix}"
+
+    def _album_base_dir(self, safe_album_title):
+        parts = [self.download_dir]
+        if self._setting_enabled("organize_by_platform_enabled", False):
+            parts.append(self._sanitize_filename(self.platform or "未知平台"))
+        parts.append(safe_album_title)
+        return os.path.join(*parts)
+
+    def _chapters_per_folder(self):
+        value = self.cookie_manager.get_cookie("chapters_per_folder")
+        try:
+            return max(1, min(10000, int(value)))
+        except (TypeError, ValueError):
+            return 200
+
     # ------------------------------------------------------------------
     # 进度工具
     # ------------------------------------------------------------------
@@ -528,25 +570,8 @@ class DownloadWorker(QThread):
                     actual_order = chapter_index
                     print(f"   ⚠️ 无法提取序号，使用下载队列序号: {actual_order}")
 
-            if fixed_naming_enabled:
-                fixed_format = cookie_manager.get_cookie('fixed_naming_format') or '0001'
-                print(f"   🎨 使用固定格式: {fixed_format}")
-                chapter_number = f"{fixed_format}{actual_order}"
-            elif increment_naming_enabled:
-                increment_format = cookie_manager.get_cookie('increment_naming_format') or '000'
-                print(f"   🎨 使用递增格式: {increment_format}")
-                if increment_format == '000':
-                    chapter_number = str(actual_order).zfill(4)
-                elif increment_format == '00':
-                    chapter_number = str(actual_order).zfill(3)
-                elif increment_format == '0':
-                    chapter_number = str(actual_order).zfill(2)
-                else:
-                    chapter_number = str(actual_order).zfill(len(increment_format))
-            else:
-                chapter_number = str(actual_order).zfill(4)
-
-            print(f"   🎯 最终文件名序号: {chapter_number}")
+            filename_prefix = self._format_filename_prefix(actual_order)
+            print(f"   🎯 最终文件名前缀: {filename_prefix}")
 
             # ---- 文件扩展名 ----
             fanqie_audio_info = None
@@ -581,7 +606,7 @@ class DownloadWorker(QThread):
             else:
                 file_extension = '.mp3'
 
-            filename = f"{chapter_number}-{safe_chapter_title}{file_extension}"
+            filename = f"{filename_prefix}{safe_chapter_title}{file_extension}"
 
             # ---- 文件路径（支持分章节保存）----
             chapter_order = actual_order
@@ -589,22 +614,17 @@ class DownloadWorker(QThread):
             print(f"   📁 分章节保存启用: {split_enabled}")
 
             if split_enabled and chapter_order > 0:
-                chapters_per_folder_str = cookie_manager.get_cookie('chapters_per_folder')
-                chapters_per_folder = (
-                    int(chapters_per_folder_str)
-                    if chapters_per_folder_str and chapters_per_folder_str.isdigit()
-                    else 200
-                )
+                chapters_per_folder = self._chapters_per_folder()
                 folder_start = ((chapter_order - 1) // chapters_per_folder) * chapters_per_folder + 1
                 folder_end = folder_start + chapters_per_folder - 1
                 folder_name = f"{folder_start}-{folder_end}章"
-                chapter_range_dir = os.path.join(self.download_dir, safe_album_title, folder_name)
+                chapter_range_dir = os.path.join(self._album_base_dir(safe_album_title), folder_name)
                 Path(chapter_range_dir).mkdir(parents=True, exist_ok=True)
                 file_path = os.path.join(chapter_range_dir, filename)
                 print(f"   📂 分章节保存到: {safe_album_title}/{folder_name}/{filename}")
                 print(f"   📍 容器内完整路径: {file_path}")
             else:
-                album_folder = os.path.join(self.download_dir, safe_album_title)
+                album_folder = self._album_base_dir(safe_album_title)
                 Path(album_folder).mkdir(parents=True, exist_ok=True)
                 file_path = os.path.join(album_folder, filename)
                 print(f"   📂 保存到: {safe_album_title}/{filename}")

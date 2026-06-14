@@ -47,7 +47,10 @@ class DownloadManager:
             # 如果有专辑标题,创建专辑文件夹
             if album_title:
                 safe_album_title = self._sanitize_filename(album_title)
-                album_dir = os.path.join(self.download_dir, safe_album_title)
+                if self.cookie_manager.get_cookie('organize_by_platform_enabled') == 'true':
+                    album_dir = os.path.join(self.download_dir, self._sanitize_filename(platform or "未知平台"), safe_album_title)
+                else:
+                    album_dir = os.path.join(self.download_dir, safe_album_title)
                 Path(album_dir).mkdir(parents=True, exist_ok=True)
                 
                 # 检查是否启用分章节保存

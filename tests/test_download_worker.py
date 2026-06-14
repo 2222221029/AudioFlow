@@ -1,7 +1,19 @@
+import os
 import tempfile
 import unittest
 
 from core.download_worker import DownloadWorker
+
+
+class FakeCookieManager:
+    def __init__(self):
+        self.values = {}
+
+    def get_cookie(self, key):
+        return self.values.get(key, "")
+
+    def set_cookie(self, key, value):
+        self.values[key] = value
 
 
 class DownloadWorkerTest(unittest.TestCase):
@@ -43,6 +55,27 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertEqual(total, 2)
         self.assertGreaterEqual(percent, 0)
         self.assertLessEqual(percent, 100)
+
+    def test_platform_album_directory_is_optional(self):
+        worker = self.make_worker()
+        worker.cookie_manager = FakeCookieManager()
+        worker.platform = "喜马拉雅"
+        worker.cookie_manager.set_cookie("organize_by_platform_enabled", "false")
+        self.assertTrue(worker._album_base_dir("鬼吹灯").endswith("鬼吹灯"))
+        self.assertFalse(worker._album_base_dir("鬼吹灯").endswith(os.path.join("喜马拉雅", "鬼吹灯")))
+
+        worker.cookie_manager.set_cookie("organize_by_platform_enabled", "true")
+        self.assertTrue(worker._album_base_dir("鬼吹灯").endswith(os.path.join("喜马拉雅", "鬼吹灯")))
+
+    def test_filename_prefix_formats(self):
+        worker = self.make_worker()
+        worker.cookie_manager = FakeCookieManager()
+        worker.cookie_manager.set_cookie("filename_prefix_format", "0001-")
+        self.assertEqual(worker._format_filename_prefix(7), "0007-")
+        worker.cookie_manager.set_cookie("filename_prefix_format", "001.")
+        self.assertEqual(worker._format_filename_prefix(7), "007.")
+        worker.cookie_manager.set_cookie("filename_prefix_format", "none")
+        self.assertEqual(worker._format_filename_prefix(7), "")
 
 
 if __name__ == "__main__":

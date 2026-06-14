@@ -382,6 +382,7 @@ html[data-theme-mode="light"] .platform-menu::before{background:#fff}
 .field-row{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
 .field-row-inline{display:flex;gap:8px;align-items:center}
 .field-row-inline .field-input{flex:1;min-width:0}
+.field-suffix{color:var(--text-mute);font-size:12px;white-space:nowrap}
 .cookie-textarea{width:100%;min-height:70px;padding:8px 12px;border-radius:9px;background:var(--panel-hi);border:1px solid var(--border);color:var(--fg);font-size:13px;font-family:monospace;resize:vertical;box-sizing:border-box}
 .field-divider{text-align:center;color:var(--fg-muted);font-size:12px;padding:8px 0;position:relative}
 .field-divider::before,.field-divider::after{content:"";position:absolute;top:50%;width:35%;height:1px;background:var(--border)}
