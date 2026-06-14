@@ -1424,6 +1424,24 @@ def _wecom_handle_text_command(service_id, user_id, text):
     return "无法识别指令。\n\n" + _wecom_help_text()
 
 
+def _wecom_text_response_xml(message, content):
+    to_user = message.get("FromUserName") or ""
+    from_user = message.get("ToUserName") or ""
+    return (
+        "<xml>"
+        f"<ToUserName><![CDATA[{to_user}]]></ToUserName>"
+        f"<FromUserName><![CDATA[{from_user}]]></FromUserName>"
+        f"<CreateTime>{int(time.time())}</CreateTime>"
+        "<MsgType><![CDATA[text]]></MsgType>"
+        f"<Content><![CDATA[{_clean_xml_cdata(content)}]]></Content>"
+        "</xml>"
+    )
+
+
+def _clean_xml_cdata(value):
+    return str(value or "").replace("]]>", "]]]]><![CDATA[>")
+
+
 @app.route("/api/wecom/callback/<service_id>", methods=["GET", "POST"])
 def api_wecom_callback(service_id):
     try:
@@ -1440,17 +1458,21 @@ def api_wecom_callback(service_id):
         message = parse_wecom_message(xml_text)
         user_id = message.get("FromUserName") or ""
         msg_type = message.get("MsgType") or ""
-        if msg_type == "text":
-            reply = _wecom_handle_text_command(service_id, user_id, message.get("Content") or "")
-        elif msg_type == "event":
-            reply = _wecom_help_text()
-        else:
-            reply = "目前仅支持文字指令。\n\n" + _wecom_help_text()
-        notification_manager.send_wecom_app_text(config, reply, to_user=user_id)
-        return Response("success", mimetype="text/plain")
+        try:
+            if msg_type == "text":
+                reply = _wecom_handle_text_command(service_id, user_id, message.get("Content") or "")
+            elif msg_type == "event":
+                reply = _wecom_help_text()
+            else:
+                reply = "目前仅支持文字指令。\n\n" + _wecom_help_text()
+        except Exception as exc:
+            logging.exception("wecom command failed: %s", service_id)
+            reply = f"指令执行失败：{exc}\n\n{_wecom_help_text()}"
+        response_xml = _wecom_text_response_xml(message, reply)
+        return Response(crypto.encrypt(response_xml, nonce=nonce), mimetype="application/xml")
     except Exception as exc:
         logging.exception("wecom callback failed: %s", service_id)
-        return Response(str(exc), status=400, mimetype="text/plain")
+        return Response(str(exc), status=200, mimetype="text/plain")
 
 
 def _path_status(path):
