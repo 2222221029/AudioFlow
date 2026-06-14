@@ -887,6 +887,7 @@ const NOTIFICATION_CHANNELS = [
   ['bark', 'Bark'],
   ['serverchan', 'Server 酱'],
   ['pushplus', 'PushPlus'],
+  ['wecom_app', '企业微信应用'],
   ['wecom_robot', '企业微信机器人'],
   ['webhook', '通用 Webhook'],
 ];
@@ -968,6 +969,17 @@ function NotificationServiceCard({service, busy, onChange, onConfig, onRemove, o
         <label className="check-row compact"><input type="checkbox" checked={service.enabled !== false} onChange={(e) => onChange({enabled: e.target.checked})} /><span>启用</span></label>
       </div>
       <NotificationChannelFields type={type} config={cfg} onConfig={onConfig} />
+      {type === 'wecom_app' && (
+        <div className="field-row">
+          <label className="field-label">回调 URL</label>
+          <input
+            className="field-input"
+            readOnly
+            value={`${window.location.origin}/api/wecom/callback/${service.id}`}
+            onFocus={(event) => event.target.select()}
+          />
+        </div>
+      )}
       <div className="notification-actions">
         <button className="btn btn-ghost btn-tiny" disabled={busy[`notificationTest:${service.id}`]} onClick={onTest}><BusyIcon busy={busy[`notificationTest:${service.id}`]} icon="i-bell" />测试</button>
         <button className="btn btn-danger btn-tiny" onClick={onRemove}><Icon id="i-trash" className="icon icon-sm" />删除</button>
@@ -984,6 +996,17 @@ function NotificationChannelFields({type, config, onConfig}) {
   if (type === 'bark') return <>{input('key', 'Bark Key')}{input('server', '服务器', 'https://api.day.app')}</>;
   if (type === 'serverchan') return <>{input('send_key', 'SendKey')}</>;
   if (type === 'pushplus') return <>{input('token', 'Token')}{input('topic', '群组编码', '可选')}</>;
+  if (type === 'wecom_app') return (
+    <>
+      {input('corp_id', '企业 ID')}
+      {input('agent_id', '应用 AgentId')}
+      {input('secret', '应用 Secret')}
+      {input('to_user', '默认接收人', '@all')}
+      {input('token', '回调 Token')}
+      {input('encoding_aes_key', 'EncodingAESKey')}
+      {input('api_base', 'API 地址', 'https://qyapi.weixin.qq.com')}
+    </>
+  );
   if (type === 'wecom_robot') return <>{input('key', '机器人 Key / Webhook URL')}</>;
   return (
     <>

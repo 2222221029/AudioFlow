@@ -24,6 +24,7 @@ from core.cookie_manager import CookieManager
 from core.download_worker import DownloadWorker
 from core.enhanced_search_manager import EnhancedSearchManager
 from core.notification_manager import NotificationManager
+from core.wecom_crypto import WeComCrypto, parse_wecom_message
 from core.lrts_manager import (
     lrts_send_sms_code,
     lrts_sms_login,
@@ -89,6 +90,8 @@ task_lock = threading.Lock()
 task_workers = {}
 subscription_job_lock = threading.Lock()
 subscription_jobs = {}
+wecom_session_lock = threading.Lock()
+wecom_sessions = {}
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
 TASK_SAVE_INTERVAL = 1.0
@@ -106,6 +109,7 @@ def _is_public_endpoint(path):
         path.startswith("/api/local-audio/")
         or path == "/api/proxy/audio"
         or path.startswith("/api/auth/")
+        or path.startswith("/api/wecom/callback/")
         or path.startswith("/assets/")
         or path.startswith("/static/")
         or path.startswith("/favicon")
@@ -1121,7 +1125,15 @@ def api_set_config():
     )
 
 
-_NOTIFICATION_SECRET_KEYS = {"token", "bot_token", "send_key", "key", "url"}
+_NOTIFICATION_SECRET_KEYS = {
+    "token",
+    "bot_token",
+    "send_key",
+    "key",
+    "url",
+    "secret",
+    "encoding_aes_key",
+}
 
 
 def _merge_notification_secrets(payload):
@@ -1184,6 +1196,165 @@ def api_test_notifications():
         return json_ok(result=result)
     except Exception as exc:
         return json_error(str(exc), 400)
+
+
+def _notification_service(service_id, service_type=None):
+    for service in notification_manager.load().get("services") or []:
+        if service.get("id") == service_id and (service_type is None or service.get("type") == service_type):
+            return service
+    return None
+
+
+def _wecom_config_for_callback(service_id):
+    service = _notification_service(service_id, "wecom_app")
+    if not service:
+        raise ValueError("企业微信应用通知渠道不存在")
+    config = dict(service.get("config") or {})
+    missing = [key for key in ("corp_id", "agent_id", "secret", "token", "encoding_aes_key") if not str(config.get(key) or "").strip()]
+    if missing:
+        raise ValueError("企业微信应用回调配置不完整：" + "、".join(missing))
+    return service, config
+
+
+def _wecom_help_text():
+    return (
+        "AudioFlow 企业微信指令：\n"
+        "帮助：显示指令\n"
+        "状态：查看服务版本和任务数\n"
+        "搜索 关键词：搜索有声书\n"
+        "订阅 序号：订阅最近一次搜索结果\n"
+        "下载 序号：下载最近一次搜索结果全部章节\n"
+        "示例：搜索 三体"
+    )
+
+
+def _wecom_album_lines(results):
+    lines = []
+    for index, item in enumerate(results[:8], start=1):
+        title = item.get("title") or "未知专辑"
+        platform = item.get("platform") or "未知平台"
+        author = item.get("author") or "未知作者"
+        episodes = item.get("episodes") or "?"
+        lines.append(f"{index}. {title}\n   {platform} / {author} / {episodes} 章")
+    return "\n".join(lines)
+
+
+def _wecom_session_key(service_id, user_id):
+    return f"{service_id}:{user_id or 'unknown'}"
+
+
+def _wecom_get_cached_album(service_id, user_id, index_text):
+    try:
+        index = int(str(index_text).strip())
+    except (TypeError, ValueError):
+        raise ValueError("请输入正确序号，例如：订阅 1")
+    with wecom_session_lock:
+        session = wecom_sessions.get(_wecom_session_key(service_id, user_id)) or {}
+    results = session.get("results") or []
+    if not results:
+        raise ValueError("还没有搜索结果，请先发送：搜索 关键词")
+    if index < 1 or index > len(results):
+        raise ValueError(f"序号超出范围，请输入 1-{len(results)}")
+    return normalize_album(results[index - 1])
+
+
+def _wecom_load_album_chapters(album):
+    album = normalize_album(album)
+    album_id = album.get("id") or album.get("album_id") or album.get("book_id")
+    platform = album.get("platform")
+    if not album_id or not platform:
+        raise ValueError("缺少专辑 ID 或平台")
+    voice = resolve_voice_for_album(album, None)
+    if platform == "七猫听书":
+        search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
+        if album.get("book_id"):
+            search_manager.qimao_manager._search_cache[str(album.get("book_id"))] = dict(album)
+        if album.get("album_id"):
+            search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
+    if platform == "番茄畅听" and voice:
+        raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), voice, page=1, page_size=10000)
+    elif platform == "番茄听书" and voice:
+        raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), voice)
+    elif platform == "七猫听书" and voice:
+        raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), voice)
+    else:
+        raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+    chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(raw_chapters or [], start=1)]
+    if not chapters:
+        raise ValueError("没有获取到章节列表")
+    return album, chapters, voice
+
+
+def _wecom_handle_text_command(service_id, user_id, text):
+    text = str(text or "").strip()
+    if not text or text in {"帮助", "help", "/help", "？", "?"}:
+        return _wecom_help_text()
+    if text in {"状态", "status", "/status"}:
+        tasks_now = task_snapshot()
+        running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
+        return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
+    match = re.match(r"^(搜索|search|/search)\s+(.+)$", text, re.I)
+    if match:
+        keyword = match.group(2).strip()
+        results = [normalize_album(item) for item in search_manager.search_books(keyword, "all")][:8]
+        with wecom_session_lock:
+            wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
+        if not results:
+            return f"没有搜索到：{keyword}"
+        return f"搜索结果：{keyword}\n{_wecom_album_lines(results)}\n\n发送“订阅 序号”或“下载 序号”继续。"
+    match = re.match(r"^(订阅|subscribe|/subscribe)\s+(\d+)$", text, re.I)
+    if match:
+        album = _wecom_get_cached_album(service_id, user_id, match.group(2))
+        album, chapters, voice = _wecom_load_album_chapters(album)
+        if voice:
+            album["voice"] = voice
+        item = subscription_manager.add_or_update(album, chapters, active_download_dir())
+        job = None
+        if subscription_manager.settings().get("enabled", True):
+            ensure_subscription_scheduler()
+            job = start_subscription_job(item["id"], queue_missing=subscription_manager.settings().get("auto_download_missing", True))
+        suffix = f"\n已启动检测任务：{job.get('id')}" if job else ""
+        return f"已订阅：{album.get('title')}\n章节数：{len(chapters)}{suffix}"
+    match = re.match(r"^(下载|download|/download)\s+(\d+)$", text, re.I)
+    if match:
+        album = _wecom_get_cached_album(service_id, user_id, match.group(2))
+        album, chapters, voice = _wecom_load_album_chapters(album)
+        options = {"download_dir": active_download_dir(), "quality": subscription_manager.settings().get("quality", "M4A 96K")}
+        if voice:
+            options["voice"] = voice
+        task_id = f"wecom-{uuid.uuid4().hex[:12]}"
+        start_download_task(task_id, album, chapters, options, source="wecom")
+        return f"已加入下载：{album.get('title')}\n章节数：{len(chapters)}\n任务 ID：{task_id}"
+    return "无法识别指令。\n\n" + _wecom_help_text()
+
+
+@app.route("/api/wecom/callback/<service_id>", methods=["GET", "POST"])
+def api_wecom_callback(service_id):
+    try:
+        service, config = _wecom_config_for_callback(service_id)
+        crypto = WeComCrypto(config["token"], config["encoding_aes_key"], config["corp_id"])
+        msg_signature = request.args.get("msg_signature", "")
+        timestamp = request.args.get("timestamp", "")
+        nonce = request.args.get("nonce", "")
+        if request.method == "GET":
+            plain = crypto.verify_url(msg_signature, timestamp, nonce, request.args.get("echostr", ""))
+            return Response(plain, mimetype="text/plain")
+
+        xml_text = crypto.decrypt_message(msg_signature, timestamp, nonce, request.get_data(as_text=True))
+        message = parse_wecom_message(xml_text)
+        user_id = message.get("FromUserName") or ""
+        msg_type = message.get("MsgType") or ""
+        if msg_type == "text":
+            reply = _wecom_handle_text_command(service_id, user_id, message.get("Content") or "")
+        elif msg_type == "event":
+            reply = _wecom_help_text()
+        else:
+            reply = "目前仅支持文字指令。\n\n" + _wecom_help_text()
+        notification_manager.send_wecom_app_text(config, reply, to_user=user_id)
+        return Response("success", mimetype="text/plain")
+    except Exception as exc:
+        logging.exception("wecom callback failed: %s", service_id)
+        return Response(str(exc), status=400, mimetype="text/plain")
 
 
 def _path_status(path):

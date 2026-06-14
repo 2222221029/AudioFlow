@@ -25,6 +25,7 @@ CHANNEL_LABELS = {
     "bark": "Bark",
     "serverchan": "Server 酱",
     "pushplus": "PushPlus",
+    "wecom_app": "企业微信应用",
     "wecom_robot": "企业微信机器人",
     "webhook": "通用 Webhook",
 }
@@ -113,10 +114,10 @@ class NotificationManager:
         for service in data.get("services") or []:
             config = service.get("config") or {}
             service["configured"] = self._is_service_configured(service)
-            for key in ("token", "bot_token", "send_key", "key", "chat_id", "url"):
+            for key in ("token", "bot_token", "send_key", "key", "secret", "encoding_aes_key", "chat_id", "url"):
                 if config.get(key):
                     config[f"{key}_masked"] = _mask(config.get(key), keep=5 if key == "url" else 4)
-            for key in ("token", "bot_token", "send_key", "key"):
+            for key in ("token", "bot_token", "send_key", "key", "secret", "encoding_aes_key", "_access_token"):
                 config.pop(key, None)
             if service.get("type") == "webhook":
                 config.pop("url", None)
@@ -147,6 +148,8 @@ class NotificationManager:
             return bool(config.get("send_key"))
         if service_type == "pushplus":
             return bool(config.get("token"))
+        if service_type == "wecom_app":
+            return bool(config.get("corp_id") and config.get("agent_id") and config.get("secret"))
         if service_type == "wecom_robot":
             return bool(config.get("key"))
         if service_type == "webhook":
@@ -237,6 +240,8 @@ class NotificationManager:
             return self._send_serverchan(config, message)
         if service_type == "pushplus":
             return self._send_pushplus(config, message)
+        if service_type == "wecom_app":
+            return self._send_wecom_app(config, message)
         if service_type == "wecom_robot":
             return self._send_wecom_robot(config, message)
         if service_type == "webhook":
@@ -249,6 +254,7 @@ class NotificationManager:
             "bark": ("key",),
             "serverchan": ("send_key",),
             "pushplus": ("token",),
+            "wecom_app": ("corp_id", "agent_id", "secret"),
             "wecom_robot": ("key",),
             "webhook": ("url",),
         }.get(service_type)
@@ -317,6 +323,44 @@ class NotificationManager:
             payload["topic"] = config["topic"]
         response = self._post_json("https://www.pushplus.plus/send", payload)
         return self._assert_provider_ok(response, "PushPlus", ok_codes=(200,), message_fields=("msg", "message"))
+
+    def _wecom_api_base(self, config):
+        return str(config.get("api_base") or "https://qyapi.weixin.qq.com").rstrip("/")
+
+    def _wecom_access_token(self, config):
+        cache_key = "_access_token"
+        cached = config.get(cache_key) or {}
+        if cached.get("token") and cached.get("expires_at", 0) > time.time() + 60:
+            return cached["token"]
+        response = requests.get(
+            f"{self._wecom_api_base(config)}/cgi-bin/gettoken",
+            params={"corpid": config["corp_id"], "corpsecret": config["secret"]},
+            timeout=12,
+        )
+        data = self._response_json(response)
+        if data.get("errcode") not in (0, "0"):
+            raise ValueError(f"企业微信应用获取 access_token 失败：{_compact_error(data.get('errmsg') or data)}")
+        token = data.get("access_token")
+        if not token:
+            raise ValueError("企业微信应用获取 access_token 失败：响应缺少 access_token")
+        config[cache_key] = {"token": token, "expires_at": time.time() + int(data.get("expires_in") or 7200)}
+        return token
+
+    def send_wecom_app_text(self, config, content, to_user=None):
+        token = self._wecom_access_token(config)
+        payload = {
+            "touser": str(to_user or config.get("to_user") or "@all").strip() or "@all",
+            "msgtype": "text",
+            "agentid": int(config["agent_id"]),
+            "text": {"content": _clean_text(content)},
+            "safe": 0,
+        }
+        response = self._post_json(f"{self._wecom_api_base(config)}/cgi-bin/message/send?access_token={token}", payload)
+        return self._assert_provider_ok(response, "企业微信应用", ok_codes=(0,), ok_field="errcode", message_fields=("errmsg", "message", "msg"))
+
+    def _send_wecom_app(self, config, message):
+        content = f"{message['title']}\n{message['text']}".strip()
+        return self.send_wecom_app_text(config, content)
 
     def _send_wecom_robot(self, config, message):
         url = self._wecom_robot_url(config["key"])
