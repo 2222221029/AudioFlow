@@ -565,7 +565,8 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(chapters or [], start=1)]
     if not chapters and item.get("chapters"):
         chapters = item.get("chapters") or []
-    diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), skip_local=True)
+    scan_cache = {}
+    diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False)
     subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
     item = subscription_manager.get(sid) or item
     item["download_dir"] = active_download_dir()

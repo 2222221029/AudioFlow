@@ -704,7 +704,7 @@ class SubscriptionManager:
             dir_cache=scan_cache.setdefault("dirs", {}),
             file_cache=scan_cache.setdefault("files", {}),
         )
-        if file_count > len(matched_keys):
+        if not saved_keys and file_count > len(matched_keys):
             known_local_count = min(len(remote_chapters or []), file_count)
             assumed_keys = set()
             now = utc_now_iso()
