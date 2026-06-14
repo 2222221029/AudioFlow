@@ -6,7 +6,7 @@ import logging
 import time
 from copy import deepcopy
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
@@ -319,10 +319,26 @@ class NotificationManager:
         return self._assert_provider_ok(response, "PushPlus", ok_codes=(200,), message_fields=("msg", "message"))
 
     def _send_wecom_robot(self, config, message):
-        url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={config['key']}"
+        url = self._wecom_robot_url(config["key"])
         payload = {"msgtype": "text", "text": {"content": f"{message['title']}\n{message['text']}".strip()}}
         response = self._post_json(url, payload)
         return self._assert_provider_ok(response, "企业微信机器人", ok_codes=(0,), ok_field="errcode", message_fields=("errmsg", "message", "msg"))
+
+    def _wecom_robot_url(self, value):
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("企业微信机器人配置不完整：key")
+        if value.startswith(("http://", "https://")):
+            parsed = urlparse(value)
+            key = (parse_qs(parsed.query).get("key") or [""])[0].strip()
+            if parsed.netloc != "qyapi.weixin.qq.com" or parsed.path != "/cgi-bin/webhook/send" or not key:
+                raise ValueError("企业微信机器人 Webhook URL 无效，请填写企业微信机器人完整 Webhook 地址或 key 参数")
+            return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key}"
+        if "key=" in value:
+            key = (parse_qs(value.split("?", 1)[-1]).get("key") or [""])[0].strip()
+            if key:
+                return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key}"
+        return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={value}"
 
     def _send_webhook(self, config, message):
         url = config["url"]

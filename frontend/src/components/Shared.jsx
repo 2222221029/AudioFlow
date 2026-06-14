@@ -984,7 +984,7 @@ function NotificationChannelFields({type, config, onConfig}) {
   if (type === 'bark') return <>{input('key', 'Bark Key')}{input('server', '服务器', 'https://api.day.app')}</>;
   if (type === 'serverchan') return <>{input('send_key', 'SendKey')}</>;
   if (type === 'pushplus') return <>{input('token', 'Token')}{input('topic', '群组编码', '可选')}</>;
-  if (type === 'wecom_robot') return <>{input('key', '机器人 Key')}</>;
+  if (type === 'wecom_robot') return <>{input('key', '机器人 Key / Webhook URL')}</>;
   return (
     <>
       {input('url', 'Webhook URL')}
