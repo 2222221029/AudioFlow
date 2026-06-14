@@ -2,6 +2,16 @@
 
 AudioFlow是面向 Docker、NAS 和 Web/PWA 的多平台有声书下载工具。前端使用 React + Vite，生产部署时会打包进后端镜像，默认只需要一个容器。
 
+## 推荐部署
+
+GitHub Actions 会自动构建 GHCR 镜像：
+
+```text
+ghcr.io/2222221029/audioflow:latest
+```
+
+飞牛 NAS Compose 推荐直接使用镜像部署，示例见 `docker-compose.image.yml`。
+
 ## Docker 部署
 
 ```bash
