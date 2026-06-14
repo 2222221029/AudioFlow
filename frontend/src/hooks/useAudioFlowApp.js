@@ -539,6 +539,18 @@ export function useAudioFlowApp() {
     });
   }, [runBusy, showToast]);
 
+  const runPersonalSubscriptionSyncNow = useCallback(async () => {
+    await runBusy('personalSubscriptionSync', async () => {
+      const data = await api('/api/subscriptions/personal-sync/run', {method: 'POST'});
+      const result = data.result || {};
+      if (data.scheduler) setSubscriptionScheduler(data.scheduler);
+      showToast(`个人订阅同步完成：新增 ${result.added || 0}，总计 ${result.total || 0}`, 'ok');
+      setTimeout(loadSubscriptions, 800);
+    }).catch((error) => {
+      showToast('同步失败：' + error.message, 'err');
+    });
+  }, [loadSubscriptions, runBusy, showToast]);
+
   const rebuildSubscriptionIndex = useCallback(async () => {
     await runBusy('rebuildIndex', async () => {
       const data = await api('/api/subscriptions/index/rebuild', {method: 'POST'});
@@ -813,6 +825,7 @@ export function useAudioFlowApp() {
       loadSubscriptionScheduler,
       saveSubscriptionSettings,
       runSubscriptionsNow,
+      runPersonalSubscriptionSyncNow,
       rebuildSubscriptionIndex,
       checkSubscription,
       cancelSubscription,

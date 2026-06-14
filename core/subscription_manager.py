@@ -303,6 +303,10 @@ class SubscriptionManager:
                 "interval_hours": 6,
                 "interval_minutes": 0,
                 "quality": "M4A 96K",
+                "personal_sync_enabled": False,
+                "personal_sync_platform": "ximalaya",
+                "personal_sync_interval_hours": 1,
+                "personal_sync_interval_minutes": 0,
             },
             "subscriptions": {},
         }
@@ -474,6 +478,10 @@ class SubscriptionManager:
                 self.data["settings"].setdefault("auto_download_missing", True)
                 self.data["settings"].setdefault("interval_hours", 6)
                 self.data["settings"].setdefault("interval_minutes", 0)
+                self.data["settings"].setdefault("personal_sync_enabled", False)
+                self.data["settings"].setdefault("personal_sync_platform", "ximalaya")
+                self.data["settings"].setdefault("personal_sync_interval_hours", 1)
+                self.data["settings"].setdefault("personal_sync_interval_minutes", 0)
                 self.data["subscriptions"] = loaded.get("subscriptions") or {}
                 self.save_to_db()
         except Exception as exc:

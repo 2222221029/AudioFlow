@@ -309,7 +309,93 @@ _scheduler_status = {
     "last_checked_count": 0,
     "last_queued_count": 0,
     "last_error": "",
+    "personal_sync_running": False,
+    "personal_sync_last_run_at": 0,
+    "personal_sync_last_total": 0,
+    "personal_sync_last_added": 0,
+    "personal_sync_last_checked": 0,
+    "personal_sync_last_queued": 0,
+    "personal_sync_last_error": "",
 }
+
+
+def personal_sync_interval_seconds(settings=None):
+    settings = settings or subscription_manager.settings()
+    try:
+        hours = max(0, int(settings.get("personal_sync_interval_hours", 1) or 0))
+    except Exception:
+        hours = 1
+    try:
+        minutes = max(0, int(settings.get("personal_sync_interval_minutes", 0) or 0))
+    except Exception:
+        minutes = 0
+    return max(60, hours * 3600 + minutes * 60)
+
+
+def personal_sync_due(settings=None):
+    settings = settings or subscription_manager.settings()
+    if not settings.get("personal_sync_enabled", False):
+        return False
+    last = float(_scheduler_status.get("personal_sync_last_run_at") or 0)
+    return not last or time.time() - last >= personal_sync_interval_seconds(settings)
+
+
+def _sync_personal_ximalaya_subscriptions(force=False):
+    settings = subscription_manager.settings()
+    if not force and not personal_sync_due(settings):
+        return {"skipped": True, "reason": "not_due"}
+    _scheduler_status["personal_sync_running"] = True
+    total = added = checked = queued = 0
+    try:
+        albums = _load_ximalaya_personal("subscriptions", all_pages=True)
+        total = len(albums)
+        auto_download = bool(settings.get("auto_download_missing", True))
+        jobs = []
+        for album in albums:
+            sid = subscription_manager.subscription_id(album)
+            existed = bool(subscription_manager.get(sid))
+            item = subscription_manager.add_or_update(album, [], active_download_dir())
+            if not existed:
+                added += 1
+                try:
+                    job = start_subscription_job(item["id"], queue_missing=auto_download)
+                    jobs.append(job)
+                    checked += 1
+                    queued += 1 if job else 0
+                except Exception as exc:
+                    subscription_manager.mark_check_error(item.get("id"), f"个人中心同步后检测失败：{exc}")
+                    logging.exception("personal sync subscription check failed: %s", item.get("id"))
+        _scheduler_status.update({
+            "personal_sync_running": False,
+            "personal_sync_last_run_at": time.time(),
+            "personal_sync_last_total": total,
+            "personal_sync_last_added": added,
+            "personal_sync_last_checked": checked,
+            "personal_sync_last_queued": queued,
+            "personal_sync_last_error": "",
+        })
+        return {"skipped": False, "total": total, "added": added, "checked": checked, "queued": queued, "jobs": jobs}
+    except Exception as exc:
+        _scheduler_status.update({
+            "personal_sync_running": False,
+            "personal_sync_last_run_at": time.time(),
+            "personal_sync_last_total": total,
+            "personal_sync_last_added": added,
+            "personal_sync_last_checked": checked,
+            "personal_sync_last_queued": queued,
+            "personal_sync_last_error": str(exc),
+        })
+        logging.exception("personal subscription sync failed")
+        raise
+
+
+def _personal_sync_tick(force=False):
+    settings = subscription_manager.settings()
+    platform = settings.get("personal_sync_platform") or "ximalaya"
+    if platform != "ximalaya":
+        _scheduler_status["personal_sync_last_error"] = f"暂不支持同步平台：{platform}"
+        return {"skipped": True, "reason": "unsupported_platform"}
+    return _sync_personal_ximalaya_subscriptions(force=force)
 
 
 def _scheduler_tick(force=False):
@@ -381,6 +467,8 @@ def _scheduler_loop():
         try:
             _scheduler_status["running"] = True
             _scheduler_tick()
+            if personal_sync_due():
+                _personal_sync_tick(force=False)
         except Exception as exc:
             _scheduler_status["running"] = False
             _scheduler_status["last_error"] = str(exc)
@@ -403,7 +491,8 @@ def start_subscription_scheduler():
 
 def ensure_subscription_scheduler():
     """Start the scheduler whenever automatic subscription checks are enabled."""
-    if subscription_manager.settings().get("enabled", True):
+    settings = subscription_manager.settings()
+    if settings.get("enabled", True) or settings.get("personal_sync_enabled", False):
         start_subscription_scheduler()
 
 
@@ -419,11 +508,18 @@ def subscription_scheduler_status():
     status = dict(_scheduler_status)
     status["settings"] = subscription_manager.settings()
     status["interval_seconds"] = subscription_manager.interval_seconds()
+    status["personal_sync_interval_seconds"] = personal_sync_interval_seconds(status["settings"])
+    status["personal_sync_due"] = personal_sync_due(status["settings"])
     if status.get("last_run_at"):
         try:
             status["last_run_at_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(status["last_run_at"])))
         except Exception:
             status["last_run_at_iso"] = ""
+    if status.get("personal_sync_last_run_at"):
+        try:
+            status["personal_sync_last_run_at_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(status["personal_sync_last_run_at"])))
+        except Exception:
+            status["personal_sync_last_run_at_iso"] = ""
     due = subscription_manager.due_subscriptions()
     status["current_due_count"] = len(due)
     return status
@@ -2046,12 +2142,43 @@ def api_update_subscription_settings():
         updates["interval_minutes"] = minutes
     if "quality" in payload and str(payload.get("quality") or "").strip():
         updates["quality"] = str(payload.get("quality")).strip()
+    if "personal_sync_enabled" in payload:
+        updates["personal_sync_enabled"] = bool(payload.get("personal_sync_enabled"))
+    if "personal_sync_platform" in payload and str(payload.get("personal_sync_platform") or "").strip():
+        platform = str(payload.get("personal_sync_platform")).strip()
+        if platform != "ximalaya":
+            return json_error("目前仅支持同步喜马拉雅个人中心订阅")
+        updates["personal_sync_platform"] = platform
+    if "personal_sync_interval_hours" in payload:
+        try:
+            hours = int(payload.get("personal_sync_interval_hours") or 0)
+        except Exception:
+            return json_error("personal_sync_interval_hours 必须是整数")
+        if hours < 1:
+            return json_error("个人中心同步间隔至少 1 小时")
+        if hours > 24 * 30:
+            return json_error("个人中心同步间隔过大")
+        updates["personal_sync_interval_hours"] = hours
+        updates["personal_sync_interval_minutes"] = 0
+    if "personal_sync_interval_minutes" in payload:
+        try:
+            minutes = int(payload.get("personal_sync_interval_minutes") or 0)
+        except Exception:
+            return json_error("personal_sync_interval_minutes 必须是整数")
+        if minutes < 1:
+            return json_error("个人中心同步间隔至少 1 分钟")
+        if minutes > 24 * 30 * 60:
+            return json_error("个人中心同步间隔过大")
+        updates["personal_sync_interval_hours"] = 0
+        updates["personal_sync_interval_minutes"] = minutes
     if not updates:
         return json_error("未提供任何可更新的字段")
     subscription_manager.update_settings(**updates)
     # 开启时确保调度线程已启动
     if subscription_manager.settings().get("enabled", True):
         wake_subscription_scheduler(force=bool(payload.get("run_now", True)))
+    elif subscription_manager.settings().get("personal_sync_enabled", False):
+        wake_subscription_scheduler(force=False)
     return json_ok(settings=subscription_manager.settings(), scheduler=subscription_scheduler_status())
 
 
@@ -2067,6 +2194,18 @@ def api_run_subscriptions_now():
         if item.get("id")
     ]
     return json_ok(jobs=jobs, count=len(jobs), scheduler=subscription_scheduler_status())
+
+
+@app.post("/api/subscriptions/personal-sync/run")
+def api_run_personal_sync_now():
+    try:
+        ensure_subscription_scheduler()
+        result = _personal_sync_tick(force=True)
+        return json_ok(result=result, scheduler=subscription_scheduler_status())
+    except RuntimeError as exc:
+        return json_error(str(exc), status=400)
+    except Exception as exc:
+        return json_error(str(exc), status=500)
 
 
 @app.get("/api/subscriptions/scheduler")
@@ -2786,7 +2925,7 @@ def api_personal(platform, feature):
     """获取个人中心数据（复用桌面版 UserDataWorker 逻辑）"""
     try:
         if platform == "ximalaya":
-            items = _load_ximalaya_personal(feature)
+            items = _load_ximalaya_personal(feature, all_pages=(feature == "subscriptions"))
         elif platform == "lrts":
             items = _load_lrts_personal(feature)
         elif platform == "qidian":
@@ -2802,7 +2941,7 @@ def api_personal(platform, feature):
         return json_error(str(e), status=500)
 
 
-def _load_ximalaya_personal(feature):
+def _load_ximalaya_personal(feature, all_pages=False):
     cookie = _get_personal_cookie("ximalaya")
     if not cookie:
         raise RuntimeError("请先在个人中心为喜马拉雅登录或粘贴 Cookie")
@@ -2812,18 +2951,49 @@ def _load_ximalaya_personal(feature):
     endpoints = {
         "history": "https://www.ximalaya.com/revision/track/history/listen?includeChannel=false&includeRadio=false",
         "liked": "https://www.ximalaya.com/revision/my/getLikeTracks",
-        "subscriptions": "https://www.ximalaya.com/revision/album/v1/sub/comprehensive?num=1&size=30&subType=2&category=all",
+        "subscriptions": "https://www.ximalaya.com/revision/album/v1/sub/comprehensive?subType=2&category=all",
         "purchased": "https://www.ximalaya.com/revision/my/getHasBroughtAlbums?pageNum=1&pageSize=30",
     }
     url = endpoints.get(feature)
     if not url:
         return []
+    items = []
+    if feature == "subscriptions":
+        page_size = 100 if all_pages else 50
+        max_pages = 50 if all_pages else 1
+        seen_ids = set()
+        for page in range(1, max_pages + 1):
+            resp = api.session.get(url, params={"num": page, "size": page_size}, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data.get("data", data) if isinstance(data, dict) else {}
+            if not isinstance(content, dict):
+                break
+            page_items = _extract_ximalaya_personal_items(content, feature)
+            new_items = []
+            for item in page_items:
+                item_id = str(item.get("id") or "")
+                if not item_id or item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                new_items.append(item)
+            items.extend(new_items)
+            total = _to_int(content.get("total") or content.get("totalCount") or content.get("count"), 0)
+            if len(page_items) < page_size or (total and len(items) >= total):
+                break
+        return [it for it in items if it.get("id") and it.get("title")]
+
     resp = api.session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
     content = data.get("data", data) if isinstance(data, dict) else {}
     if not isinstance(content, dict):
         return []
+    items = _extract_ximalaya_personal_items(content, feature)
+    return [it for it in items if it.get("id") and it.get("title")]
+
+
+def _extract_ximalaya_personal_items(content, feature=""):
     items = []
     # albumsInfo
     for album in content.get("albumsInfo", []) or []:
@@ -2861,9 +3031,9 @@ def _load_ximalaya_personal(feature):
                 "id": str(record.get("itemId", "")),
                 "title": record.get("itemTitle") or record.get("albumTitle") or record.get("childTitle", ""),
                 "author": _pick_ximalaya_author(record),
-                "cover": record.get("itemCoverUrl") or record.get("itemSquareCoverUrl", ""),
-            }, "喜马拉雅"))
-    return [it for it in items if it.get("id") and it.get("title")]
+            "cover": record.get("itemCoverUrl") or record.get("itemSquareCoverUrl", ""),
+        }, "喜马拉雅"))
+    return items
 
 
 def _pick_ximalaya_author(item):

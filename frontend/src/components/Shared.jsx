@@ -504,29 +504,64 @@ export function SubscriptionsPage({app}) {
   const [enabled, setEnabled] = useState(true);
   const [autoDownload, setAutoDownload] = useState(true);
   const [hours, setHours] = useState(6);
+  const [personalSyncEnabled, setPersonalSyncEnabled] = useState(false);
+  const [personalSyncUnit, setPersonalSyncUnit] = useState('hours');
+  const [personalSyncInterval, setPersonalSyncInterval] = useState(1);
   useEffect(() => {
     setEnabled(subscriptionSettings.enabled !== false);
     setAutoDownload(subscriptionSettings.auto_download_missing !== false);
     setHours(Number(subscriptionSettings.interval_hours || 6));
+    setPersonalSyncEnabled(!!subscriptionSettings.personal_sync_enabled);
+    const syncMinutes = Number(subscriptionSettings.personal_sync_interval_minutes || 0);
+    setPersonalSyncUnit(syncMinutes > 0 ? 'minutes' : 'hours');
+    setPersonalSyncInterval(syncMinutes > 0 ? syncMinutes : Number(subscriptionSettings.personal_sync_interval_hours || 1));
   }, [subscriptionSettings]);
   const cancel = (id) => setModal({content: <ConfirmModal icon="i-trash" title="取消订阅" message="后续不会再自动检测新章节。" okText="取消订阅" danger onClose={closeModal} onOk={() => { closeModal(); actions.cancelSubscription(id); }} />});
   const schedulerRunning = Boolean(subscriptionScheduler.running);
   const schedulerStarted = Boolean(subscriptionScheduler.started);
   const schedulerLastRun = formatCheckTime(subscriptionScheduler.last_run_at, '等待首次轮询');
+  const personalSyncLastRun = formatCheckTime(subscriptionScheduler.personal_sync_last_run_at, '等待首次同步');
   const dueCount = Number(subscriptionScheduler.current_due_count || 0);
+  const saveSettings = () => {
+    const syncValue = Math.max(1, Number(personalSyncInterval) || 1);
+    actions.saveSubscriptionSettings({
+      enabled,
+      auto_download_missing: autoDownload,
+      interval_hours: Number(hours) || 6,
+      personal_sync_enabled: personalSyncEnabled,
+      personal_sync_platform: 'ximalaya',
+      ...(personalSyncUnit === 'minutes'
+        ? {personal_sync_interval_minutes: syncValue}
+        : {personal_sync_interval_hours: syncValue}),
+    });
+  };
   return (
     <>
       <div className="glass glass-pad subscription-controls">
         <label className="check-row"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>启用自动检测</span></label>
         <label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span>发现缺失后自动下载</span></label>
         <label className="check-row interval-row"><span>检测间隔（小时）</span><input className="field-input interval-input" type="number" min="1" max="720" value={hours} onChange={(e) => setHours(e.target.value)} /></label>
-        <button className="btn btn-primary btn-sm" disabled={busy.subscriptionSettings} onClick={() => actions.saveSubscriptionSettings({enabled, auto_download_missing: autoDownload, interval_hours: Number(hours) || 6})}><BusyIcon busy={busy.subscriptionSettings} icon="i-check" />保存</button>
+        <label className="check-row"><input type="checkbox" checked={personalSyncEnabled} onChange={(e) => setPersonalSyncEnabled(e.target.checked)} /><span>同步喜马拉雅个人订阅</span></label>
+        <label className="check-row interval-row">
+          <span>同步间隔</span>
+          <input className="field-input interval-input" type="number" min="1" max="43200" value={personalSyncInterval} onChange={(e) => setPersonalSyncInterval(e.target.value)} />
+          <select className="field-select interval-input" value={personalSyncUnit} onChange={(e) => setPersonalSyncUnit(e.target.value)}>
+            <option value="minutes">分钟</option>
+            <option value="hours">小时</option>
+          </select>
+        </label>
+        <button className="btn btn-primary btn-sm" disabled={busy.subscriptionSettings} onClick={saveSettings}><BusyIcon busy={busy.subscriptionSettings} icon="i-check" />保存</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.runSubscriptions} onClick={actions.runSubscriptionsNow}><BusyIcon busy={busy.runSubscriptions} icon="i-refresh" />立即检测并补全</button>
+        <button className="btn btn-ghost btn-sm" disabled={busy.personalSubscriptionSync} onClick={actions.runPersonalSubscriptionSyncNow}><BusyIcon busy={busy.personalSubscriptionSync} icon="i-refresh" />立即同步个人订阅</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.rebuildIndex} onClick={actions.rebuildSubscriptionIndex}><BusyIcon busy={busy.rebuildIndex} icon="i-folder" />重建本地索引</button>
         <div className="subscription-scheduler">
           <span className={schedulerStarted ? 'ok' : 'muted'}>调度器：{schedulerRunning ? '检测中' : schedulerStarted ? '待命' : '未启动'}</span>
           <span>最近轮询：{schedulerLastRun}</span>
           <span>到期专辑：{dueCount}</span>
+          <span>个人订阅同步：{subscriptionScheduler.personal_sync_running ? '同步中' : personalSyncEnabled ? '已启用' : '未启用'}</span>
+          <span>最近同步：{personalSyncLastRun}</span>
+          <span>上次新增：{Number(subscriptionScheduler.personal_sync_last_added || 0)}</span>
+          {subscriptionScheduler.personal_sync_last_error && <span style={{color: 'var(--danger)'}}>同步错误：{subscriptionScheduler.personal_sync_last_error}</span>}
         </div>
       </div>
       <div className="sub-grid">
