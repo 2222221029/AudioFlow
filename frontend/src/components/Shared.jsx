@@ -475,6 +475,7 @@ export function PersonalPage({app, mobile = false}) {
 function TaskCard({task, actions, busy, onDelete}) {
   const pct = Math.max(0, Math.min(100, task.percent || 0));
   const status = task.status || 'queued';
+  const failedCount = Number(task.failed ?? task.failed_chapters?.length ?? 0) || 0;
   const canPause = status === 'running';
   const canResume = status === 'paused';
   const canStop = ['queued', 'running', 'paused'].includes(status);
@@ -485,7 +486,7 @@ function TaskCard({task, actions, busy, onDelete}) {
     <div className="task-card">
       <div className="task-head"><div className="task-title" title={task.title || task.id}>{task.title || task.id}</div><span className={`task-state state-${status}`}>{taskStatusText(status)}</span></div>
       <div className="progress-bar"><div className="progress-fill" style={{width: `${pct}%`}} /></div>
-      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{task.error ? <span style={{color: 'var(--danger)'}}>{task.error}</span> : null}</div>
+      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{failedCount > 0 ? <span style={{color: 'var(--danger)'}}>失败 {failedCount} 章</span> : null}{task.error ? <span style={{color: 'var(--danger)'}}>{task.error}</span> : null}</div>
       {task.warning ? <div className="task-meta"><span style={{color: 'var(--warning)'}}>{task.warning}</span></div> : null}
       <div className="task-actions">
         {canPause && <button className="btn btn-ghost btn-tiny" disabled={busy[`${busyPrefix}pause`]} onClick={() => actions.controlDownload(task.id, 'pause')}><BusyIcon busy={busy[`${busyPrefix}pause`]} icon="i-pause" />暂停</button>}
