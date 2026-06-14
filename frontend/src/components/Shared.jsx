@@ -301,6 +301,7 @@ export function DownloadsPage({app}) {
         {hasStoppable && <button className="btn btn-danger btn-sm" disabled={busy['batchDownload:stop']} onClick={() => actions.batchControlDownloads('stop')}><BusyIcon busy={busy['batchDownload:stop']} icon="i-close" />全部停止</button>}
         <button className="btn btn-ghost btn-sm" disabled={busy.cleanupDownloads} onClick={() => confirmCleanup(['completed'])}><BusyIcon busy={busy.cleanupDownloads} icon="i-trash" />清理已完成</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.cleanupDownloads} onClick={() => confirmCleanup(['failed', 'partial', 'interrupted', 'stopped'])}><Icon id="i-trash" className="icon icon-sm" />清理失败/中断</button>
+        <button className="btn btn-primary btn-sm" disabled={busy.retryUnfinishedDownloads} onClick={actions.retryUnfinishedDownloads}><BusyIcon busy={busy.retryUnfinishedDownloads} icon="i-refresh" />重试未完成</button>
       </div>
       <div id="downloadList">
         {!filteredDownloads.length
@@ -486,7 +487,7 @@ function TaskCard({task, actions, busy, onDelete}) {
     <div className="task-card">
       <div className="task-head"><div className="task-title" title={task.title || task.id}>{task.title || task.id}</div><span className={`task-state state-${status}`}>{taskStatusText(status)}</span></div>
       <div className="progress-bar"><div className="progress-fill" style={{width: `${pct}%`}} /></div>
-      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{failedCount > 0 ? <span style={{color: 'var(--danger)'}}>失败 {failedCount} 章</span> : null}{task.error ? <span style={{color: 'var(--danger)'}}>{task.error}</span> : null}</div>
+      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{failedCount > 0 ? <span style={{color: 'var(--danger)'}}>失败 {failedCount} 章</span> : null}{task.failure_reason ? <span style={{color: 'var(--warning)'}}>原因：{task.failure_reason}</span> : null}{task.error ? <span style={{color: 'var(--danger)'}}>{task.error}</span> : null}</div>
       {task.warning ? <div className="task-meta"><span style={{color: 'var(--warning)'}}>{task.warning}</span></div> : null}
       <div className="task-actions">
         {canPause && <button className="btn btn-ghost btn-tiny" disabled={busy[`${busyPrefix}pause`]} onClick={() => actions.controlDownload(task.id, 'pause')}><BusyIcon busy={busy[`${busyPrefix}pause`]} icon="i-pause" />暂停</button>}
@@ -517,6 +518,7 @@ export function SubscriptionsPage({app}) {
     setPersonalSyncInterval(syncMinutes > 0 ? syncMinutes : Number(subscriptionSettings.personal_sync_interval_hours || 1));
   }, [subscriptionSettings]);
   const cancel = (id) => setModal({content: <ConfirmModal icon="i-trash" title="取消订阅" message="后续不会再自动检测新章节。" okText="取消订阅" danger onClose={closeModal} onOk={() => { closeModal(); actions.cancelSubscription(id); }} />});
+  const cancelAll = () => setModal({content: <ConfirmModal icon="i-trash" title="批量取消订阅" message="会取消当前列表里的全部订阅，后续不会自动检测。" okText="批量取消" danger onClose={closeModal} onOk={() => { closeModal(); actions.batchSubscriptions('cancel', subscriptions.map((item) => item.id)); }} />});
   const schedulerRunning = Boolean(subscriptionScheduler.running);
   const schedulerStarted = Boolean(subscriptionScheduler.started);
   const schedulerLastRun = formatCheckTime(subscriptionScheduler.last_run_at, '等待首次轮询');
@@ -560,6 +562,9 @@ export function SubscriptionsPage({app}) {
         <button className="btn btn-ghost btn-sm" disabled={busy.runSubscriptions} onClick={actions.runSubscriptionsNow}><BusyIcon busy={busy.runSubscriptions} icon="i-refresh" />立即检测并补全</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.personalSubscriptionSync} onClick={actions.runPersonalSubscriptionSyncNow}><BusyIcon busy={busy.personalSubscriptionSync} icon="i-refresh" />立即同步个人订阅</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.rebuildIndex} onClick={actions.rebuildSubscriptionIndex}><BusyIcon busy={busy.rebuildIndex} icon="i-folder" />重建本地索引</button>
+        <button className="btn btn-ghost btn-sm" disabled={busy['subscriptionBatch:check']} onClick={() => actions.batchSubscriptions('check', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:check']} icon="i-refresh" />批量检测</button>
+        <button className="btn btn-primary btn-sm" disabled={busy['subscriptionBatch:complete']} onClick={() => actions.batchSubscriptions('complete', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:complete']} icon="i-download" />批量补全</button>
+        <button className="btn btn-danger btn-sm" disabled={busy['subscriptionBatch:cancel']} onClick={cancelAll}><BusyIcon busy={busy['subscriptionBatch:cancel']} icon="i-trash" />批量取消</button>
         <div className="subscription-scheduler">
           <span className={schedulerStarted ? 'ok' : 'muted'}>调度器：{schedulerRunning ? '检测中' : schedulerStarted ? '待命' : '未启动'}</span>
           <span>最近轮询：{schedulerLastRun}</span>
@@ -1059,7 +1064,7 @@ function NotificationChannelFields({type, config, onConfig}) {
 }
 
 export function SettingsPage({app}) {
-  const {config, logs, actions, setModal, closeModal, busy, diagnostics} = app;
+  const {config, logs, events, actions, setModal, closeModal, busy, diagnostics} = app;
   const [downloadDir, setDownloadDir] = useState('');
   const [quality, setQuality] = useState('M4A 96K');
   const [downloadThreads, setDownloadThreads] = useState(16);
@@ -1110,9 +1115,14 @@ export function SettingsPage({app}) {
           </select>
         </div>
         <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
+        <div className="field-row"><label className="field-label">下载目录整理</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" disabled={busy.organizeDownloads} onClick={() => actions.organizeDownloadsByPlatform(true)}><BusyIcon busy={busy.organizeDownloads} icon="i-folder" />预览平台目录整理</button><button className="btn btn-primary btn-sm" disabled={busy.organizeDownloads} onClick={() => actions.organizeDownloadsByPlatform(false)}><BusyIcon busy={busy.organizeDownloads} icon="i-check" />执行整理</button></div><div className="field-hint">将旧目录“下载目录/专辑名”移动为“下载目录/平台名/专辑名”，目标已存在时会跳过。</div></div>
         <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
       </div>
       <DiagnosticsPanel config={config} diagnostics={diagnostics} loading={busy.diagnostics} onLoad={actions.loadDiagnostics} />
+      <div className="glass glass-pad settings-log-card">
+        <div className="panel-head"><h4>后台任务记录</h4><div className="panel-actions"><button className="btn btn-ghost btn-tiny" onClick={() => actions.loadEvents()}><Icon id="i-refresh" className="icon icon-sm" />刷新</button><button className="btn btn-danger btn-tiny" onClick={actions.clearEvents}><Icon id="i-trash" className="icon icon-sm" />清空</button></div></div>
+        <div className="event-list">{events.length ? events.map((event) => <div className="event-row" key={event.id}><strong>{event.title || event.kind}</strong><span>{event.detail || ''}</span></div>) : <div className="empty small"><Icon id="i-list" />暂无后台记录</div>}</div>
+      </div>
       <div className="glass glass-pad settings-log-card">
         <div className="panel-head"><h4>最近日志</h4><div className="panel-actions"><button className="btn btn-ghost btn-tiny" onClick={() => actions.loadLogs()}><Icon id="i-refresh" className="icon icon-sm" />刷新</button><button className="btn btn-danger btn-tiny" onClick={confirmClear}><Icon id="i-trash" className="icon icon-sm" />清空</button></div></div>
         <pre className="code log-code">{logs.length ? logs.join('\n') : '切换到系统设置后自动加载。'}</pre>

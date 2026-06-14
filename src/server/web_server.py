@@ -98,6 +98,7 @@ WECOM_SESSION_TTL_SECONDS = int(os.getenv("WECOM_SESSION_TTL_SECONDS", "600") or
 WECOM_SESSION_MAX_ITEMS = int(os.getenv("WECOM_SESSION_MAX_ITEMS", "500") or "500")
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
+BACKGROUND_EVENTS_FILE = log_dir() / "events.jsonl"
 TASK_SAVE_INTERVAL = 1.0
 _last_task_save = 0.0
 auth_manager = AuthManager(config_dir())
@@ -271,16 +272,80 @@ def _json_safe(value):
         return str(value)
 
 
+def append_background_event(kind, title, detail="", payload=None):
+    event = {
+        "id": uuid.uuid4().hex[:12],
+        "kind": str(kind or "event"),
+        "title": str(title or ""),
+        "detail": str(detail or ""),
+        "payload": _json_safe(payload or {}),
+        "created_at": time.time(),
+    }
+    try:
+        BACKGROUND_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with BACKGROUND_EVENTS_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        logging.exception("append background event failed")
+    return event
+
+
+def load_background_events(limit=120):
+    try:
+        limit = max(1, min(500, int(limit or 120)))
+    except (TypeError, ValueError):
+        limit = 120
+    if not BACKGROUND_EVENTS_FILE.exists():
+        return []
+    try:
+        lines = BACKGROUND_EVENTS_FILE.read_text(encoding="utf-8").splitlines()[-limit:]
+        events = []
+        for line in lines:
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                pass
+        return list(reversed(events))
+    except Exception:
+        logging.exception("load background events failed")
+        return []
+
+
+def classify_failure_reason(error="", failed_chapters=None):
+    text = " ".join(
+        [str(error or "")]
+        + [str((chapter or {}).get("_error") or "") for chapter in (failed_chapters or []) if isinstance(chapter, dict)]
+    ).lower()
+    if any(token in text for token in ("cookie", "登录", "登陆", "unauthorized", "401", "403")):
+        return "登录/Cookie 失效"
+    if any(token in text for token in ("vip", "会员", "付费", "权限", "白金", "restricted")):
+        return "会员/付费限制"
+    if any(token in text for token in ("limit", "限流", "频繁", "风控", "apistatus=114", "429")):
+        return "平台限流/风控"
+    if any(token in text for token in ("timeout", "timed out", "超时", "connection", "network", "连接")):
+        return "网络超时/连接失败"
+    if any(token in text for token in ("url", "404", "410", "音频", "链接", "地址")):
+        return "音频地址失效"
+    if any(token in text for token in ("permission", "denied", "no space", "磁盘", "写入", "目录")):
+        return "本地文件/磁盘问题"
+    return "未知原因"
+
+
 def load_tasks():
     if not TASKS_FILE.exists():
         return {}
     try:
         raw = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
         loaded = raw.get("tasks", {}) if isinstance(raw, dict) else {}
+        changed = False
         for task in loaded.values():
             if task.get("status") in ("queued", "running", "paused"):
                 task["status"] = "interrupted"
                 task["error"] = "服务重启后任务已中断，可重试失败章节或重新添加下载。"
+                task["failure_reason"] = "服务重启中断"
+                changed = True
+        if changed:
+            TASKS_FILE.write_text(json.dumps({"tasks": loaded}, ensure_ascii=False, indent=2), encoding="utf-8")
         return loaded if isinstance(loaded, dict) else {}
     except Exception as exc:
         logging.exception("load tasks failed")
@@ -593,7 +658,16 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
             f"平台：{platform}\n缺失：{len(diff.get('missing') or [])} 章",
             {"album": album, "missing_count": len(diff.get("missing") or []), "source": source},
         )
-    return {"diff": diff, "stats": stats, "chapters": chapters, "chapter_count": len(chapters), "queued": bool(queued_task_id), "task_id": queued_task_id}
+    return {
+        "diff": diff,
+        "stats": stats,
+        "chapters": chapters,
+        "chapter_count": len(chapters),
+        "missing_count": len(missing),
+        "queued": bool(queued_task_id),
+        "task_id": queued_task_id,
+        "title": album.get("title") or item.get("title") or sid,
+    }
 
 
 def _subscription_job(job_id, sid, queue_missing):
@@ -602,10 +676,17 @@ def _subscription_job(job_id, sid, queue_missing):
     try:
         result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription")
         message = "已加入下载队列" if result.get("queued") else "检测完成，无需补全" if queue_missing else "检测完成"
+        append_background_event(
+            "subscription",
+            message,
+            f"{result.get('title') or sid} 缺失 {result.get('missing_count') or 0} 章",
+            {"sid": sid, "queue_missing": queue_missing, "result": result},
+        )
         with subscription_job_lock:
             subscription_jobs[job_id].update({"status": "done", "message": message, "result": result, "finished_at": time.time()})
     except Exception as exc:
         logging.exception("subscription job failed")
+        append_background_event("subscription", "订阅检测失败", f"{sid}：{exc}", {"sid": sid, "error": str(exc)})
         with subscription_job_lock:
             subscription_jobs[job_id].update({"status": "failed", "message": str(exc), "error": str(exc), "finished_at": time.time()})
 
@@ -1126,6 +1207,7 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
     current = task_snapshot(task_id)
     status = "stopped" if current.get("status") == "stopping" else ("completed" if failed == 0 else "partial")
     album = current.get("album") or {}
+    failure_reason = classify_failure_reason(current.get("error", ""), failed_chapters) if failed else ""
     if album:
         subscription_manager.mark_download_results(album, success_chapters, failed_chapters)
     task = set_task(
@@ -1135,8 +1217,15 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
         failed=failed,
         success_chapters=success_chapters,
         failed_chapters=failed_chapters,
+        failure_reason=failure_reason,
         percent=100 if status != "stopped" else current.get("percent", 0),
         finished_at=time.time(),
+    )
+    append_background_event(
+        "download",
+        ("下载完成" if status == "completed" else "下载部分完成" if status == "partial" else "下载停止"),
+        f"{task.get('title') or task_id} 成功 {success} 章，失败 {failed} 章" + (f"，原因：{failure_reason}" if failure_reason else ""),
+        {"task_id": task_id, "status": status, "success": success, "failed": failed, "failure_reason": failure_reason},
     )
     if status in ("completed", "partial"):
         scene = "download_completed" if status == "completed" else "download_failed"
@@ -1197,7 +1286,14 @@ def run_download_task(task_id, album, chapters, options):
         )
         worker.run()
     except Exception as exc:
-        task = set_task(task_id, status="failed", error=str(exc), finished_at=time.time())
+        failure_reason = classify_failure_reason(str(exc), [])
+        task = set_task(task_id, status="failed", error=str(exc), failure_reason=failure_reason, finished_at=time.time())
+        append_background_event(
+            "download",
+            "下载失败",
+            f"{task.get('title') or task_id}：{failure_reason}",
+            {"task_id": task_id, "error": str(exc), "failure_reason": failure_reason},
+        )
         notification_manager.notify(
             "download_failed",
             f"下载失败：{task.get('title') or task_id}",
@@ -2006,6 +2102,26 @@ def api_downloads():
     return json_ok(tasks=task_snapshot())
 
 
+@app.post("/api/downloads/retry-unfinished")
+def api_retry_unfinished_downloads():
+    created = []
+    for task in task_snapshot():
+        status = task.get("status")
+        if status not in ("interrupted", "failed", "partial", "stopped"):
+            continue
+        chapters = task.get("failed_chapters") or []
+        if not chapters and status in ("interrupted", "failed", "stopped"):
+            chapters = task.get("chapters") or []
+        if not chapters:
+            continue
+        album = task.get("album") or {"title": task.get("title"), "platform": (task.get("task_info") or {}).get("platform")}
+        options = task.get("options") or {}
+        new_task_id = f"retry-{uuid.uuid4().hex[:12]}"
+        created.append(start_download_task(new_task_id, album, chapters, options, source=f"retry-unfinished:{task.get('id')}"))
+    append_background_event("download", "重试未完成任务", f"创建 {len(created)} 个重试任务", {"count": len(created)})
+    return json_ok(count=len(created), tasks=created)
+
+
 @app.get("/api/downloads/<task_id>")
 def api_download_detail(task_id):
     task = task_snapshot(task_id)
@@ -2197,6 +2313,42 @@ def api_rebuild_subscription_index():
     return json_ok(index={"count": index.get("count", 0), "updated_at": index.get("updated_at"), "exists": index.get("exists")})
 
 
+@app.post("/api/downloads/organize-by-platform")
+def api_organize_downloads_by_platform():
+    payload = request.get_json(silent=True) or {}
+    dry_run = bool(payload.get("dry_run", False))
+    root = Path(active_download_dir())
+    moved = []
+    skipped = []
+    if not root.exists():
+        return json_error("下载目录不存在", 404)
+    for item in subscription_manager.all_subscriptions():
+        title = item.get("title") or (item.get("album") or {}).get("title")
+        platform = item.get("platform") or (item.get("album") or {}).get("platform")
+        if not title or not platform:
+            continue
+        source = root / _sanitize_download_folder_name(title)
+        target = root / _sanitize_download_folder_name(platform) / _sanitize_download_folder_name(title)
+        if not source.exists() or not source.is_dir():
+            continue
+        if target.exists():
+            skipped.append({"title": title, "platform": platform, "reason": "目标目录已存在", "source": str(source), "target": str(target)})
+            continue
+        moved.append({"title": title, "platform": platform, "source": str(source), "target": str(target)})
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(target))
+    if not dry_run:
+        subscription_manager.build_audio_index(active_download_dir(), force=True)
+    append_background_event(
+        "maintenance",
+        "下载目录整理",
+        f"{'预览' if dry_run else '完成'}：移动 {len(moved)} 个，跳过 {len(skipped)} 个",
+        {"dry_run": dry_run, "moved": moved, "skipped": skipped},
+    )
+    return json_ok(dry_run=dry_run, moved=moved, skipped=skipped, moved_count=len(moved), skipped_count=len(skipped))
+
+
 @app.get("/api/subscriptions/settings")
 def api_get_subscription_settings():
     """读取订阅自动检测设置。"""
@@ -2293,6 +2445,33 @@ def api_run_subscriptions_now():
         if item.get("id")
     ]
     return json_ok(jobs=jobs, count=len(jobs), scheduler=subscription_scheduler_status())
+
+
+@app.post("/api/subscriptions/batch")
+def api_subscriptions_batch():
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action") or "").strip()
+    ids = payload.get("ids")
+    if not ids:
+        ids = [item.get("id") for item in subscription_manager.active_subscriptions()]
+    ids = [str(item) for item in ids or [] if item]
+    if action not in {"check", "complete", "cancel", "enable"}:
+        return json_error("不支持的批量操作")
+    jobs = []
+    changed = 0
+    if action in {"check", "complete"}:
+        for sid in ids:
+            if subscription_manager.get(sid):
+                jobs.append(start_subscription_job(sid, queue_missing=(action == "complete")))
+        append_background_event("subscription", "批量订阅操作", f"{action} {len(jobs)} 个订阅", {"action": action, "count": len(jobs)})
+        return json_ok(action=action, jobs=jobs, count=len(jobs), scheduler=subscription_scheduler_status())
+    for sid in ids:
+        if action == "cancel":
+            changed += 1 if subscription_manager.cancel(sid) else 0
+        elif action == "enable":
+            changed += 1 if subscription_manager.set_status(sid, "active") else 0
+    append_background_event("subscription", "批量订阅操作", f"{action} {changed} 个订阅", {"action": action, "count": changed})
+    return json_ok(action=action, count=changed, scheduler=subscription_scheduler_status())
 
 
 @app.post("/api/subscriptions/personal-sync/run")
@@ -2527,6 +2706,21 @@ def api_logs():
     except ValueError as exc:
         return json_error(str(exc), 400)
     return json_ok(file=name, lines=tail_text_file(path, request.args.get("limit", 300)))
+
+
+@app.get("/api/events")
+def api_events():
+    return json_ok(events=load_background_events(request.args.get("limit", 120)))
+
+
+@app.delete("/api/events")
+def api_clear_events():
+    try:
+        if BACKGROUND_EVENTS_FILE.exists():
+            BACKGROUND_EVENTS_FILE.unlink()
+        return json_ok(cleared=True)
+    except Exception as exc:
+        return json_error(str(exc), 500)
 
 
 @app.delete("/api/logs")

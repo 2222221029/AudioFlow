@@ -826,6 +826,11 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 .settings-card,.theme-picker-wrap,.diagnostics-card,.settings-log-card,.notification-card{max-width:920px;margin-top:14px}
 .settings-card{margin-top:0}
 .settings-account-actions{display:flex;gap:10px;flex-wrap:wrap}
+.nav-badge{margin-left:auto;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--danger);color:#fff;font-size:10px;line-height:18px;font-style:normal;font-weight:800;text-align:center}
+.event-list{display:flex;flex-direction:column;gap:8px}
+.event-row{display:flex;flex-direction:column;gap:3px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi)}
+.event-row strong{font-size:13px;color:var(--text)}
+.event-row span{font-size:12px;color:var(--text-mute);line-height:1.45}
 .notification-scenes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin:12px 0}
 .notification-list{display:flex;flex-direction:column;gap:12px;margin-top:12px}
 .notification-service{border:1px solid var(--border);border-radius:12px;background:var(--panel-hi);padding:14px}

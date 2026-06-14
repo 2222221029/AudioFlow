@@ -576,6 +576,15 @@ class SubscriptionManager:
         self.save()
         return True
 
+    def set_status(self, subscription_id, status):
+        item = self.data.setdefault("subscriptions", {}).get(subscription_id)
+        if not item:
+            return False
+        item["status"] = status or "active"
+        item["updated_at"] = utc_now_iso()
+        self.save()
+        return True
+
     def active_subscriptions(self):
         return [
             item for item in self.data.get("subscriptions", {}).values()

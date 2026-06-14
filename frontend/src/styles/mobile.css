@@ -609,6 +609,10 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .settings-card{margin-top:0}
 .settings-account-actions{display:flex;gap:8px;flex-wrap:wrap}
 .settings-account-actions .btn{flex:1;min-width:120px}
+.event-list{display:flex;flex-direction:column;gap:8px}
+.event-row{display:flex;flex-direction:column;gap:3px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi)}
+.event-row strong{font-size:13px;color:var(--text)}
+.event-row span{font-size:12px;color:var(--text-mute);line-height:1.45}
 .notification-scenes,.notification-list{display:flex;flex-direction:column;gap:10px;margin-top:10px}
 .notification-service{border:1px solid var(--border);border-radius:12px;background:var(--panel-hi);padding:12px}
 .notification-service-head{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
@@ -703,6 +707,8 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .history-chip{background:var(--panel-hi);border:1px solid var(--border);border-radius:var(--radius-pill);font-size:12px;padding:4px 12px;color:var(--text-mute);cursor:pointer;white-space:nowrap}
 .history-chip:active{background:var(--panel-2);color:var(--primary)}
 .history-clear{font-size:11px;color:var(--text-faint);margin-left:auto;padding:4px 8px;cursor:pointer}
+.tab-icon-wrap{position:relative;display:inline-flex}
+.tab-badge{position:absolute;right:-10px;top:-7px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--danger);color:#fff;font-size:10px;line-height:16px;font-style:normal;font-weight:800}
 
 @media (orientation:landscape){
   :root{--tab-h:56px;--top-h:50px}

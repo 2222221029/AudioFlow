@@ -43,6 +43,7 @@ export default function DesktopPage() {
     if (id === 'settings') {
       actions.loadConfig();
       actions.loadLogs();
+      actions.loadEvents();
     }
   };
 
@@ -60,12 +61,20 @@ export default function DesktopPage() {
             <div className="brand-text"><div className="brand-title">AudioFlow</div><div className="brand-sub">多平台 · Web 版</div></div>
           </div>
           <nav className="nav">
-            {NAV.map(([id, icon, label]) => (
-              <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => switchPage(id)}>
-                <Icon id={icon} />
-                <span>{label}</span>
-              </button>
-            ))}
+            {NAV.map(([id, icon, label]) => {
+              const badge = id === 'downloads'
+                ? (metrics.failedDownloads + metrics.interruptedDownloads || metrics.activeDownloads)
+                : id === 'subscriptions'
+                  ? metrics.subscriptionMissing
+                  : 0;
+              return (
+                <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => switchPage(id)}>
+                  <Icon id={icon} />
+                  <span>{label}</span>
+                  {badge > 0 && <em className="nav-badge">{badge > 99 ? '99+' : badge}</em>}
+                </button>
+              );
+            })}
           </nav>
           <div className="nav-foot">
             <div><b>状态</b> <span className={`status-text-${statusClass}`}>{statusLabel} v{config.version || '-'}</span></div>

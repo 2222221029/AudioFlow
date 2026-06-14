@@ -221,7 +221,7 @@ function RoutedContent({app, installable, switchView, searchAndShowResults}) {
 export default function MobilePage() {
   const app = useAudioFlowApp();
   const [installable, setInstallable] = useState(false);
-  const {mobileView, setMobileView, actions} = app;
+  const {mobileView, setMobileView, actions, metrics} = app;
   useEffect(() => setupInstallPrompt(setInstallable), []);
 
   const activeTab = useMemo(() => {
@@ -239,6 +239,7 @@ export default function MobilePage() {
     if (next === 'settings') {
       actions.loadConfig();
       actions.loadLogs(100);
+      actions.loadEvents();
     }
   };
 
@@ -267,12 +268,19 @@ export default function MobilePage() {
       )}
 
       <nav className="tabbar native-tabbar">
-        {TABS.map(([id, icon, label]) => (
-          <button key={id} className={`tab-item ${activeTab === id ? 'active' : ''}`} onClick={() => switchView(id)}>
-            <Icon id={icon} />
-            <span>{label}</span>
-          </button>
-        ))}
+        {TABS.map(([id, icon, label]) => {
+          const badge = id === 'downloads'
+            ? (metrics.failedDownloads + metrics.interruptedDownloads || metrics.activeDownloads)
+            : id === 'subscriptions'
+              ? metrics.subscriptionMissing
+              : 0;
+          return (
+            <button key={id} className={`tab-item ${activeTab === id ? 'active' : ''}`} onClick={() => switchView(id)}>
+              <span className="tab-icon-wrap"><Icon id={icon} />{badge > 0 && <em className="tab-badge">{badge > 99 ? '99+' : badge}</em>}</span>
+              <span>{label}</span>
+            </button>
+          );
+        })}
       </nav>
 
       <MiniPlayer app={app} mobile />

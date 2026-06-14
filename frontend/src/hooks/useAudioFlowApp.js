@@ -144,6 +144,7 @@ export function useAudioFlowApp() {
   const [cookies, setCookies] = useState({});
   const [config, setConfig] = useState({});
   const [logs, setLogs] = useState([]);
+  const [events, setEvents] = useState([]);
   const [status, setStatus] = useState('就绪');
   const [busy, setBusy] = useState({});
   const [diagnostics, setDiagnostics] = useState(null);
@@ -218,6 +219,8 @@ export function useAudioFlowApp() {
   const activeDownloads = downloads.filter((task) => ['running', 'queued'].includes(task.status)).length;
   const completedDownloads = downloads.filter((task) => task.status === 'completed').length;
   const failedDownloads = downloads.filter((task) => ['failed', 'partial'].includes(task.status)).length;
+  const interruptedDownloads = downloads.filter((task) => ['interrupted', 'stopped'].includes(task.status)).length;
+  const subscriptionMissing = subscriptions.reduce((sum, item) => sum + Number((item.stats || {}).missing || item.last_diff?.missing_count || 0), 0);
 
   const loadConfig = useCallback(async () => {
     const data = await api('/api/config');
@@ -242,6 +245,12 @@ export function useAudioFlowApp() {
   const loadLogs = useCallback(async (limit = 160) => {
     const data = await api('/api/logs?limit=' + limit);
     setLogs(data.lines || []);
+  }, []);
+
+  const loadEvents = useCallback(async (limit = 120) => {
+    const data = await api('/api/events?limit=' + limit);
+    setEvents(data.events || []);
+    return data.events || [];
   }, []);
 
   const loadSubscriptionSettings = useCallback(async () => {
@@ -537,6 +546,15 @@ export function useAudioFlowApp() {
     }).catch((error) => showToast(error.message, 'err'));
   }, [loadDownloads, runBusy, showToast]);
 
+  const retryUnfinishedDownloads = useCallback(async () => {
+    await runBusy('retryUnfinishedDownloads', async () => {
+      const data = await api('/api/downloads/retry-unfinished', {method: 'POST'});
+      showToast('已创建重试任务 ' + (data.count || 0) + ' 个', 'ok');
+      await loadDownloads();
+      loadEvents().catch(() => {});
+    }).catch((error) => showToast('重试失败：' + error.message, 'err'));
+  }, [loadDownloads, loadEvents, runBusy, showToast]);
+
   const saveSubscriptionSettings = useCallback(async (settings) => {
     await runBusy('subscriptionSettings', async () => {
       await api('/api/subscriptions/settings', {method: 'POST', body: {...settings, run_now: true}});
@@ -604,6 +622,20 @@ export function useAudioFlowApp() {
     }
   }, [loadSubscriptions, showToast]);
 
+  const batchSubscriptions = useCallback(async (action, ids = []) => {
+    await runBusy('subscriptionBatch:' + action, async () => {
+      const data = await api('/api/subscriptions/batch', {method: 'POST', body: {action, ids}});
+      if (data.jobs) {
+        const nextJobs = {};
+        for (const job of data.jobs || []) nextJobs[job.id] = job;
+        setSubscriptionJobs((prev) => ({...prev, ...nextJobs}));
+      }
+      showToast('批量操作完成：' + (data.count || 0), 'ok');
+      await loadSubscriptions();
+      loadEvents().catch(() => {});
+    }).catch((error) => showToast('批量操作失败：' + error.message, 'err'));
+  }, [loadEvents, loadSubscriptions, runBusy, showToast]);
+
   const saveCookie = useCallback(async (platformKey, cookie) => {
     if (!cookie || !cookie.trim()) {
       showToast('Cookie 不能为空', 'err');
@@ -667,6 +699,26 @@ export function useAudioFlowApp() {
     }
   }, [loadLogs, showToast]);
 
+  const clearEvents = useCallback(async () => {
+    try {
+      await api('/api/events', {method: 'DELETE'});
+      setEvents([]);
+      showToast('后台记录已清空', 'ok');
+    } catch (error) {
+      showToast('清空失败：' + error.message, 'err');
+    }
+  }, [showToast]);
+
+  const organizeDownloadsByPlatform = useCallback(async (dryRun = false) => {
+    await runBusy('organizeDownloads', async () => {
+      const data = await api('/api/downloads/organize-by-platform', {method: 'POST', body: {dry_run: dryRun}});
+      showToast((dryRun ? '整理预览：' : '整理完成：') + `移动 ${data.moved_count || 0}，跳过 ${data.skipped_count || 0}`, 'ok');
+      await loadSubscriptions({refreshLocal: true}).catch(() => {});
+      loadEvents().catch(() => {});
+      return data;
+    }).catch((error) => showToast('整理失败：' + error.message, 'err'));
+  }, [loadEvents, loadSubscriptions, runBusy, showToast]);
+
   const loadDiagnostics = useCallback(async () => {
     await runBusy('diagnostics', async () => {
       const data = await api('/api/diagnostics');
@@ -724,7 +776,8 @@ export function useAudioFlowApp() {
     loadNotifications().catch(() => {});
     loadSubscriptions().catch(() => {});
     loadDownloads().catch(() => {});
-  }, [loadConfig, loadCookies, loadDownloads, loadNotifications, loadSubscriptions]);
+    loadEvents().catch(() => {});
+  }, [loadConfig, loadCookies, loadDownloads, loadEvents, loadNotifications, loadSubscriptions]);
 
   useEffect(() => {
     requestNotificationPermission();
@@ -851,6 +904,7 @@ export function useAudioFlowApp() {
     cookies,
     config,
     logs,
+    events,
     busy,
     diagnostics,
     status,
@@ -866,7 +920,7 @@ export function useAudioFlowApp() {
     setPlayer,
     audioRef,
     searchHistory,
-    metrics: {activeDownloads, completedDownloads, failedDownloads},
+    metrics: {activeDownloads, completedDownloads, failedDownloads, interruptedDownloads, subscriptionMissing},
     actions: {
       showToast,
       doSearch,
@@ -892,6 +946,7 @@ export function useAudioFlowApp() {
       batchControlDownloads,
       deleteDownload,
       cleanupDownloads,
+      retryUnfinishedDownloads,
       loadDownloads,
       loadSubscriptions,
       loadSubscriptionSettings,
@@ -902,6 +957,7 @@ export function useAudioFlowApp() {
       rebuildSubscriptionIndex,
       checkSubscription,
       cancelSubscription,
+      batchSubscriptions,
       loadCookies,
       saveCookie,
       deleteCookie,
@@ -909,6 +965,9 @@ export function useAudioFlowApp() {
       saveSettings,
       loadLogs,
       clearLogs,
+      loadEvents,
+      clearEvents,
+      organizeDownloadsByPlatform,
       loadDiagnostics,
       loadNotifications,
       saveNotifications,
