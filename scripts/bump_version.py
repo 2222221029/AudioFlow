@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION"
 FRONTEND_PACKAGE = ROOT / "frontend" / "package.json"
+FRONTEND_PACKAGE_LOCK = ROOT / "frontend" / "package-lock.json"
 REQUIREMENTS = ROOT / "requirements.txt"
 
 
@@ -30,6 +31,14 @@ def sync_version(value):
     package = json.loads(FRONTEND_PACKAGE.read_text(encoding="utf-8"))
     package["version"] = value
     FRONTEND_PACKAGE.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    if FRONTEND_PACKAGE_LOCK.exists():
+        package_lock = json.loads(FRONTEND_PACKAGE_LOCK.read_text(encoding="utf-8"))
+        package_lock["version"] = value
+        root_package = (package_lock.get("packages") or {}).get("")
+        if isinstance(root_package, dict):
+            root_package["version"] = value
+        FRONTEND_PACKAGE_LOCK.write_text(json.dumps(package_lock, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     text = REQUIREMENTS.read_text(encoding="utf-8")
     text = re.sub(r"^# AudioFlow v[0-9.]+ 依赖", f"# AudioFlow v{value} 依赖", text, count=1, flags=re.M)
