@@ -15,7 +15,7 @@ if sys.platform == 'win32':
     try:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    except:
+    except Exception:
         pass
 
 
@@ -35,14 +35,14 @@ class Logger:
         try:
             sys.__stdout__.write(line)
             sys.__stdout__.flush()
-        except:
+        except Exception:
             pass
         # 写文件
         try:
             self._ensure_file()
             self._file.write(line)
             self._file.flush()
-        except:
+        except Exception:
             pass
 
     def info(self, msg):

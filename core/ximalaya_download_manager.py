@@ -139,7 +139,7 @@ class XimalayaDownloadManager:
                                 else:
                                     print(f"❌ API返回错误: {error_data}")
                                     return False
-                            except:
+                            except Exception:
                                 pass
                     except StopIteration:
                         first_chunk = b''
@@ -354,7 +354,7 @@ class XimalayaDownloadManager:
                     print(f"   📋 错误详情: ret={error_ret}, msg={error_msg}")
                     
                     return False
-                except:
+                except Exception:
                     print(f"   ❌ 无法解析错误响应")
                     return False
             
@@ -424,7 +424,7 @@ class XimalayaDownloadManager:
                 # 去除PKCS7填充
                 try:
                     decrypted_data = unpad(decrypted_data, AES.block_size)
-                except:
+                except Exception:
                     # 如果PKCS7解填充失败，尝试手动去除填充
                     if len(decrypted_data) > 0:
                         padding_length = decrypted_data[-1]
@@ -760,7 +760,7 @@ class XimalayaDownloadManager:
                             print(f"   ⚠️ 警告: 文件大小 {size_mb:.2f}MB 可能不是高质量音频")
                         else:
                             print(f"   ✅ 文件大小正常，应该是高质量音频")
-                    except:
+                    except Exception:
                         print(f"✅ M4A下载成功 ({quality})")
                     return True
         

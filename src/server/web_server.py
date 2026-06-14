@@ -94,6 +94,8 @@ SUBSCRIPTION_JOB_TTL_SECONDS = int(os.getenv("SUBSCRIPTION_JOB_TTL_SECONDS", "36
 SUBSCRIPTION_JOB_MAX_ITEMS = int(os.getenv("SUBSCRIPTION_JOB_MAX_ITEMS", "500") or "500")
 wecom_session_lock = threading.Lock()
 wecom_sessions = {}
+WECOM_SESSION_TTL_SECONDS = int(os.getenv("WECOM_SESSION_TTL_SECONDS", "600") or "600")
+WECOM_SESSION_MAX_ITEMS = int(os.getenv("WECOM_SESSION_MAX_ITEMS", "500") or "500")
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
 TASK_SAVE_INTERVAL = 1.0
@@ -1365,12 +1367,30 @@ def _wecom_session_key(service_id, user_id):
     return f"{service_id}:{user_id or 'unknown'}"
 
 
+def cleanup_wecom_sessions(now=None):
+    now = time.time() if now is None else float(now)
+    for key, session in list(wecom_sessions.items()):
+        updated_at = float(session.get("updated_at") or 0)
+        if updated_at and now - updated_at > WECOM_SESSION_TTL_SECONDS:
+            wecom_sessions.pop(key, None)
+    if len(wecom_sessions) <= WECOM_SESSION_MAX_ITEMS:
+        return
+    ordered = sorted(
+        wecom_sessions.items(),
+        key=lambda item: float(item[1].get("updated_at") or 0),
+    )
+    overflow = len(wecom_sessions) - WECOM_SESSION_MAX_ITEMS
+    for key, _session in ordered[:overflow]:
+        wecom_sessions.pop(key, None)
+
+
 def _wecom_get_cached_album(service_id, user_id, index_text):
     try:
         index = int(str(index_text).strip())
     except (TypeError, ValueError):
         raise ValueError("请输入正确序号，例如：订阅 1")
     with wecom_session_lock:
+        cleanup_wecom_sessions()
         session = wecom_sessions.get(_wecom_session_key(service_id, user_id)) or {}
     results = session.get("results") or []
     if not results:
@@ -1420,6 +1440,7 @@ def _wecom_handle_text_command(service_id, user_id, text):
         keyword = match.group(2).strip()
         results = [normalize_album(item) for item in search_manager.search_books(keyword, "all")][:8]
         with wecom_session_lock:
+            cleanup_wecom_sessions()
             wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
         if not results:
             return f"没有搜索到：{keyword}"

@@ -370,8 +370,6 @@ class CookieManager:
         else:
             self.download_dir = str(download_dir())
             self.download_dir_custom = False
-            # 设置下载目录后自动保存
-            self.save()
     
         self.save()
 
@@ -384,7 +382,7 @@ class CookieManager:
                 # 允许高并发下载，实际上限由设置页和下载器共同保护。
                 return max(1, min(64, thread_count))
             return 16
-        except:
+        except Exception:
             return 16
             
     # 添加主题设置相关方法

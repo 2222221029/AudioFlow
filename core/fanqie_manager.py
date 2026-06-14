@@ -111,7 +111,7 @@ def get_ttwid():
         cookies = resp.cookies
         ttwid = cookies.get("ttwid", "1%7Cdefault_ttwid%7C")
         return ttwid
-    except:
+    except Exception:
         return "1%7Cdefault_ttwid%7C"  # 备用
 
 
@@ -1009,7 +1009,7 @@ class FanqieManager:
                                     # 如果UTF-8失败，尝试其他编码
                                     try:
                                         json_str = response_data.decode('gbk')
-                                    except:
+                                    except Exception:
                                         json_str = response_data.decode('latin-1', errors='ignore')
                                 data = json.loads(json_str)
                             else:

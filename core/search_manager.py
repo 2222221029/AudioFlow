@@ -640,7 +640,7 @@ class SearchManager:
             try:
                 data = response.json()
                 print(f"📊 API响应: {data}")
-            except:
+            except Exception:
                 print(f"📊 API响应（非JSON）: {response.text[:200]}")
                 return [], {}
             

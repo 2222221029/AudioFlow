@@ -1,6 +1,6 @@
 {
   "name": "audioflow-frontend",
-  "version": "0.09",
+  "version": "0.10",
   "private": true,
   "type": "module",
   "scripts": {

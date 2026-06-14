@@ -1,13 +1,11 @@
-# AudioFlow v0.09 依赖
+# AudioFlow v0.10 依赖
 # Python 3.12+ (必须)
 # 安装: pip install -r requirements.txt
 
 # HTTP & 网络
 requests>=2.31.0
 httpx>=0.27.0
-aiohttp>=3.9.0
 urllib3>=2.1.0
-websocket-client>=1.6.0
 
 # 加密
 cryptography>=41.0.0
