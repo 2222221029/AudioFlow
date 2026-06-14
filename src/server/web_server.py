@@ -2959,7 +2959,10 @@ def _load_ximalaya_personal(feature, all_pages=False):
         return []
     items = []
     if feature == "subscriptions":
-        page_size = 100 if all_pages else 50
+        # Ximalaya currently caps this endpoint around 30 records per page.
+        # Requesting a larger size can still return 30, so use the cap as the
+        # page size and keep paging until an empty/repeated/short page.
+        page_size = 30
         max_pages = 50 if all_pages else 1
         seen_ids = set()
         for page in range(1, max_pages + 1):
@@ -2979,7 +2982,7 @@ def _load_ximalaya_personal(feature, all_pages=False):
                 new_items.append(item)
             items.extend(new_items)
             total = _to_int(content.get("total") or content.get("totalCount") or content.get("count"), 0)
-            if len(page_items) < page_size or (total and len(items) >= total):
+            if not page_items or not new_items or len(page_items) < page_size or (total and len(items) >= total):
                 break
         return [it for it in items if it.get("id") and it.get("title")]
 

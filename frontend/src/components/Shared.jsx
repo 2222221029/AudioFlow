@@ -538,18 +538,24 @@ export function SubscriptionsPage({app}) {
   return (
     <>
       <div className="glass glass-pad subscription-controls">
-        <label className="check-row"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>启用自动检测</span></label>
-        <label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span>发现缺失后自动下载</span></label>
-        <label className="check-row interval-row"><span>检测间隔（小时）</span><input className="field-input interval-input" type="number" min="1" max="720" value={hours} onChange={(e) => setHours(e.target.value)} /></label>
-        <label className="check-row"><input type="checkbox" checked={personalSyncEnabled} onChange={(e) => setPersonalSyncEnabled(e.target.checked)} /><span>同步喜马拉雅个人订阅</span></label>
-        <label className="check-row interval-row">
-          <span>同步间隔</span>
-          <input className="field-input interval-input" type="number" min="1" max="43200" value={personalSyncInterval} onChange={(e) => setPersonalSyncInterval(e.target.value)} />
-          <select className="field-select interval-input" value={personalSyncUnit} onChange={(e) => setPersonalSyncUnit(e.target.value)}>
-            <option value="minutes">分钟</option>
-            <option value="hours">小时</option>
-          </select>
-        </label>
+        <div className="subscription-control-group">
+          <span className="control-group-title">订阅检测</span>
+          <label className="check-row"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>启用自动检测</span></label>
+          <label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span>发现缺失后自动下载</span></label>
+          <label className="check-row interval-row"><span>检测间隔（小时）</span><input className="field-input interval-input" type="number" min="1" max="720" value={hours} onChange={(e) => setHours(e.target.value)} /></label>
+        </div>
+        <div className="subscription-control-group">
+          <span className="control-group-title">个人订阅同步</span>
+          <label className="check-row"><input type="checkbox" checked={personalSyncEnabled} onChange={(e) => setPersonalSyncEnabled(e.target.checked)} /><span>同步喜马拉雅个人订阅</span></label>
+          <label className="check-row interval-row">
+            <span>同步频率</span>
+            <input className="field-input interval-input" type="number" min="1" max="43200" value={personalSyncInterval} onChange={(e) => setPersonalSyncInterval(e.target.value)} />
+            <select className="field-select interval-input" value={personalSyncUnit} onChange={(e) => setPersonalSyncUnit(e.target.value)}>
+              <option value="minutes">分钟</option>
+              <option value="hours">小时</option>
+            </select>
+          </label>
+        </div>
         <button className="btn btn-primary btn-sm" disabled={busy.subscriptionSettings} onClick={saveSettings}><BusyIcon busy={busy.subscriptionSettings} icon="i-check" />保存</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.runSubscriptions} onClick={actions.runSubscriptionsNow}><BusyIcon busy={busy.runSubscriptions} icon="i-refresh" />立即检测并补全</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.personalSubscriptionSync} onClick={actions.runPersonalSubscriptionSyncNow}><BusyIcon busy={busy.personalSubscriptionSync} icon="i-refresh" />立即同步个人订阅</button>
