@@ -3919,6 +3919,156 @@ def meta_events():
                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
+# ============ FILE MANAGER API ============
+
+import core.file_manager as _fm
+
+@app.route('/api/file-manager/config', methods=['GET'])
+def fm_get_config():
+    if not current_user(): return json_error("未登录", 401)
+    cfg = _fm.load_fm_config()
+    masked = dict(cfg)
+    key = masked.get('ai_api_key', '')
+    masked['ai_api_key_masked'] = (key[:4] + '****' + key[-4:]) if len(key) > 8 else ('****' if key else '')
+    masked.pop('ai_api_key', None)
+    return json_ok(config=masked)
+
+@app.route('/api/file-manager/config', methods=['POST'])
+def fm_save_config():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    cfg = _fm.load_fm_config()
+    for k in ('ai_enabled', 'ai_base_url', 'ai_model', 'custom_ad_rules'):
+        if k in data: cfg[k] = data[k]
+    if 'ai_api_key' in data and data['ai_api_key'] and '****' not in data['ai_api_key']:
+        cfg['ai_api_key'] = data['ai_api_key']
+    return json_ok(config=_fm.save_fm_config(cfg))
+
+@app.route('/api/file-manager/scan', methods=['GET'])
+def fm_scan():
+    if not current_user(): return json_error("未登录", 401)
+    root = request.args.get('root') or None
+    try:
+        return json_ok(**_fm.scan_directory(root))
+    except Exception as e:
+        return json_error(str(e), 500)
+
+@app.route('/api/file-manager/books', methods=['GET'])
+def fm_books():
+    if not current_user(): return json_error("未登录", 401)
+    root = request.args.get('root') or None
+    try:
+        result = _fm.scan_directory(root)
+        return json_ok(books=result['books'], root=result['root'])
+    except Exception as e:
+        return json_error(str(e), 500)
+
+@app.route('/api/file-manager/ai-analyze', methods=['POST'])
+def fm_ai_analyze():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    file_names = data.get('file_names', [])
+    if not file_names:
+        return json_error("请提供文件名列表", 400)
+    cfg = _fm.load_fm_config()
+    try:
+        result = _fm.ai_analyze(file_names, cfg)
+        return json_ok(result=result)
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(str(e), 500)
+
+@app.route('/api/file-manager/rename-preview', methods=['POST'])
+def fm_rename_preview():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    folder_path = data.get('folder_path', '')
+    template = data.get('template', '')
+    book_meta = data.get('book_meta', {})
+    if not folder_path or not template:
+        return json_error("缺少参数", 400)
+    try:
+        previews = _fm.preview_rename(folder_path, template, book_meta)
+        return json_ok(previews=previews)
+    except Exception as e:
+        return json_error(str(e), 500)
+
+@app.route('/api/file-manager/rename-apply', methods=['POST'])
+def fm_rename_apply():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    previews = data.get('previews', [])
+    note = data.get('note', '')
+    if not previews:
+        return json_error("无预览数据", 400)
+    try:
+        result = _fm.apply_rename(previews, note)
+        return json_ok(**result)
+    except Exception as e:
+        return json_error(str(e), 500)
+
+@app.route('/api/file-manager/rollback', methods=['POST'])
+def fm_rollback():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    history_id = data.get('history_id', '')
+    if not history_id:
+        return json_error("缺少 history_id", 400)
+    try:
+        result = _fm.rollback(history_id)
+        return json_ok(**result)
+    except Exception as e:
+        return json_error(str(e), 500)
+
+@app.route('/api/file-manager/history', methods=['GET'])
+def fm_history():
+    if not current_user(): return json_error("未登录", 401)
+    return json_ok(history=_fm.load_history())
+
+@app.route('/api/file-manager/templates', methods=['GET'])
+def fm_get_templates():
+    if not current_user(): return json_error("未登录", 401)
+    return json_ok(templates=_fm.load_templates())
+
+@app.route('/api/file-manager/templates', methods=['POST'])
+def fm_save_templates():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    templates = data.get('templates', [])
+    _fm.save_templates(templates)
+    return json_ok(templates=_fm.load_templates())
+
+@app.route('/api/file-manager/clean-preview', methods=['POST'])
+def fm_clean_preview():
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    names = data.get('names', [])
+    cfg = _fm.load_fm_config()
+    results = [{'original': n, 'cleaned': _fm.clean_filename(n, cfg.get('custom_ad_rules', []))} for n in names]
+    return json_ok(results=results)
+
+@app.route('/api/file-manager/scrape', methods=['POST'])
+def fm_scrape():
+    """对接现有刮削系统"""
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    api_source = data.get('api_source', '')
+    api_id = data.get('api_id', '')
+    link_url = data.get('link_url', '')
+    link_platform = data.get('link_platform', '起点听书')
+    try:
+        if link_url:
+            result = meta_provider.fetch_by_link(link_platform, link_url)
+        elif api_source and api_id:
+            result = meta_provider.fetch_by_id(api_source, api_id)
+        else:
+            return json_error("请提供 api_source+api_id 或 link_url", 400)
+        return json_ok(metadata=result)
+    except Exception as e:
+        return json_error(str(e), 500)
+
+
 def main():
     """启动 Web 服务器入口。"""
     import os

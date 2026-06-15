@@ -21,6 +21,7 @@ import {
   Toast,
 } from '../components/Shared.jsx';
 import {MetaScraperPage} from '../components/MetaScraper.jsx';
+import {FileManagerPage} from '../components/FileManager.jsx';
 
 const TABS = [
   ['discover', 'i-search', '发现'],
@@ -39,6 +40,7 @@ const VIEW_META = {
   notifications: {title: '通知', subtitle: '下载、订阅与系统推送', icon: 'i-bell', parent: 'more'},
   themes: {title: '主题', subtitle: '界面主题与外观', icon: 'i-palette', parent: 'more'},
   settings: {title: '设置', subtitle: '目录、音质与日志', icon: 'i-settings', parent: 'more'},
+  files: {title: '文件管理', subtitle: '本地有声书文件整理与重命名', icon: 'i-folder', parent: 'more'},
   meta: {title: '元数据刮削', subtitle: '写入标题、作者、封面等元数据', icon: 'i-tag', parent: 'more'},
   more: {title: '更多', subtitle: '账号、设置与系统工具', icon: 'i-more'},
 };
@@ -164,6 +166,7 @@ function MoreView({app, installable, switchView}) {
     {id: 'notifications', icon: 'i-bell', title: '通知系统', sub: '下载、订阅与外部推送'},
     {id: 'themes', icon: 'i-palette', title: '主题外观', sub: '界面主题与配色'},
     {id: 'settings', icon: 'i-settings', title: '系统设置', sub: '目录、音质、日志'},
+    {id: 'files', icon: 'i-folder', title: '文件管理', sub: '重命名、整理本地有声书文件'},
     {id: 'meta', icon: 'i-tag', title: '元数据刮削', sub: '写入有声书标题、作者、封面'},
     {id: 'downloads', icon: 'i-download', title: '下载管理', sub: `${metrics.activeDownloads} 个活跃任务`},
     {id: 'subscriptions', icon: 'i-bookmark', title: '订阅管理', sub: `${subscriptions.length} 个订阅专辑`},
@@ -217,6 +220,7 @@ function RoutedContent({app, installable, switchView, searchAndShowResults}) {
   if (mobileView === 'notifications') return <section className="view native-view active"><NotificationsPage app={app} /></section>;
   if (mobileView === 'themes') return <section className="view native-view active"><ThemesPage /></section>;
   if (mobileView === 'settings') return <section className="view native-view active"><SettingsPage app={app} /></section>;
+  if (mobileView === 'files') return <section className="view native-view active"><FileManagerPage /></section>;
   if (mobileView === 'meta') return <section className="view native-view active"><MetaScraperPage /></section>;
   return <MoreView app={app} installable={installable} switchView={switchView} />;
 }

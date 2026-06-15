@@ -19,6 +19,7 @@ import {
   Toast,
 } from '../components/Shared.jsx';
 import {MetaScraperPage} from '../components/MetaScraper.jsx';
+import {FileManagerPage} from '../components/FileManager.jsx';
 import {SEARCH_PLATFORMS} from '../utils/platforms.js';
 
 const NAV = [
@@ -29,6 +30,7 @@ const NAV = [
   ['cookies', 'i-cookie', '账号管理'],
   ['notifications', 'i-bell', '通知系统'],
   ['themes', 'i-palette', '主题外观'],
+  ['files', 'i-folder', '文件管理'],
   ['meta', 'i-tag', '元数据刮削'],
   ['settings', 'i-settings', '系统设置'],
 ];
@@ -99,6 +101,7 @@ export default function DesktopPage() {
           {page === 'notifications' && <PageShell title="通知系统" subtitle="配置下载、订阅等事件的外部推送渠道" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadNotifications}><Icon id="i-refresh" className="icon icon-sm" />刷新配置</button>}><NotificationsPage app={app} /></PageShell>}
           {page === 'themes' && <PageShell title="主题外观" subtitle="切换桌面端与移动端共用的界面主题"><ThemesPage /></PageShell>}
           {page === 'settings' && <PageShell title="系统设置" subtitle="下载目录、音质偏好、账号密码、服务端日志"><SettingsPage app={app} /></PageShell>}
+          {page === 'files' && <PageShell title="文件管理中心" subtitle="管理本地有声书资源，智能重命名与整理"><FileManagerPage /></PageShell>}
           {page === 'meta' && <PageShell title="元数据刮削" subtitle="为本地有声书写入专辑标题、作者、封面、标签等元数据"><MetaScraperPage /></PageShell>}
         </main>
       </div>
