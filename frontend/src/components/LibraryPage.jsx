@@ -43,6 +43,34 @@ function simulateTemplate(tpl,meta,fileName,idx){
   return r;
 }
 
+// ─── 标签输入组件 ─────────────────────────────────────────────────────────────
+
+function TagInput({tags,onChange}){
+  const[input,setInput]=useState('');
+  function add(raw){
+    const parts=raw.split(/[,，]+/).map(s=>s.trim()).filter(Boolean);
+    const next=[...new Set([...tags,...parts])];
+    onChange(next);setInput('');
+  }
+  function remove(t){onChange(tags.filter(x=>x!==t));}
+  return(
+    <div style={{display:'flex',flexWrap:'wrap',gap:5,padding:'6px 8px',border:'1px solid var(--border)',borderRadius:6,background:'var(--bg-0)',minHeight:36,alignItems:'center'}}>
+      {tags.map(t=>(
+        <span key={t} style={{display:'flex',alignItems:'center',gap:3,background:'rgba(99,102,241,.15)',color:'var(--primary)',fontSize:12,padding:'2px 8px',borderRadius:99,whiteSpace:'nowrap'}}>
+          {t}
+          <button onClick={()=>remove(t)} style={{background:'none',border:'none',color:'inherit',cursor:'pointer',padding:0,lineHeight:1,fontSize:13}}>×</button>
+        </span>
+      ))}
+      <input value={input} onChange={e=>setInput(e.target.value)}
+        onKeyDown={e=>{if(e.key==='Enter'||e.key===','){e.preventDefault();if(input.trim())add(input);}
+                       if(e.key==='Backspace'&&!input&&tags.length)onChange(tags.slice(0,-1));}}
+        onBlur={()=>{if(input.trim())add(input);}}
+        placeholder={tags.length?'':'输入标签后按 Enter…'}
+        style={{border:'none',outline:'none',background:'transparent',color:'var(--text)',fontSize:12.5,minWidth:100,flex:1}}/>
+    </div>
+  );
+}
+
 // ─── 共用文件夹浏览器 Modal ──────────────────────────────────────────────────
 
 function FileBrowserModal({data,onNav,onSelect,onClose}){
@@ -343,11 +371,17 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
   function applyMetaToParams(){
     if(!fetchedMeta)return;
     setParams(p=>({...p,
-      title:fetchedMeta.title||p.title,author:fetchedMeta.author||p.author,
-      anchor:fetchedMeta.anchor||p.anchor,year:fetchedMeta.year||p.year,
-      finished:fetchedMeta.finished||p.finished,category:fetchedMeta.category||p.category,
+      title:fetchedMeta.title||p.title,
+      subtitle:fetchedMeta.subtitle||p.subtitle,
+      author:fetchedMeta.author||p.author,
+      anchor:fetchedMeta.anchor||p.anchor,
+      year:fetchedMeta.year||p.year,
+      finished:fetchedMeta.finished||p.finished,
+      category:fetchedMeta.category||p.category,
       api_source:apiSource,api_id:apiId,
-      manual_desc:fetchedMeta.desc||p.manual_desc,fetched_metadata:fetchedMeta.raw||{},
+      manual_desc:fetchedMeta.desc||p.manual_desc,
+      fetched_metadata:fetchedMeta.raw||{},
+      album_tags:fetchedMeta.tags?.length?fetchedMeta.tags:p.album_tags,
     }));
     setSubTab('params');
   }
@@ -517,6 +551,24 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
                 <select style={S.select} value={params.finished} onChange={e=>setParam('finished',e.target.value)}>
                   {(options.finished||[]).map(f=><option key={f}>{f}</option>)}
                 </select>
+              </div>
+            </div>
+          </div>
+          {/* 扩展信息 */}
+          <div className="glass" style={{padding:14}}>
+            <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>扩展信息</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <div><label style={S.label}>系列名称</label><input style={S.input} value={params.series_name||''} placeholder="例：斗罗大陆" onChange={e=>setParam('series_name',e.target.value)}/></div>
+              <div><label style={S.label}>系列序号</label><input style={S.input} value={params.series_number||''} placeholder="例：1（多部用逗号分隔）" onChange={e=>setParam('series_number',e.target.value)}/></div>
+              <div style={{gridColumn:'1/-1'}}>
+                <label style={S.label}>专辑标签（按 Enter 或逗号添加）</label>
+                <TagInput tags={params.album_tags||[]} onChange={v=>setParam('album_tags',v)}/>
+              </div>
+              <div><label style={S.label}>团队标识</label><input style={S.input} value={params.team||''} placeholder="例：RL" onChange={e=>setParam('team',e.target.value)}/></div>
+              <div><label style={S.label}>封面图片路径（留空自动获取）</label><input style={S.input} value={params.manual_cover_path||''} placeholder="/path/to/cover.jpg" onChange={e=>setParam('manual_cover_path',e.target.value)}/></div>
+              <div style={{gridColumn:'1/-1'}}>
+                <label style={S.label}>手动简介（留空自动获取）</label>
+                <textarea style={{...S.input,minHeight:72,resize:'vertical',fontFamily:'inherit'}} value={params.manual_desc||''} placeholder="留空则自动从 API 或已抓取元数据中提取..." onChange={e=>setParam('manual_desc',e.target.value)}/>
               </div>
             </div>
           </div>
