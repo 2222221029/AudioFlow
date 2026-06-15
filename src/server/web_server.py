@@ -47,6 +47,13 @@ from core.platform_config import (
     pwa_enabled,
 )
 from core.subscription_manager import SubscriptionManager, chapter_key
+from core.meta_scraper.state import META_STATE
+from core.meta_scraper import config_store as meta_config_store
+from core.meta_scraper import queue_store as meta_queue_store
+from core.meta_scraper import processor as meta_processor
+from core.meta_scraper import metadata_provider as meta_provider
+from core.meta_scraper import files_service as meta_files
+from core.meta_scraper.app_config import META_DATA_DIR
 
 
 FRONTEND_DIST_DIR = project_root() / "frontend" / "dist"
@@ -3667,6 +3674,249 @@ def serve_frontend(path):
         "或使用 Docker 镜像（Dockerfile 会自动构建）。</p>",
         503,
     )
+
+
+# ============ META SCRAPER API ============
+
+@app.route('/api/meta/options', methods=['GET'])
+def meta_options():
+    if not current_user():
+        return json_error("未登录", 401)
+    from core.meta_legacy_core import config as lc, docker_web as lw
+    return jsonify(ok=True, options={
+        'api_sources': list(lw.API_SOURCES),
+        'link_platforms': list(lw.LINK_PLATFORMS),
+        'platforms': list(lc.get_platform_options()),
+        'categories': [{'id': k, 'name': v} for k, v in lc.CATEGORY_MAP.items()],
+        'target_formats': list(lw.TARGET_FORMATS),
+        'bitrates': list(lw.BITRATE_OPTIONS),
+        'finished': list(lw.FINISHED_OPTIONS),
+        'data_root': str(META_DATA_DIR),
+    })
+
+@app.route('/api/meta/config', methods=['GET'])
+def meta_get_config():
+    if not current_user():
+        return json_error("未登录", 401)
+    params = meta_config_store.load_config()
+    return jsonify(ok=True, params=params.model_dump())
+
+@app.route('/api/meta/config', methods=['POST'])
+def meta_post_config():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    params = meta_config_store.save_config(data.get('params', data))
+    return jsonify(ok=True, params=params.model_dump())
+
+@app.route('/api/meta/folder-config', methods=['POST'])
+def meta_folder_config():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    found, params, message = meta_config_store.read_folder_config(data.get('path', ''))
+    return jsonify(ok=True, found=found, params=params.model_dump(), message=message)
+
+@app.route('/api/meta/fetch-metadata', methods=['POST'])
+def meta_fetch_metadata():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    api_source = str(data.get('api_source') or '').strip()
+    api_id = str(data.get('api_id') or '').strip()
+    if not api_source or not api_id:
+        return jsonify(ok=False, error='请填写平台和专辑 ID'), 400
+    try:
+        result = meta_provider.fetch_by_id(api_source, api_id)
+        return jsonify(ok=True, metadata=result)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
+
+@app.route('/api/meta/fetch-link', methods=['POST'])
+def meta_fetch_link():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    platform = str(data.get('platform') or '').strip()
+    url = str(data.get('url') or '').strip()
+    if not platform or not url:
+        return jsonify(ok=False, error='请填写平台和链接'), 400
+    try:
+        result = meta_provider.fetch_by_link(platform, url)
+        return jsonify(ok=True, metadata=result)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
+
+@app.route('/api/meta/status', methods=['GET'])
+def meta_status():
+    if not current_user():
+        return json_error("未登录", 401)
+    snap = META_STATE.snapshot()
+    return jsonify(ok=True, status=snap.model_dump())
+
+@app.route('/api/meta/run', methods=['POST'])
+def meta_run():
+    if not current_user():
+        return json_error("未登录", 401)
+    if META_STATE.running:
+        return jsonify(ok=False, error='任务正在运行'), 409
+    data = request.get_json() or {}
+    try:
+        from core.meta_scraper.schemas import ProcessParams
+        params = ProcessParams.model_validate(data.get('params', data))
+        meta_processor.validate_params(params)
+        meta_processor.start_single(params)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 400
+
+@app.route('/api/meta/stop', methods=['POST'])
+def meta_stop():
+    if not current_user():
+        return json_error("未登录", 401)
+    META_STATE.request_stop()
+    return jsonify(ok=True, status=META_STATE.snapshot().model_dump())
+
+@app.route('/api/meta/queue/add', methods=['POST'])
+def meta_queue_add():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    from core.meta_scraper.schemas import ProcessParams
+    params = ProcessParams.model_validate(data.get('params', data))
+    item = meta_queue_store.add_queue_item(params)
+    return jsonify(ok=True, item=item.model_dump(), status=META_STATE.snapshot().model_dump())
+
+@app.route('/api/meta/queue/update', methods=['POST'])
+def meta_queue_update():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    task_id = str(data.get('id') or '')
+    if not task_id:
+        return jsonify(ok=False, error='缺少任务 ID'), 400
+    from core.meta_scraper.schemas import ProcessParams
+    params = ProcessParams.model_validate(data.get('params') or {})
+    try:
+        item = meta_queue_store.update_queue_item(task_id, params)
+    except RuntimeError as e:
+        return jsonify(ok=False, error=str(e)), 400
+    if not item:
+        return jsonify(ok=False, error='未找到任务'), 404
+    return jsonify(ok=True, item=item.model_dump(), status=META_STATE.snapshot().model_dump())
+
+@app.route('/api/meta/queue/remove', methods=['POST'])
+def meta_queue_remove():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    meta_queue_store.remove_queue_items(set(data.get('ids') or []))
+    return jsonify(ok=True, status=META_STATE.snapshot().model_dump())
+
+@app.route('/api/meta/queue/clear', methods=['POST'])
+def meta_queue_clear():
+    if not current_user():
+        return json_error("未登录", 401)
+    meta_queue_store.clear_queue()
+    return jsonify(ok=True, status=META_STATE.snapshot().model_dump())
+
+@app.route('/api/meta/queue/retry-failed', methods=['POST'])
+def meta_queue_retry_failed():
+    if not current_user():
+        return json_error("未登录", 401)
+    meta_queue_store.retry_failed()
+    return jsonify(ok=True, status=META_STATE.snapshot().model_dump())
+
+@app.route('/api/meta/queue/start', methods=['POST'])
+def meta_queue_start():
+    if not current_user():
+        return json_error("未登录", 401)
+    if META_STATE.running:
+        return jsonify(ok=False, error='已有任务正在运行'), 409
+    if not META_STATE.queue:
+        return jsonify(ok=False, error='队列为空'), 400
+    meta_processor.start_queue()
+    return jsonify(ok=True)
+
+@app.route('/api/meta/browse', methods=['GET'])
+def meta_browse():
+    if not current_user():
+        return json_error("未登录", 401)
+    path = request.args.get('path', '')
+    result = meta_files.browse(path)
+    return jsonify(ok=True, browser=result)
+
+@app.route('/api/meta/cover', methods=['GET'])
+def meta_cover():
+    if not current_user():
+        return json_error("未登录", 401)
+    path = request.args.get('path', '')
+    file_path = meta_files.safe_path(path)
+    if not file_path.exists() or not file_path.is_file():
+        return jsonify(ok=False, error='封面不存在'), 404
+    return send_file(str(file_path))
+
+@app.route('/api/meta/cookies', methods=['GET'])
+def meta_get_cookies():
+    if not current_user():
+        return json_error("未登录", 401)
+    from core.meta_legacy_core import config as lc
+    return jsonify(ok=True, cookies=lc.get_platform_cookies())
+
+@app.route('/api/meta/cookies', methods=['POST'])
+def meta_save_cookies():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    cookies = data.get('cookies', data)
+    if not isinstance(cookies, dict):
+        return jsonify(ok=False, error='Cookie 数据格式不正确'), 400
+    from core.meta_legacy_core import config as lc
+    if not lc.set_platform_cookies(cookies):
+        return jsonify(ok=False, error='Cookie 保存失败'), 500
+    return jsonify(ok=True, cookies=lc.get_platform_cookies())
+
+@app.route('/api/meta/tag-blacklist', methods=['GET'])
+def meta_get_tag_blacklist():
+    if not current_user():
+        return json_error("未登录", 401)
+    from core.meta_legacy_core.docker_web import load_tag_blacklist_patterns
+    return jsonify(ok=True, patterns=load_tag_blacklist_patterns())
+
+@app.route('/api/meta/tag-blacklist', methods=['POST'])
+def meta_save_tag_blacklist():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json() or {}
+    patterns = data.get('patterns', [])
+    if not isinstance(patterns, list):
+        return jsonify(ok=False, error='黑名单规则必须是列表'), 400
+    from core.meta_legacy_core.docker_web import save_tag_blacklist_patterns
+    return jsonify(ok=True, patterns=save_tag_blacklist_patterns(patterns))
+
+@app.route('/api/meta/events', methods=['GET'])
+def meta_events():
+    if not current_user():
+        return json_error("未登录", 401)
+    import queue as queue_module
+    import json as json_module
+
+    def generate():
+        q = META_STATE.subscribe()
+        try:
+            snap = META_STATE.snapshot().model_dump()
+            yield "event: status\ndata: " + json_module.dumps(snap, ensure_ascii=False, default=str) + "\n\n"
+            while True:
+                try:
+                    event = q.get(timeout=15)
+                    yield "event: update\ndata: " + json_module.dumps(event, ensure_ascii=False, default=str) + "\n\n"
+                except queue_module.Empty:
+                    yield "event: ping\ndata: {}\n\n"
+        finally:
+            META_STATE.unsubscribe(q)
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream',
+                   headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 def main():

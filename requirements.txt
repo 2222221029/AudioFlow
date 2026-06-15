@@ -26,3 +26,8 @@ python-dateutil>=2.8.0
 Flask>=3.0.0
 waitress>=3.0.0
 chardet<6
+
+# Meta scraper 依赖
+pydantic>=2.0.0
+mutagen>=1.47.0
+Pillow>=10.0.0
