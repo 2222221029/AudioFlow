@@ -278,6 +278,25 @@ def resolve_category_id(category_text):
     return ""
 
 
+def _extract_ximalaya_tags(info):
+    tags = []
+    for key in ("albumTags", "labelList", "tagList", "tags"):
+        val = info.get(key)
+        if isinstance(val, list):
+            for t in val:
+                if isinstance(t, dict):
+                    name = t.get("tagName") or t.get("name") or t.get("label") or ""
+                    if name:
+                        tags.append(name)
+                elif isinstance(t, str) and t:
+                    tags.append(t)
+    for key in ("mainCategory", "subCategory", "categoryName"):
+        val = info.get(key)
+        if isinstance(val, str) and val:
+            tags.append(val)
+    return list(dict.fromkeys(tags))
+
+
 def normalize_ximalaya_payload(raw):
     info = raw.get("albumPageMainInfo", raw or {})
     title = first_value(info, "albumTitle", "title", "name")
@@ -285,15 +304,20 @@ def normalize_ximalaya_payload(raw):
     anchor = first_value(info, "anchorName", "nickname")
     if not anchor and isinstance(raw.get("anchorInfo"), dict):
         anchor = first_value(raw["anchorInfo"], "anchorName", "nickname")
+    author = ""
+    if isinstance(raw.get("authorInfo"), dict):
+        author = first_value(raw["authorInfo"], "authorName", "name", "nickname") or ""
+    tags = _extract_ximalaya_tags(info)
     return {
         "title": title,
         "subtitle": subtitle,
-        "author": "",
+        "author": author,
         "announcer": anchor,
         "artist": anchor,
         "desc": first_value(info, "detailRichIntro", "intro"),
         "cover": first_value(info, "cover", "coverUrlLarge", "coverUrlMiddle"),
         "releaseDate": extract_year(first_value(info, "createDate", "updateDate", "createdAt", "createAt")),
+        "tags": tags,
     }
 
 
