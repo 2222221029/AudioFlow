@@ -1,8 +1,7 @@
-<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="40" y="40" width="432" height="432" rx="128" fill="#11183f"/>
-  <path d="M136 264c0-88 54-150 120-150s120 62 120 150" stroke="#eef1ff" stroke-width="46" stroke-linecap="round"/>
-  <path d="M136 256h48c22 0 40 18 40 40v64h-40c-49 0-88-39-88-88v-12c0-2 2-4 4-4h36Z" fill="#eef1ff"/>
-  <path d="M376 256h-48c-22 0-40 18-40 40v64h40c49 0 88-39 88-88v-12c0-2-2-4-4-4h-36Z" fill="#eef1ff"/>
-  <path d="M184 328c20-21 41-21 62 0s43 21 66 0" stroke="#11183f" stroke-width="28" stroke-linecap="round"/>
-  <path d="M200 408h112" stroke="#eef1ff" stroke-opacity=".72" stroke-width="24" stroke-linecap="round"/>
+<svg width="360" height="360" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="4.5" y="4.5" width="55" height="55" rx="17" fill="none" stroke="currentColor" stroke-width="1.8"/>
+  <path d="M15 22 19 19h10l4.6 4v24.2c-2.1-1.9-5.1-3-8.9-3H19c-2.5 0-4-2-4-4.2V22Z" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M49 22 45 19H35l-4.6 4v24.2c2.1-1.9 5.1-3 8.9-3H45c2.5 0 4-2 4-4.2V22Z" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M18 36c4.2-6.3 8.6-6.3 13.1 0s8.8 6.3 13.1 0" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M31 23 43 30 31 37V23Z" fill="currentColor"/>
 </svg>
