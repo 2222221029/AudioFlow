@@ -14,9 +14,10 @@ const TABS = [
 ];
 
 const S = {
-  input: {width:'100%',background:'var(--bg-0)',border:'1px solid var(--border)',borderRadius:6,padding:'7px 10px',color:'var(--text)',fontSize:13,outline:'none',boxSizing:'border-box'},
-  select: {width:'100%',background:'var(--bg-0)',border:'1px solid var(--border)',borderRadius:6,padding:'7px 10px',color:'var(--text)',fontSize:13,outline:'none'},
-  label: {fontSize:11,color:'var(--text-mute)',marginBottom:4,fontWeight:600,display:'block'},
+  input: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:9,padding:'0 12px',height:34,color:'var(--text)',fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:'inherit'},
+  select: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:9,padding:'0 12px',height:34,color:'var(--text)',fontSize:13,outline:'none',fontFamily:'inherit'},
+  textarea: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:9,padding:'8px 12px',color:'var(--text)',fontSize:12.5,outline:'none',boxSizing:'border-box',fontFamily:'Consolas,monospace',resize:'vertical'},
+  label: {fontSize:11,color:'var(--text-faint)',marginBottom:5,fontWeight:600,display:'block',textTransform:'uppercase',letterSpacing:'.5px'},
 };
 
 function fmtSize(bytes){
@@ -77,11 +78,11 @@ function TagInput({tags,onChange}){
   }
   function remove(t){onChange(tags.filter(x=>x!==t));}
   return(
-    <div style={{display:'flex',flexWrap:'wrap',gap:5,padding:'6px 8px',border:'1px solid var(--border)',borderRadius:6,background:'var(--bg-0)',minHeight:36,alignItems:'center'}}>
+    <div style={{display:'flex',flexWrap:'wrap',gap:5,padding:'6px 10px',border:'1px solid var(--border)',borderRadius:9,background:'var(--panel-hi)',minHeight:36,alignItems:'center'}}>
       {tags.map(t=>(
-        <span key={t} style={{display:'flex',alignItems:'center',gap:3,background:'rgba(99,102,241,.15)',color:'var(--primary)',fontSize:12,padding:'2px 8px',borderRadius:99,whiteSpace:'nowrap'}}>
+        <span key={t} style={{display:'inline-flex',alignItems:'center',gap:3,background:'rgba(99,102,241,.15)',color:'var(--primary)',fontSize:12,padding:'2px 8px',borderRadius:99,whiteSpace:'nowrap'}}>
           {t}
-          <button onClick={()=>remove(t)} style={{background:'none',border:'none',color:'inherit',cursor:'pointer',padding:0,lineHeight:1,fontSize:13}}>×</button>
+          <button onClick={()=>remove(t)} style={{background:'none',border:'none',color:'inherit',cursor:'pointer',padding:'0 0 0 2px',lineHeight:1,fontSize:13}}>×</button>
         </span>
       ))}
       <input value={input} onChange={e=>setInput(e.target.value)}
@@ -89,7 +90,7 @@ function TagInput({tags,onChange}){
                        if(e.key==='Backspace'&&!input&&tags.length)onChange(tags.slice(0,-1));}}
         onBlur={()=>{if(input.trim())add(input);}}
         placeholder={tags.length?'':'输入标签后按 Enter…'}
-        style={{border:'none',outline:'none',background:'transparent',color:'var(--text)',fontSize:12.5,minWidth:100,flex:1}}/>
+        style={{border:'none',outline:'none',background:'transparent',color:'var(--text)',fontSize:12.5,minWidth:80,flex:1}}/>
     </div>
   );
 }
@@ -98,39 +99,49 @@ function TagInput({tags,onChange}){
 
 function FileBrowserModal({data,onNav,onSelect,onClose}){
   return(
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center'}}
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.55)',backdropFilter:'blur(6px)',WebkitBackdropFilter:'blur(6px)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:'16px'}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{background:'var(--panel)',borderRadius:12,width:'90%',maxWidth:560,maxHeight:'70vh',display:'flex',flexDirection:'column',overflow:'hidden',boxShadow:'0 8px 40px rgba(0,0,0,.4)'}}>
-        <div style={{padding:'14px 16px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-          <span style={{fontWeight:700}}>选择专辑文件夹</span>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon id="i-close" className="icon icon-sm"/></button>
+      <div style={{background:'var(--panel-2)',borderRadius:'var(--radius-card)',width:'100%',maxWidth:560,maxHeight:'min(72vh,580px)',display:'flex',flexDirection:'column',overflow:'hidden',boxShadow:'0 24px 60px rgba(0,0,0,.55)',border:'1px solid var(--border-hi)'}}>
+        <div style={{padding:'16px 18px',borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+          <span style={{fontWeight:700,fontSize:15,display:'flex',alignItems:'center',gap:8}}>
+            <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)'}}/>
+            选择专辑文件夹
+          </span>
+          <button className="btn-icon sm" onClick={onClose}><Icon id="i-close" className="icon icon-sm"/></button>
         </div>
         {data?(
           <>
-            <div style={{padding:'8px 16px',fontSize:11,color:'var(--text-faint)',borderBottom:'1px solid var(--border)',fontFamily:'monospace'}}>
+            <div style={{padding:'7px 18px',fontSize:11,color:'var(--text-faint)',borderBottom:'1px solid var(--border)',fontFamily:'Consolas,monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flexShrink:0,background:'var(--panel)'}}>
               {data.current}
             </div>
-            <div style={{flex:1,overflow:'auto',padding:8}}>
+            <div style={{flex:1,overflow:'auto',padding:6}}>
               {(data.items||[]).map(item=>(
-                <div key={item.path}
-                  style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:6,cursor:'pointer',fontSize:13,color:item.has_audio?'var(--text)':'var(--text-mute)'}}
-                  onMouseEnter={e=>e.currentTarget.style.background='var(--bg-1)'}
-                  onMouseLeave={e=>e.currentTarget.style.background=''}
+                <button key={item.path}
+                  style={{width:'100%',display:'flex',alignItems:'center',gap:9,padding:'9px 12px',borderRadius:10,cursor:'pointer',fontSize:13,
+                    color:item.has_audio?'var(--text)':'var(--text-mute)',background:'none',border:'none',textAlign:'left'}}
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--panel-hi)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='none'}
                   onClick={()=>onNav(item.path)}>
-                  <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)',flexShrink:0}}/>
-                  <span style={{flex:1}}>{item.name}</span>
-                  {item.has_audio&&<span style={{fontSize:10,color:'var(--success)',background:'rgba(16,185,129,.15)',padding:'1px 7px',borderRadius:99,flexShrink:0}}>有音频</span>}
-                </div>
+                  <Icon id="i-folder" className="icon icon-sm" style={{color:item.has_audio?'var(--primary)':'var(--text-faint)',flexShrink:0}}/>
+                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.name}</span>
+                  {item.has_audio&&<span style={{fontSize:10,color:'var(--success)',background:'rgba(52,211,153,.15)',padding:'2px 8px',borderRadius:99,flexShrink:0,fontWeight:600}}>有音频</span>}
+                  <Icon id="i-arrow-right" className="icon icon-sm" style={{opacity:.3,flexShrink:0}}/>
+                </button>
               ))}
-              {(data.items||[]).length===0&&<div style={{padding:32,textAlign:'center',color:'var(--text-mute)',fontSize:13}}>此目录下没有子文件夹</div>}
+              {(data.items||[]).length===0&&<div style={{padding:36,textAlign:'center',color:'var(--text-mute)',fontSize:13}}>此目录下没有子文件夹</div>}
             </div>
-            <div style={{padding:'10px 16px',borderTop:'1px solid var(--border)',display:'flex',gap:8,justifyContent:'flex-end'}}>
+            <div style={{padding:'12px 18px',borderTop:'1px solid var(--border)',display:'flex',gap:8,justifyContent:'flex-end',flexShrink:0,background:'var(--panel)'}}>
               <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
-              <button className="btn btn-primary btn-sm" onClick={()=>onSelect(data.current)}>选择此目录</button>
+              <button className="btn btn-primary btn-sm" onClick={()=>onSelect(data.current)}>
+                <Icon id="i-check" className="icon icon-sm"/>选择此目录
+              </button>
             </div>
           </>
         ):(
-          <div style={{padding:48,textAlign:'center',color:'var(--text-faint)'}}><span className="loading"/></div>
+          <div style={{padding:56,textAlign:'center',color:'var(--text-faint)',display:'flex',flexDirection:'column',alignItems:'center',gap:10}}>
+            <span className="loading" style={{width:20,height:20}}/>
+            <span style={{fontSize:13}}>加载中...</span>
+          </div>
         )}
       </div>
     </div>
@@ -166,25 +177,27 @@ export function LibraryPage(){
   return(
     <div style={{display:'flex',flexDirection:'column',height:'100%',gap:0}}>
       {/* 已选文件夹 Bar */}
-      <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',borderBottom:'1px solid var(--border)',background:'var(--bg-1)',flexShrink:0}}>
-        <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)',flexShrink:0}}/>
-        <span style={{flex:1,fontSize:13,color:folder?'var(--text)':'var(--text-mute)',fontFamily:folder?'monospace':'inherit',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-          {folder||'未选择专辑文件夹 — 点击右侧"浏览"按钮选择目标专辑文件夹'}
+      <div style={{display:'flex',alignItems:'center',gap:8,padding:'9px 14px',borderBottom:'1px solid var(--border)',background:'var(--panel)',flexShrink:0,minHeight:50}}>
+        <div style={{width:30,height:30,borderRadius:8,background:'var(--primary-soft,rgba(124,182,255,.14))',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+          <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)'}}/>
+        </div>
+        <span style={{flex:1,fontSize:12.5,color:folder?'var(--text)':'var(--text-faint)',fontFamily:folder?'Consolas,monospace':'inherit',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {folder||'未选择专辑文件夹 — 点击右侧「浏览」按钮'}
         </span>
-        {folder&&<button className="btn btn-ghost btn-sm" onClick={()=>setFolder('')} style={{flexShrink:0}}>清除</button>}
+        {folder&&<button className="btn btn-ghost btn-sm" onClick={()=>setFolder('')} style={{flexShrink:0,fontSize:12}}>清除</button>}
         <button className="btn btn-primary btn-sm" onClick={()=>openBrowser(folder)} style={{flexShrink:0}}>
           <Icon id="i-folder" className="icon icon-sm"/>浏览
         </button>
       </div>
 
       {/* Tab 栏 */}
-      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',flexShrink:0,overflowX:'auto',background:'var(--bg-0)'}}>
+      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',flexShrink:0,overflowX:'auto',background:'var(--panel)',scrollbarWidth:'none'}}>
         {TABS.map(([id,icon,label])=>(
           <button key={id} onClick={()=>setTab(id)}
-            style={{display:'flex',alignItems:'center',gap:6,padding:'10px 16px',background:'none',border:'none',
+            style={{display:'flex',alignItems:'center',gap:5,padding:'11px 15px',background:'none',border:'none',
               borderBottom:tab===id?'2px solid var(--primary)':'2px solid transparent',
               color:tab===id?'var(--primary)':'var(--text-mute)',
-              fontWeight:tab===id?600:400,fontSize:13.5,whiteSpace:'nowrap',cursor:'pointer'}}>
+              fontWeight:tab===id?600:400,fontSize:13,whiteSpace:'nowrap',cursor:'pointer',transition:'color .15s'}}>
             <Icon id={icon} className="icon icon-sm"/>{label}
           </button>
         ))}
@@ -346,12 +359,12 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
   return(
     <div style={{display:'flex',flexDirection:'column',gap:0}}>
       {/* 子 Tab 栏 */}
-      <div style={{display:'flex',gap:4,borderBottom:'1px solid var(--border)',marginBottom:14,alignItems:'center'}}>
+      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',marginBottom:14,alignItems:'center',overflowX:'auto',scrollbarWidth:'none'}}>
         {[['meta','i-search','元数据获取'],['params','i-settings','处理参数'],['queue','i-download','任务队列'],['logs','i-file','处理日志']].map(([id,icon,label])=>(
           <button key={id} onClick={()=>setSubTab(id)}
             style={{background:'none',border:'none',borderBottom:subTab===id?'2px solid var(--primary)':'2px solid transparent',
-              color:subTab===id?'var(--primary)':'var(--text-mute)',padding:'7px 14px',
-              fontWeight:subTab===id?600:400,fontSize:13,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
+              color:subTab===id?'var(--primary)':'var(--text-mute)',padding:'9px 14px',
+              fontWeight:subTab===id?600:400,fontSize:12.5,cursor:'pointer',display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',flexShrink:0}}>
             <Icon id={icon} className="icon icon-sm"/>{label}
           </button>
         ))}
@@ -427,9 +440,9 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
                   {fetchedMeta.year&&<div style={{fontSize:13,color:'var(--text-mute)'}}>年份：{fetchedMeta.year}</div>}
                   {fetchedMeta.category_text&&<div style={{fontSize:13,color:'var(--text-mute)'}}>分类：{fetchedMeta.category_text}</div>}
                   {fetchedMeta.tags?.length>0&&(
-                    <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:6}}>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:5,marginTop:7}}>
                       {fetchedMeta.tags.slice(0,12).map(t=>(
-                        <span key={t} style={{background:'rgba(99,102,241,.15)',color:'var(--primary)',fontSize:11,padding:'1px 7px',borderRadius:99}}>{t}</span>
+                        <span key={t} style={{background:'rgba(99,102,241,.15)',color:'var(--primary)',fontSize:11,padding:'2px 8px',borderRadius:99,fontWeight:500}}>{t}</span>
                       ))}
                     </div>
                   )}
@@ -451,8 +464,9 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {/* 当前目录提示 */}
           {params.input_folder&&(
-            <div style={{fontSize:12,color:'var(--text-mute)',padding:'6px 10px',background:'var(--bg-1)',borderRadius:6,border:'1px solid var(--border)',fontFamily:'monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-              目录：{params.input_folder}
+            <div style={{fontSize:11.5,color:'var(--text-mute)',padding:'7px 12px',background:'var(--panel-hi)',borderRadius:9,border:'1px solid var(--border)',fontFamily:'Consolas,monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:6}}>
+              <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)',flexShrink:0}}/>
+              {params.input_folder}
             </div>
           )}
           {/* 基本信息 */}
@@ -483,7 +497,7 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
                 )}
               </div>
               {/* 字段网格 */}
-              <div style={{flex:1,display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <div style={{flex:1,display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:10}}>
                 {[['title','专辑标题'],['subtitle','副标题'],['author','原著作者'],['anchor','演播艺术家']].map(([k,l])=>(
                   <div key={k}><label style={S.label}>{l}</label><input style={S.input} value={params[k]||''} onChange={e=>setParam(k,e.target.value)}/></div>
                 ))}
@@ -509,7 +523,7 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
           {/* 扩展信息 */}
           <div className="glass" style={{padding:14}}>
             <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>扩展信息</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}}>
               <div><label style={S.label}>系列名称</label><input style={S.input} value={params.series_name||''} placeholder="例：斗罗大陆" onChange={e=>setParam('series_name',e.target.value)}/></div>
               <div><label style={S.label}>系列序号</label><input style={S.input} value={params.series_number||''} placeholder="例：1（多部用逗号分隔）" onChange={e=>setParam('series_number',e.target.value)}/></div>
               <div style={{gridColumn:'1/-1'}}>
@@ -520,14 +534,14 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
               <div><label style={S.label}>封面图片路径（留空自动获取）</label><input style={S.input} value={params.manual_cover_path||''} placeholder="/path/to/cover.jpg" onChange={e=>setParam('manual_cover_path',e.target.value)}/></div>
               <div style={{gridColumn:'1/-1'}}>
                 <label style={S.label}>手动简介（留空自动获取）</label>
-                <textarea style={{...S.input,minHeight:72,resize:'vertical',fontFamily:'inherit'}} value={params.manual_desc||''} placeholder="留空则自动从 API 或已抓取元数据中提取..." onChange={e=>setParam('manual_desc',e.target.value)}/>
+                <textarea style={{...S.textarea,minHeight:72,fontFamily:'inherit'}} value={params.manual_desc||''} placeholder="留空则自动从 API 或已抓取元数据中提取..." onChange={e=>setParam('manual_desc',e.target.value)}/>
               </div>
             </div>
           </div>
           {/* 音频格式 */}
           <div className="glass" style={{padding:14}}>
             <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>音频处理</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:10}}>
               <div><label style={S.label}>目标格式</label>
                 <select style={S.select} value={params.target_format} onChange={e=>setParam('target_format',e.target.value)}>
                   {(options.target_formats||[]).map(f=><option key={f}>{f}</option>)}
@@ -571,19 +585,19 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
             {running&&<button className="btn btn-danger btn-sm" onClick={doStop}>停止</button>}
           </div>
           {queue.length===0?<div style={{color:'var(--text-mute)',fontSize:13,padding:20,textAlign:'center'}}>队列为空</div>:
-            queue.map(item=>(
-              <div key={item.id} className="glass" style={{padding:'10px 14px',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:500,fontSize:13.5}}>{item.title}</div>
-                  <div style={{fontSize:12,color:'var(--text-mute)',marginTop:2}}>{item.author} · {item.source}</div>
+            queue.map(item=>{
+              const stMap={done:{bg:'rgba(52,211,153,.15)',c:'var(--success)',t:'完成'},failed:{bg:'rgba(239,68,68,.15)',c:'var(--danger)',t:'失败'},processing:{bg:'rgba(99,102,241,.15)',c:'var(--primary)',t:'处理中'}};
+              const st=stMap[item.status]||{bg:'var(--panel-hi)',c:'var(--text-mute)',t:item.status||'等待'};
+              return(
+                <div key={item.id} className="glass" style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:13.5,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.title}</div>
+                    <div style={{fontSize:12,color:'var(--text-mute)',marginTop:3}}>{item.author}{item.source&&` · ${item.source}`}</div>
+                  </div>
+                  <span style={{fontSize:11,padding:'3px 10px',borderRadius:99,background:st.bg,color:st.c,fontWeight:600,flexShrink:0}}>{st.t}</span>
                 </div>
-                <span style={{fontSize:12,padding:'2px 8px',borderRadius:99,
-                  background:item.status==='done'?'rgba(16,185,129,.15)':item.status==='failed'?'rgba(239,68,68,.15)':item.status==='processing'?'rgba(99,102,241,.15)':'var(--bg-1)',
-                  color:item.status==='done'?'var(--success)':item.status==='failed'?'var(--danger)':item.status==='processing'?'var(--primary)':'var(--text-mute)'}}>
-                  {item.status}
-                </span>
-              </div>
-            ))
+              );
+            })
           }
         </div>
       )}
@@ -784,9 +798,14 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
 
   if(!selectedFolder){
     return(
-      <div className="glass glass-pad" style={{color:'var(--text-mute)',textAlign:'center',padding:60,fontSize:14,display:'flex',flexDirection:'column',alignItems:'center',gap:12}}>
-        <Icon id="i-folder" style={{width:48,height:48,opacity:.25}}/>
-        <div>请先点击顶部「浏览」按钮选择专辑文件夹</div>
+      <div className="glass glass-pad" style={{color:'var(--text-mute)',textAlign:'center',padding:'60px 20px',fontSize:14,display:'flex',flexDirection:'column',alignItems:'center',gap:14}}>
+        <div style={{width:64,height:64,borderRadius:18,background:'var(--panel-hi)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <Icon id="i-folder" style={{width:32,height:32,opacity:.4,color:'var(--primary)'}}/>
+        </div>
+        <div>
+          <div style={{fontWeight:600,marginBottom:4}}>尚未选择文件夹</div>
+          <div style={{fontSize:13,color:'var(--text-faint)'}}>请点击顶部「浏览」按钮选择专辑文件夹</div>
+        </div>
       </div>
     );
   }
@@ -794,22 +813,31 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
       {/* 步骤条 */}
-      <div style={{display:'flex',alignItems:'center',gap:0}}>
-        {['填写元数据','选择模板','预览确认'].map((label,i)=>(
-          <div key={i} style={{display:'flex',alignItems:'center'}}>
-            <div onClick={()=>i+2<=step&&setStep(i+2)}
-              style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:20,fontSize:12.5,
-                cursor:i+2<=step?'pointer':'default',
-                background:step===i+2?'var(--primary)':i+2<step?'var(--bg-1)':'var(--bg-0)',
-                color:step===i+2?'#fff':i+2<step?'var(--text)':'var(--text-mute)',border:'1px solid var(--border)'}}>
-              <span style={{width:18,height:18,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',
-                background:step===i+2?'rgba(255,255,255,.3)':'var(--border)',fontSize:10,fontWeight:700}}>{i+1}</span>
-              {label}
+      <div style={{display:'flex',alignItems:'center',gap:0,flexWrap:'nowrap',overflowX:'auto',scrollbarWidth:'none'}}>
+        {['填写元数据','选择模板','预览确认'].map((label,i)=>{
+          const stp=i+2;
+          const isActive=step===stp;
+          const isDone=stp<step;
+          return(
+            <div key={i} style={{display:'flex',alignItems:'center',flexShrink:0}}>
+              <button onClick={()=>stp<=step&&setStep(stp)}
+                style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:999,fontSize:12.5,
+                  cursor:stp<=step?'pointer':'default',border:'none',
+                  background:isActive?'linear-gradient(135deg,var(--aurora-a),var(--aurora-b))':isDone?'var(--panel-hi)':'transparent',
+                  color:isActive?'#fff':isDone?'var(--text)':'var(--text-faint)',
+                  boxShadow:isActive?'0 4px 14px -4px rgba(99,102,241,.55)':'none'}}>
+                <span style={{width:18,height:18,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+                  background:isActive?'rgba(255,255,255,.25)':isDone?'var(--success)':'var(--border)',
+                  color:isDone?'#fff':isActive?'#fff':'var(--text-faint)',fontSize:10,fontWeight:700}}>
+                  {isDone?'✓':i+1}
+                </span>
+                <span style={{whiteSpace:'nowrap'}}>{label}</span>
+              </button>
+              {i<2&&<div style={{width:20,height:1,background:'var(--border)',flexShrink:0}}/>}
             </div>
-            {i<2&&<div style={{width:14,height:1,background:'var(--border)'}}/>}
-          </div>
-        ))}
-        {loading&&<span style={{marginLeft:12,fontSize:12,color:'var(--text-mute)',display:'flex',alignItems:'center',gap:5}}><span className="loading" style={{width:13,height:13}}/>扫描中...</span>}
+          );
+        })}
+        {loading&&<span style={{marginLeft:10,fontSize:12,color:'var(--text-mute)',display:'flex',alignItems:'center',gap:5,flexShrink:0}}><span className="loading" style={{width:12,height:12}}/>扫描中...</span>}
       </div>
 
       {error&&<Err>{error}</Err>}
@@ -884,7 +912,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
               </button>
             </div>
           )}
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}}>
             {[['book_title','书名'],['author','作者'],['narrator','主播'],['category','分类'],['series','系列'],['volume','卷号']].map(([k,l])=>(
               <div key={k}>
                 <label style={S.label}>{l}</label>
@@ -893,7 +921,9 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
               </div>
             ))}
           </div>
-          {step===2&&<button className="btn btn-primary" onClick={()=>setStep(3)} style={{alignSelf:'flex-start'}}>下一步：选择模板</button>}
+          {step===2&&<button className="btn btn-primary" onClick={()=>setStep(3)} style={{alignSelf:'flex-start'}}>
+            下一步：选择模板 →
+          </button>}
         </div>
       )}
 
@@ -912,20 +942,26 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             <input value={template} onChange={e=>setTemplate(e.target.value)}
               placeholder="{chapter_index_3}-{chapter_title}.{ext}" style={{...S.input,fontFamily:'monospace'}}/>
           </div>
-          <div style={{fontSize:12,color:'var(--text-mute)',lineHeight:1.8}}>
-            变量：<code>{'{original_prefix}'}</code> <code>{'{book_title}'}</code> <code>{'{series_block}'}</code> <code>{'{author}'}</code> <code>{'{narrator}'}</code> <code>{'{chapter_index_3}'}</code> <code>{'{chapter_title}'}</code> <code>{'{ext}'}</code> <code>{'{date}'}</code>
-            <br/><span style={{fontSize:11,color:'var(--text-faint)'}}>
-              {'{original_prefix}'} = 原文件名开头数字（如 0001）；{'{series_block}'} = 有系列名时输出 -【系列】-，否则为空
-            </span>
+          <div style={{background:'var(--panel-hi)',borderRadius:9,padding:'10px 12px',border:'1px solid var(--border)'}}>
+            <div style={{fontSize:11,color:'var(--text-faint)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>可用变量</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+              {['{original_prefix}','{book_title}','{series_block}','{author}','{narrator}','{chapter_index_3}','{chapter_title}','{ext}','{date}'].map(v=>(
+                <code key={v} style={{fontSize:11.5,padding:'2px 7px',borderRadius:6,background:'var(--pre-bg)',border:'1px solid var(--border)',fontFamily:'Consolas,monospace',color:'var(--primary)',cursor:'pointer'}}
+                  onClick={()=>setTemplate(t=>t+v)}>{v}</code>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:'var(--text-faint)',marginTop:6,lineHeight:1.6}}>
+              {'{original_prefix}'} = 原文件前缀数字（0001）· {'{series_block}'} = 有系列时输出 -【名称】- 否则为空 · 点击变量可插入
+            </div>
           </div>
           {folderFiles.length>0&&(
-            <div style={{background:'var(--bg-0)',borderRadius:6,padding:12,border:'1px solid var(--border)'}}>
-              <div style={{fontSize:12,color:'var(--text-mute)',marginBottom:8}}>实时预览（前3个文件）</div>
+            <div style={{background:'var(--panel-hi)',borderRadius:9,padding:12,border:'1px solid var(--border)'}}>
+              <div style={{fontSize:11,color:'var(--text-faint)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8}}>实时预览（前3个文件）</div>
               {livePreview.map((name,i)=>(
-                <div key={i} style={{display:'flex',gap:8,alignItems:'center',fontSize:12.5,marginBottom:4}}>
-                  <span style={{color:'var(--text-mute)',flex:'0 0 auto',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{folderFiles[i]?.name}</span>
-                  <span style={{color:'var(--text-mute)'}}>→</span>
-                  <span style={{color:'var(--primary)'}}>{name}</span>
+                <div key={i} style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:8,alignItems:'center',fontSize:12,marginBottom:i<2?6:0}}>
+                  <span style={{color:'var(--text-mute)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{folderFiles[i]?.name}</span>
+                  <span style={{color:'var(--text-faint)',fontSize:10,flexShrink:0}}>→</span>
+                  <span style={{color:'var(--primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
                 </div>
               ))}
             </div>
@@ -952,7 +988,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             const vEnd=Math.min(previews.length,Math.ceil((scrollTop+VLIST_H)/ROW_H)+VBUF);
             return(
               <div style={{border:'1px solid var(--border)',borderRadius:6,overflow:'hidden'}}>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 64px',background:'var(--bg-1)',padding:'6px 10px',fontSize:11.5,color:'var(--text-mute)',fontWeight:600,borderBottom:'1px solid var(--border)'}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 60px',background:'var(--panel-hi)',padding:'6px 10px',fontSize:11,color:'var(--text-faint)',fontWeight:700,borderBottom:'1px solid var(--border)',textTransform:'uppercase',letterSpacing:'.5px'}}>
                   <span>原文件名</span><span>新文件名（点击编辑）</span><span>状态</span>
                 </div>
                 <div ref={vScrollRef} style={{height:Math.min(previews.length*ROW_H,VLIST_H),overflowY:'auto'}}
@@ -968,13 +1004,13 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
                         const unchanged=p.original_name===displayName;
                         const aiTagged=(()=>{const stem=p.original_name.replace(/\.[^.]+$/,'');const nt=(bookMeta.chapter_titles||{})[p.original_name];return nt&&nt!==stem;})();
                         return(
-                          <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 64px',
+                          <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 60px',
                             height:ROW_H,alignItems:'center',padding:'0 10px',gap:6,
                             borderBottom:'1px solid var(--border)',
-                            background:conflict?'rgba(239,68,68,.04)':i%2===0?'transparent':'rgba(0,0,0,.015)'}}>
+                            background:conflict?'rgba(239,68,68,.06)':i%2===0?'transparent':'rgba(0,0,0,.02)'}}>
                             <div style={{fontSize:12,color:'var(--text-mute)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:4}}>
                               <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.original_name}</span>
-                              {aiTagged&&<span style={{flexShrink:0,fontSize:9,background:'rgba(99,102,241,.15)',color:'var(--primary)',padding:'1px 4px',borderRadius:99}}>AI</span>}
+                              {aiTagged&&<span style={{flexShrink:0,fontSize:9,background:'rgba(99,102,241,.18)',color:'var(--primary)',padding:'1px 5px',borderRadius:99,fontWeight:700}}>AI</span>}
                             </div>
                             {isEditing?(
                               <input autoFocus value={editVal}
@@ -1011,11 +1047,12 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             <input value={note} onChange={e=>setNote(e.target.value)} placeholder="记录此次操作目的..." style={S.input}/>
           </div>
           {applyResult?(
-            <div style={{background:'rgba(16,185,129,.08)',border:'1px solid var(--success)',borderRadius:8,padding:'14px 16px'}}>
-              <div style={{fontWeight:600,color:'var(--success)',fontSize:14,marginBottom:8}}>
-                ✓ 重命名完成 — 成功 {applyResult.success} 个{applyResult.failed>0&&`，失败 ${applyResult.failed} 个`}
+            <div style={{background:'rgba(52,211,153,.08)',border:'1px solid rgba(52,211,153,.3)',borderRadius:12,padding:'16px 18px'}}>
+              <div style={{fontWeight:700,color:'var(--success)',fontSize:15,marginBottom:6,display:'flex',alignItems:'center',gap:7}}>
+                <span style={{width:24,height:24,borderRadius:'50%',background:'var(--success)',display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:13,flexShrink:0}}>✓</span>
+                重命名完成 — 成功 {applyResult.success} 个{applyResult.failed>0&&`，失败 ${applyResult.failed} 个`}
               </div>
-              <div style={{fontSize:12.5,color:'var(--text-mute)',marginBottom:12}}>
+              <div style={{fontSize:12.5,color:'var(--text-mute)',marginBottom:14,marginLeft:31}}>
                 章节文件已规范化，现在可以进行元数据刮削写标签操作。
               </div>
               <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -1094,7 +1131,7 @@ function TemplatesTab(){
           <div style={{background:'var(--bg-1)',borderRadius:8,padding:12,marginBottom:12,display:'flex',flexDirection:'column',gap:8}}>
             <textarea value={importJson} onChange={e=>setImportJson(e.target.value)} rows={5}
               placeholder='[{"id":"t1","name":"模板名","template":"..."}]'
-              style={{...S.input,fontFamily:'monospace',resize:'vertical'}}/>
+              style={{...S.textarea,minHeight:90}}/>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-ghost btn-sm" onClick={()=>setShowImport(false)}>取消</button>
               <button className="btn btn-primary btn-sm" onClick={()=>{try{const p=JSON.parse(importJson);if(!Array.isArray(p))throw 0;save(p);setShowImport(false);setImportJson('');}catch{setError('导入失败：JSON 格式错误');}}}>导入</button>
@@ -1206,17 +1243,19 @@ function HistoryTab(){
               <Icon id={expanded[item.history_id]?'i-arrow-left':'i-arrow-right'} className="icon icon-sm" style={{opacity:.4}}/>
             </div>
             {expanded[item.history_id]&&(
-              <div style={{borderTop:'1px solid var(--border)'}}>
-                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-                  <thead><tr style={{background:'var(--bg-1)',color:'var(--text-mute)'}}>
-                    {['原文件名','新文件名','状态'].map(h=><th key={h} style={{padding:'5px 10px',textAlign:'left',fontWeight:500}}>{h}</th>)}
+              <div style={{borderTop:'1px solid var(--border)',overflowX:'auto'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:480}}>
+                  <thead><tr style={{background:'var(--panel-hi)',color:'var(--text-faint)'}}>
+                    {['原文件名','新文件名','状态'].map(h=><th key={h} style={{padding:'6px 12px',textAlign:'left',fontWeight:700,fontSize:11,textTransform:'uppercase',letterSpacing:'.4px'}}>{h}</th>)}
                   </tr></thead>
                   <tbody>
                     {(item.ops||[]).map((op,i)=>(
-                      <tr key={i} style={{borderTop:'1px solid var(--border)'}}>
-                        <td style={{padding:'5px 10px',color:'var(--text-mute)',wordBreak:'break-all'}}>{op.original_path.split(/[\\/]/).pop()}</td>
-                        <td style={{padding:'5px 10px',wordBreak:'break-all'}}>{op.new_path.split(/[\\/]/).pop()}</td>
-                        <td style={{padding:'5px 10px',whiteSpace:'nowrap',color:op.status==='success'?'var(--success)':'var(--danger)'}}>{op.status}</td>
+                      <tr key={i} style={{borderTop:'1px solid var(--border)',background:i%2===0?'transparent':'rgba(0,0,0,.015)'}}>
+                        <td style={{padding:'6px 12px',color:'var(--text-mute)',wordBreak:'break-word',maxWidth:220}}>{op.original_path.split(/[\\/]/).pop()}</td>
+                        <td style={{padding:'6px 12px',wordBreak:'break-word',maxWidth:220}}>{op.new_path.split(/[\\/]/).pop()}</td>
+                        <td style={{padding:'6px 12px',whiteSpace:'nowrap'}}>
+                          <span style={{color:op.status==='success'?'var(--success)':'var(--danger)',fontWeight:600,fontSize:11}}>{op.status==='success'?'✓ 成功':'✗ 失败'}</span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1298,7 +1337,9 @@ function SettingsTab(){
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
       {error&&<Err>{error}</Err>}
-      {success&&<div style={{color:'var(--success)',padding:'8px 12px',background:'var(--bg-0)',borderRadius:6,border:'1px solid var(--success)'}}>{success}</div>}
+      {success&&<div style={{color:'var(--success)',padding:'10px 14px',background:'rgba(52,211,153,.08)',borderRadius:10,border:'1px solid rgba(52,211,153,.3)',fontSize:13,display:'flex',alignItems:'center',gap:8}}>
+        <Icon id="i-check" className="icon icon-sm" style={{flexShrink:0}}/>{success}
+      </div>}
 
       {/* DeepSeek 配置 */}
       {fmCfg&&(
@@ -1316,7 +1357,7 @@ function SettingsTab(){
             <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)}
               placeholder="输入新 Key 以更新（留空保持不变）" style={S.input}/>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}}>
             <div>
               <label style={S.label}>Base URL</label>
               <input value={fmCfg.ai_base_url} onChange={e=>setFmCfg(p=>({...p,ai_base_url:e.target.value}))} style={S.input}/>
@@ -1329,7 +1370,7 @@ function SettingsTab(){
           <div>
             <label style={S.label}>自定义广告清理规则（每行一个正则）</label>
             <textarea value={customRules} onChange={e=>setCustomRules(e.target.value)} rows={4}
-              placeholder="如：\[.*?广告.*?\]" style={{...S.input,fontFamily:'monospace',resize:'vertical'}}/>
+              placeholder="如：\[.*?广告.*?\]" style={{...S.textarea,minHeight:80}}/>
           </div>
           <button className="btn btn-primary" onClick={saveFmCfg} disabled={saving} style={{alignSelf:'flex-start'}}>
             {saving?<span className="loading"/>:<Icon id="i-check" className="icon icon-sm"/>}保存 AI 配置
@@ -1343,8 +1384,8 @@ function SettingsTab(){
         {[['qidian','起点听书（需登录账号）'],['netease','网易云听书']].map(([k,l])=>(
           <div key={k}>
             <label style={S.label}>{l}</label>
-            <input value={cookies[k]||''} onChange={e=>setCookies(p=>({...p,[k]:e.target.value}))}
-              placeholder="粘贴 Cookie 字符串..." style={{...S.input,fontFamily:'monospace',fontSize:12}}/>
+            <textarea value={cookies[k]||''} onChange={e=>setCookies(p=>({...p,[k]:e.target.value}))}
+              placeholder="粘贴 Cookie 字符串..." rows={2} style={{...S.textarea,minHeight:60}}/>
           </div>
         ))}
         <button className="btn btn-primary" onClick={saveCookies} disabled={saving} style={{alignSelf:'flex-start'}}>
@@ -1364,8 +1405,8 @@ function SettingsTab(){
         </div>
         <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
           {blacklist.map(p=>(
-            <span key={p} style={{display:'flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:99,background:'var(--bg-1)',border:'1px solid var(--border)',fontSize:12}}>
-              {p}<button onClick={()=>setBlacklist(l=>l.filter(x=>x!==p))} style={{background:'none',border:'none',cursor:'pointer',color:'var(--danger)',padding:'0 0 0 4px',fontSize:14,lineHeight:1}}>×</button>
+            <span key={p} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:99,background:'var(--panel-hi)',border:'1px solid var(--border)',fontSize:12,color:'var(--text)'}}>
+              {p}<button onClick={()=>setBlacklist(l=>l.filter(x=>x!==p))} style={{background:'none',border:'none',cursor:'pointer',color:'var(--danger)',padding:'0 0 0 2px',fontSize:14,lineHeight:1}}>×</button>
             </span>
           ))}
           {blacklist.length===0&&<span style={{fontSize:12.5,color:'var(--text-mute)'}}>暂无黑名单规则</span>}
@@ -1381,19 +1422,27 @@ function SettingsTab(){
 // ─── 小工具组件 ──────────────────────────────────────────────────────────────
 
 function Err({children}){
-  return<div style={{color:'var(--danger)',padding:'8px 12px',background:'rgba(239,68,68,.08)',borderRadius:6,border:'1px solid var(--danger)',fontSize:13}}>{children}</div>;
+  return<div style={{color:'var(--danger)',padding:'10px 14px',background:'rgba(239,68,68,.08)',borderRadius:10,border:'1px solid rgba(239,68,68,.3)',fontSize:13,display:'flex',alignItems:'center',gap:8}}>
+    <Icon id="i-alert" className="icon icon-sm" style={{flexShrink:0}}/>
+    <span>{children}</span>
+  </div>;
 }
 
 function Tag({c,children}){
-  const colors={success:'var(--success)',danger:'var(--danger)',mute:'var(--text-mute)'};
-  return<span style={{fontSize:11,color:colors[c]||colors.mute}}>{children}</span>;
+  const styles={
+    success:{color:'var(--success)',background:'rgba(52,211,153,.12)',border:'1px solid rgba(52,211,153,.2)'},
+    danger:{color:'var(--danger)',background:'rgba(239,68,68,.12)',border:'1px solid rgba(239,68,68,.2)'},
+    mute:{color:'var(--text-faint)',background:'var(--panel-hi)',border:'1px solid var(--border)'},
+  };
+  const s=styles[c]||styles.mute;
+  return<span style={{fontSize:10.5,padding:'1px 7px',borderRadius:99,...s,fontWeight:600}}>{children}</span>;
 }
 
 function Modal({children,onClose}){
   return(
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.55)',backdropFilter:'blur(6px)',WebkitBackdropFilter:'blur(6px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'16px'}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{background:'var(--panel)',borderRadius:12,padding:24,width:480,maxWidth:'90vw',boxShadow:'0 8px 40px rgba(0,0,0,.4)'}}>
+      <div style={{background:'var(--panel-2)',borderRadius:'var(--radius-card)',padding:24,width:480,maxWidth:'100%',boxShadow:'0 20px 60px rgba(0,0,0,.5)',border:'1px solid var(--border-hi)'}}>
         {children}
       </div>
     </div>

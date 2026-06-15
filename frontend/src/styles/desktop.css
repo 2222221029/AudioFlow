@@ -913,3 +913,42 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
   .glass.glass-pad.detail-aside{display:none}
   .cookie-grid{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
 }
+
+/* ============================================================
+   LibraryPage 专属样式
+   ============================================================ */
+
+/* 焦点 ring — 与 field-input 保持一致 */
+.lib-field-focus:focus{
+  border-color:var(--border-hi)!important;
+  box-shadow:0 0 0 3px rgba(124,140,255,.16)!important;
+  outline:none!important;
+}
+
+/* 变量 code 芯片点击反馈 */
+.lib-var-chip:hover{
+  background:color-mix(in srgb,var(--primary) 15%,var(--pre-bg))!important;
+  border-color:var(--border-hi)!important;
+}
+
+/* history 表格行 hover */
+.lib-history-row:hover td{background:var(--panel-hi)!important;}
+
+/* 预览列表行 hover */
+.lib-preview-row:hover{background:var(--panel-hi)!important;}
+
+/* tab 栏隐藏滚动条 */
+.lib-tabbar::-webkit-scrollbar{display:none}
+
+/* 小屏下 FileBrowserModal 占满屏幕高度 */
+@media (max-height:560px){
+  .lib-browser-modal{max-height:96vh!important}
+}
+
+/* 移动端（主页面渲染为嵌入组件）form 单列 */
+@media (max-width:620px){
+  /* 所有 auto-fit 网格在 620px 以下强制单列 */
+  [style*="repeat(auto-fit,minmax(160px"],[style*="repeat(auto-fit,minmax(180px"]{
+    grid-template-columns:1fr!important;
+  }
+}

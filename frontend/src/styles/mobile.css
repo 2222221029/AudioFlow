@@ -1302,3 +1302,62 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
   .native-menu-list button,.native-menu-link{grid-template-columns:38px minmax(0,1fr) 16px;padding:0 13px}
   .native-menu-icon{width:38px;height:38px;border-radius:14px}
 }
+
+/* ============================================================
+   LibraryPage 移动端专属适配
+   ============================================================ */
+
+/* 确保 LibraryPage 撑满移动端容器且有正确底部 padding */
+.view .glass, .view .glass-pad{
+  /* glass 在 view 里不需要 overflow:hidden，避免内容截断 */
+  overflow:visible;
+}
+
+/* 让标签字段在移动端单列 */
+@media (max-width:600px){
+  /* 自动适应网格：在窄屏下强制单列 */
+  [style*="repeat(auto-fit,minmax(160px"],[style*="repeat(auto-fit,minmax(180px"]{
+    grid-template-columns:1fr!important;
+  }
+  /* 刮削基本信息：封面与字段纵向堆叠 */
+  [style*="flex:1,display:'grid',gridTemplateColumns:'1fr 1fr'"]{
+    grid-template-columns:1fr!important;
+  }
+}
+
+/* 步骤条：在移动端更紧凑 */
+@media (max-width:420px){
+  /* 步骤条标签在 380 以下只显示数字圆圈 */
+  .lib-step-label{display:none}
+}
+
+/* 预览虚拟列表：移动端缩减高度避免占太多屏幕 */
+@media (max-width:500px){
+  /* 虚拟滚动区域最大高度不超过 viewport 一半 */
+  [style*="height:min(previews.length*ROW_H"]{
+    max-height:55vmax!important;
+  }
+}
+
+/* FileBrowserModal：移动端宽高全屏 */
+@media (max-width:500px){
+  .lib-browser-panel{
+    border-radius:22px 22px 0 0!important;
+    max-width:100%!important;
+    max-height:90vh!important;
+  }
+}
+
+/* 使输入框在移动端有更舒适的高度（不触发 iOS 缩放） */
+input[style*="height:34"],select[style*="height:34"]{
+  height:40px!important;
+  font-size:16px!important;
+}
+
+/* 确保 Cookie textarea 有合理高度 */
+textarea[placeholder*="Cookie"]{min-height:72px!important}
+
+/* 标签黑名单 chip 在移动端换行正常 */
+[style*="display:'flex',flexWrap:'wrap',gap:6"]{
+  row-gap:8px!important;
+}
