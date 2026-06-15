@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import json
@@ -57,17 +57,17 @@ app = Flask(__name__, static_folder=None)
 
 @app.errorhandler(500)
 def handle_500(e):
-    """鎹曡幏鎵€鏈夋湭澶勭悊寮傚父锛岃繑鍥?JSON 鑰岄潪 Waitress 閿欒椤点€?""
+    """捕获所有未处理异常，返回 JSON 而非 Waitress 错误页。"""
     import traceback
     traceback.print_exc()
-    return jsonify(ok=False, error=str(e) or "鏈嶅姟鍣ㄥ唴閮ㄩ敊璇?), 500
+    return jsonify(ok=False, error=str(e) or "服务器内部错误"), 500
 
 @app.errorhandler(Exception)
 def handle_unhandled(e):
-    """鍏滃簳寮傚父澶勭悊銆?""
+    """兜底异常处理。"""
     import traceback
     traceback.print_exc()
-    return jsonify(ok=False, error=str(e) or "鏈鐞嗙殑寮傚父"), 500
+    return jsonify(ok=False, error=str(e) or "未处理的异常"), 500
 ensure_runtime_dirs()
 
 LOG_FILE = log_dir() / "server.log"
@@ -137,12 +137,12 @@ def current_user():
 @app.before_request
 def guard_api_requests():
     if request.content_length and request.content_length > MAX_JSON_BODY_BYTES:
-        return json_error("璇锋眰浣撹繃澶?, 413)
+        return json_error("请求体过大", 413)
     if _is_public_endpoint(request.path):
         return None
     if current_user():
         return None
-    return json_error("鏈櫥褰曟垨浼氳瘽宸茶繃鏈?, 401)
+    return json_error("未登录或会话已过期", 401)
 
 
 def active_download_dir():
@@ -317,19 +317,19 @@ def classify_failure_reason(error="", failed_chapters=None):
         [str(error or "")]
         + [str((chapter or {}).get("_error") or "") for chapter in (failed_chapters or []) if isinstance(chapter, dict)]
     ).lower()
-    if any(token in text for token in ("cookie", "鐧诲綍", "鐧婚檰", "unauthorized", "401", "403")):
-        return "鐧诲綍/Cookie 澶辨晥"
-    if any(token in text for token in ("vip", "浼氬憳", "浠樿垂", "鏉冮檺", "鐧介噾", "restricted")):
-        return "浼氬憳/浠樿垂闄愬埗"
-    if any(token in text for token in ("limit", "闄愭祦", "棰戠箒", "椋庢帶", "apistatus=114", "429")):
-        return "骞冲彴闄愭祦/椋庢帶"
-    if any(token in text for token in ("timeout", "timed out", "瓒呮椂", "connection", "network", "杩炴帴")):
-        return "缃戠粶瓒呮椂/杩炴帴澶辫触"
-    if any(token in text for token in ("url", "404", "410", "闊抽", "閾炬帴", "鍦板潃")):
-        return "闊抽鍦板潃澶辨晥"
-    if any(token in text for token in ("permission", "denied", "no space", "纾佺洏", "鍐欏叆", "鐩綍")):
-        return "鏈湴鏂囦欢/纾佺洏闂"
-    return "鏈煡鍘熷洜"
+    if any(token in text for token in ("cookie", "登录", "登陆", "unauthorized", "401", "403")):
+        return "登录/Cookie 失效"
+    if any(token in text for token in ("vip", "会员", "付费", "权限", "白金", "restricted")):
+        return "会员/付费限制"
+    if any(token in text for token in ("limit", "限流", "频繁", "风控", "apistatus=114", "429")):
+        return "平台限流/风控"
+    if any(token in text for token in ("timeout", "timed out", "超时", "connection", "network", "连接")):
+        return "网络超时/连接失败"
+    if any(token in text for token in ("url", "404", "410", "音频", "链接", "地址")):
+        return "音频地址失效"
+    if any(token in text for token in ("permission", "denied", "no space", "磁盘", "写入", "目录")):
+        return "本地文件/磁盘问题"
+    return "未知原因"
 
 
 def load_tasks():
@@ -342,15 +342,15 @@ def load_tasks():
         for task in loaded.values():
             if task.get("status") in ("queued", "running", "paused"):
                 task["status"] = "interrupted"
-                task["error"] = "鏈嶅姟閲嶅惎鍚庝换鍔″凡涓柇锛屽彲閲嶈瘯澶辫触绔犺妭鎴栭噸鏂版坊鍔犱笅杞姐€?
-                task["failure_reason"] = "鏈嶅姟閲嶅惎涓柇"
+                task["error"] = "服务重启后任务已中断，可重试失败章节或重新添加下载。"
+                task["failure_reason"] = "服务重启中断"
                 changed = True
         if changed:
             TASKS_FILE.write_text(json.dumps({"tasks": loaded}, ensure_ascii=False, indent=2), encoding="utf-8")
         return loaded if isinstance(loaded, dict) else {}
     except Exception as exc:
         logging.exception("load tasks failed")
-        print(f"[浠诲姟] 鍔犺浇浠诲姟鏂囦欢澶辫触锛歿exc}")
+        print(f"[任务] 加载任务文件失败：{exc}")
         return {}
 
 
@@ -369,12 +369,13 @@ def save_tasks(force=False):
         _last_task_save = now
     except Exception as exc:
         logging.exception("save tasks failed")
-        print(f"[浠诲姟] 淇濆瓨浠诲姟鏂囦欢澶辫触锛歿exc}")
+        print(f"[任务] 保存任务文件失败：{exc}")
 
-# 鈹€鈹€ 璁㈤槄鑷姩妫€娴嬭皟搴﹀櫒 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-# 鍛ㄦ湡鎬ф壂鎻忔墍鏈夈€屽埌鏈熴€嶇殑璁㈤槄锛坙ast_check_at 瓒呰繃 interval_hours锛夛紝
-# 璋冪敤 SubscriptionManager.diff_chapters 姣斿杩滅绔犺妭涓庢湰鍦版枃浠讹紝
-# 鍙戠幇缂哄け鍒欒嚜鍔ㄥ姞鍏ヤ笅杞介槦鍒楀埌璁剧疆鐨勪笅杞借矾寰勩€?_scheduler_lock = threading.Lock()
+# ── 订阅自动检测调度器 ──────────────────────────────────
+# 周期性扫描所有「到期」的订阅（last_check_at 超过 interval_hours），
+# 调用 SubscriptionManager.diff_chapters 比对远端章节与本地文件，
+# 发现缺失则自动加入下载队列到设置的下载路径。
+_scheduler_lock = threading.Lock()
 _scheduler_started = False
 _scheduler_event = threading.Event()
 _scheduler_status = {
@@ -439,7 +440,7 @@ def _sync_personal_ximalaya_subscriptions(force=False):
                     checked += 1
                     queued += 1 if job else 0
                 except Exception as exc:
-                    subscription_manager.mark_check_error(item.get("id"), f"涓汉涓績鍚屾鍚庢娴嬪け璐ワ細{exc}")
+                    subscription_manager.mark_check_error(item.get("id"), f"个人中心同步后检测失败：{exc}")
                     logging.exception("personal sync subscription check failed: %s", item.get("id"))
         _scheduler_status.update({
             "personal_sync_running": False,
@@ -469,13 +470,13 @@ def _personal_sync_tick(force=False):
     settings = subscription_manager.settings()
     platform = settings.get("personal_sync_platform") or "ximalaya"
     if platform != "ximalaya":
-        _scheduler_status["personal_sync_last_error"] = f"鏆備笉鏀寔鍚屾骞冲彴锛歿platform}"
+        _scheduler_status["personal_sync_last_error"] = f"暂不支持同步平台：{platform}"
         return {"skipped": True, "reason": "unsupported_platform"}
     return _sync_personal_ximalaya_subscriptions(force=force)
 
 
 def _scheduler_tick(force=False):
-    """鍗曟鎵弿锛氬鐞嗕竴鎵瑰埌鏈熺殑璁㈤槄銆?""
+    """单次扫描：处理一批到期的订阅。"""
     checked_count = 0
     queued_count = 0
     try:
@@ -515,9 +516,9 @@ def _scheduler_tick(force=False):
                 if result.get("queued"):
                     queued_count += 1
             except Exception as exc:
-                subscription_manager.mark_check_error(item.get("id"), f"鑷姩妫€娴嬪け璐ワ細{exc}")
+                subscription_manager.mark_check_error(item.get("id"), f"自动检测失败：{exc}")
                 logging.exception("subscription scheduler item failed")
-                print(f"[璁㈤槄璋冨害] 澶勭悊 {item.get('id')} 澶辫触锛歿exc}")
+                print(f"[订阅调度] 处理 {item.get('id')} 失败：{exc}")
         _scheduler_status.update({
             "running": False,
             "last_run_at": time.time(),
@@ -534,11 +535,11 @@ def _scheduler_tick(force=False):
             "last_error": str(exc),
         })
         logging.exception("subscription scheduler failed")
-        print(f"[璁㈤槄璋冨害] 寮傚父锛歿exc}")
+        print(f"[订阅调度] 异常：{exc}")
 
 
 def _scheduler_loop():
-    """甯搁┗寰幆銆傛瘡鍒嗛挓妫€鏌ヤ竴娆℃槸鍚︽湁鍒版湡璁㈤槄銆?""
+    """常驻循环。每分钟检查一次是否有到期订阅。"""
     while True:
         try:
             _scheduler_status["running"] = True
@@ -548,13 +549,13 @@ def _scheduler_loop():
         except Exception as exc:
             _scheduler_status["running"] = False
             _scheduler_status["last_error"] = str(exc)
-            print(f"[璁㈤槄璋冨害] loop 寮傚父锛歿exc}")
+            print(f"[订阅调度] loop 异常：{exc}")
         _scheduler_event.wait(60)
         _scheduler_event.clear()
 
 
 def start_subscription_scheduler():
-    """鍚姩鍚庡彴璋冨害绾跨▼锛堝箓绛夛級銆?""
+    """启动后台调度线程（幂等）。"""
     global _scheduler_started
     with _scheduler_lock:
         if _scheduler_started:
@@ -609,28 +610,28 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
             except Exception:
                 logging.debug("subscription progress callback failed", exc_info=True)
 
-    set_progress("姝ｅ湪鍑嗗璁㈤槄妫€娴?)
+    set_progress("正在准备订阅检测")
     item = subscription_manager.get(sid)
     if not item:
-        raise ValueError("璁㈤槄涓嶅瓨鍦?)
+        raise ValueError("订阅不存在")
     album = normalize_album(item.get("album") or item)
     voice = item.get("voice") or album.get("voice")
     album_id = album.get("id") or album.get("album_id") or album.get("book_id") or item.get("album_id")
     platform = album.get("platform") or item.get("platform")
     if not album_id or not platform:
-        raise ValueError("璁㈤槄缂哄皯涓撹緫 ID 鎴栧钩鍙?)
-    set_progress("姝ｅ湪鑾峰彇杩滅绔犺妭", platform=platform, album_id=album_id)
-    if platform == "涓冪尗鍚功":
+        raise ValueError("订阅缺少专辑 ID 或平台")
+    set_progress("正在获取远端章节", platform=platform, album_id=album_id)
+    if platform == "七猫听书":
         search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
         if album.get("book_id"):
             search_manager.qimao_manager._search_cache[str(album.get("book_id"))] = dict(album)
         if album.get("album_id"):
             search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
-    if platform == "鐣寗鍚功":
+    if platform == "番茄听书":
         if not voice:
             voice = resolve_voice_for_album(album, (get_album_voices(album) or [None])[0])
         chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), voice) if voice else []
-    elif platform == "涓冪尗鍚功":
+    elif platform == "七猫听书":
         if not voice:
             voice = resolve_voice_for_album(album, (get_album_voices(album) or [None])[0])
         chapters = search_manager.qimao_manager.get_chapters(str(album_id), voice) if voice else search_manager.qimao_manager.get_chapters(str(album_id))
@@ -639,18 +640,18 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(chapters or [], start=1)]
     if not chapters and item.get("chapters"):
         chapters = item.get("chapters") or []
-    set_progress("姝ｅ湪鎵弿鏈湴鏂囦欢", chapter_count=len(chapters))
+    set_progress("正在扫描本地文件", chapter_count=len(chapters))
     scan_cache = {}
     diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False)
-    set_progress("姝ｅ湪鏇存柊璁㈤槄缁撴灉", missing_count=len(diff.get("missing") or []))
-    subscription_manager.update_check_result(sid, chapters, diff, "鑷姩妫€娴嬪畬鎴? if queue_missing else "宸叉鏌?, refresh_local=False)
+    set_progress("正在更新订阅结果", missing_count=len(diff.get("missing") or []))
+    subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
     item = subscription_manager.get(sid) or item
     item["download_dir"] = active_download_dir()
     stats = subscription_manager.stats_for(item, active_download_dir(), fast=True)
     queued_task_id = ""
     missing = diff.get("missing") or []
     if queue_missing and missing:
-        set_progress("姝ｅ湪鍒涘缓涓嬭浇浠诲姟", missing_count=len(missing))
+        set_progress("正在创建下载任务", missing_count=len(missing))
         if not voice:
             voices = get_album_voices(album)
             voice = voices[0] if voices else None
@@ -659,15 +660,15 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
         start_download_task(queued_task_id, album, missing, options, source=source)
         notification_manager.notify(
             "subscription_queued",
-            f"璁㈤槄鍙戠幇鏂扮珷鑺傦細{album.get('title') or '鏈煡涓撹緫'}",
-            f"骞冲彴锛歿platform}\n鏂板/缂哄け锛歿len(missing)} 绔燶n浠诲姟锛歿queued_task_id}",
+            f"订阅发现新章节：{album.get('title') or '未知专辑'}",
+            f"平台：{platform}\n新增/缺失：{len(missing)} 章\n任务：{queued_task_id}",
             {"album": album, "missing_count": len(missing), "task_id": queued_task_id, "source": source},
         )
     elif diff.get("missing") and not queue_missing:
         notification_manager.notify(
             "subscription_checked",
-            f"璁㈤槄妫€娴嬪彂鐜扮己澶憋細{album.get('title') or '鏈煡涓撹緫'}",
-            f"骞冲彴锛歿platform}\n缂哄け锛歿len(diff.get('missing') or [])} 绔?,
+            f"订阅检测发现缺失：{album.get('title') or '未知专辑'}",
+            f"平台：{platform}\n缺失：{len(diff.get('missing') or [])} 章",
             {"album": album, "missing_count": len(diff.get("missing") or []), "source": source},
         )
     return {
@@ -696,18 +697,18 @@ def _subscription_job(job_id, sid, queue_missing):
         subscription_jobs[job_id].update(
             {
                 "status": "running",
-                "message": "姝ｅ湪妫€娴嬭闃?,
+                "message": "正在检测订阅",
                 "started_at": started_at,
                 "updated_at": started_at,
             }
         )
     try:
         result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription", progress=update_progress)
-        message = "宸插姞鍏ヤ笅杞介槦鍒? if result.get("queued") else "妫€娴嬪畬鎴愶紝鏃犻渶琛ュ叏" if queue_missing else "妫€娴嬪畬鎴?
+        message = "已加入下载队列" if result.get("queued") else "检测完成，无需补全" if queue_missing else "检测完成"
         append_background_event(
             "subscription",
             message,
-            f"{result.get('title') or sid} 缂哄け {result.get('missing_count') or 0} 绔?,
+            f"{result.get('title') or sid} 缺失 {result.get('missing_count') or 0} 章",
             {"sid": sid, "queue_missing": queue_missing, "result": result},
         )
         finished_at = time.time()
@@ -717,7 +718,7 @@ def _subscription_job(job_id, sid, queue_missing):
             )
     except Exception as exc:
         logging.exception("subscription job failed")
-        append_background_event("subscription", "璁㈤槄妫€娴嬪け璐?, f"{sid}锛歿exc}", {"sid": sid, "error": str(exc)})
+        append_background_event("subscription", "订阅检测失败", f"{sid}：{exc}", {"sid": sid, "error": str(exc)})
         finished_at = time.time()
         with subscription_job_lock:
             subscription_jobs[job_id].update(
@@ -732,7 +733,7 @@ def cleanup_subscription_jobs(now=None):
         if job.get("status") in {"queued", "running"}:
             active_at = float(job.get("started_at") or job.get("updated_at") or job.get("created_at") or 0)
             if active_at and now - active_at > SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS:
-                message = "璁㈤槄妫€娴嬭秴鏃讹紝璇风◢鍚庨噸璇?
+                message = "订阅检测超时，请稍后重试"
                 job.update(
                     {
                         "status": "failed",
@@ -744,8 +745,8 @@ def cleanup_subscription_jobs(now=None):
                 )
                 append_background_event(
                     "subscription",
-                    "璁㈤槄妫€娴嬭秴鏃?,
-                    f"{job.get('sid') or job_id} 妫€娴嬭秴鏃?,
+                    "订阅检测超时",
+                    f"{job.get('sid') or job_id} 检测超时",
                     {"job_id": job_id, "sid": job.get("sid"), "timeout_seconds": SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS},
                 )
         if job.get("status") in terminal:
@@ -783,7 +784,7 @@ def start_subscription_job(sid, queue_missing=False):
             "sid": sid,
             "status": "queued",
             "queue_missing": bool(queue_missing),
-            "message": "宸插姞鍏ュ悗鍙伴槦鍒?,
+            "message": "已加入后台队列",
             "created_at": time.time(),
             "updated_at": time.time(),
         }
@@ -811,10 +812,10 @@ def api_auth_login():
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
     if auth_manager.is_locked(username):
-        return json_error(f"鐧诲綍澶辫触娆℃暟杩囧锛岃 {auth_manager.lock_remaining(username)} 绉掑悗鍐嶈瘯", 429)
+        return json_error(f"登录失败次数过多，请 {auth_manager.lock_remaining(username)} 秒后再试", 429)
     token = auth_manager.login(username, password)
     if not token:
-        return json_error("璐﹀彿鎴栧瘑鐮侀敊璇?, 401)
+        return json_error("账号或密码错误", 401)
     user = auth_manager.user_for_session(token)
     response = json_ok(user=user)
     response.set_cookie(
@@ -841,7 +842,7 @@ def api_auth_logout():
 def api_auth_change_password():
     user = current_user()
     if not user:
-        return json_error("鏈櫥褰曟垨浼氳瘽宸茶繃鏈?, 401)
+        return json_error("未登录或会话已过期", 401)
     payload = request.get_json(silent=True) or {}
     try:
         auth_manager.change_password(
@@ -894,19 +895,19 @@ def normalize_cover_url(url, platform=""):
         return "https:" + url
     if url.startswith("http://") or url.startswith("https://"):
         return url
-    if platform == "鍠滈┈鎷夐泤":
+    if platform == "喜马拉雅":
         return "https://imagev2.xmcdn.com" + (url if url.startswith("/") else f"/{url}")
-    if platform == "鎳掍汉鍚功":
+    if platform == "懒人听书":
         return "https://m.lrts.me" + (url if url.startswith("/") else f"/{url}")
-    if platform == "浜戝惉FM":
+    if platform == "云听FM":
         return "https://www.radio.cn" + (url if url.startswith("/") else f"/{url}")
     return url
 
 
 def normalize_album(album):
     data = dict(album or {})
-    platform = _pick_nested_value(data, ("platform", "source")) or "鏈煡骞冲彴"
-    title = _pick_nested_value(data, ("title", "album_title", "albumTitle", "book_name", "bookName", "name", "AudioName")) or "鏈煡涓撹緫"
+    platform = _pick_nested_value(data, ("platform", "source")) or "未知平台"
+    title = _pick_nested_value(data, ("title", "album_title", "albumTitle", "book_name", "bookName", "name", "AudioName")) or "未知专辑"
     author = _pick_nested_value(
         data,
         (
@@ -950,7 +951,7 @@ def merge_album_detail(album, detail):
     normalized = normalize_album({**detail, "platform": album.get("platform") or detail.get("platform")})
     for key in ("title", "author", "cover", "status", "description", "category"):
         value = normalized.get(key) or detail.get(key)
-        if value and (not merged.get(key) or str(merged.get(key)).strip() in ("鏈煡", "鏈煡浣滆€?, "鏈煡涓撹緫")):
+        if value and (not merged.get(key) or str(merged.get(key)).strip() in ("未知", "未知作者", "未知专辑")):
             merged[key] = value
     if _to_int(merged.get("episodes")) <= 0 and _to_int(normalized.get("episodes")) > 0:
         merged["episodes"] = normalized["episodes"]
@@ -1005,7 +1006,7 @@ def normalize_chapter(chapter, index=None):
         or data.get("chapterTitle")
         or data.get("audio_title")
         or data.get("audioTitle")
-        or (f"绗?{index} 绔? if index else "鏈煡绔犺妭")
+        or (f"第 {index} 章" if index else "未知章节")
     )
     data.setdefault("title", title)
     seconds = 0
@@ -1056,12 +1057,12 @@ def normalize_voice(voice, index=None):
     if vid:
         data.setdefault("id", vid)
         data.setdefault("voice_id", data.get("voice_id") or data.get("tone_id") or vid)
-    data.setdefault("name", data.get("title") or data.get("label") or f"闊宠壊{index or ''}")
+    data.setdefault("name", data.get("title") or data.get("label") or f"音色{index or ''}")
     kind = data.get("kind")
     if not kind:
         kind = "real" if str(data.get("is_real_person") or "") == "1" else "ai"
     data["kind"] = kind
-    data.setdefault("category", "鐪熶汉褰曞埗" if kind == "real" else "AI 闊宠壊")
+    data.setdefault("category", "真人录制" if kind == "real" else "AI 音色")
     return data
 
 
@@ -1075,15 +1076,15 @@ def get_album_voice_context(album):
 
 def get_album_voices(album):
     album, album_id, book_id, platform = get_album_voice_context(album)
-    if platform == "鐣寗鐣呭惉":
+    if platform == "番茄畅听":
         voices = search_manager.fanqie_manager.fetch_voices(book_id or album_id)
         for voice in voices:
             voice.setdefault("platform", platform)
         return [normalize_voice(v, i) for i, v in enumerate(voices, 1)]
-    if platform == "鐣寗鍚功":
+    if platform == "番茄听书":
         voices = search_manager.fanqie_tingshu_manager.fetch_voices(book_id)
         return [normalize_voice(v, i) for i, v in enumerate(voices, 1)]
-    if platform == "涓冪尗鍚功":
+    if platform == "七猫听书":
         if album_id:
             search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
         if album.get("book_id"):
@@ -1099,11 +1100,11 @@ def resolve_voice_for_album(album, voice):
     album, album_id, book_id, platform = get_album_voice_context(album)
     if not isinstance(voice, dict):
         return None
-    if platform == "鐣寗鐣呭惉":
+    if platform == "番茄畅听":
         return search_manager.fanqie_manager.resolve_voice_config(book_id or album_id, voice) or voice
-    if platform == "鐣寗鍚功":
+    if platform == "番茄听书":
         return search_manager.fanqie_tingshu_manager.resolve_voice_config(book_id, voice) or voice
-    if platform == "涓冪尗鍚功":
+    if platform == "七猫听书":
         voices = search_manager.qimao_manager.fetch_voices(book_id)
         return search_manager.qimao_manager._match_voice(voices, voice) or voice
     return voice
@@ -1122,11 +1123,11 @@ def chapter_identifier(chapter):
 def sync_platform_cookie(platform):
     """Keep long-lived platform managers aligned with the persisted cookie."""
     key_map = {
-        "鍠滈┈鎷夐泤": "xmly",
-        "鎳掍汉鍚功": "lrts",
-        "璧风偣鍚功": "qidian",
-        "铚昏湏FM": "qtfm",
-        "缃戞槗浜戝惉涔?: "netease",
+        "喜马拉雅": "xmly",
+        "懒人听书": "lrts",
+        "起点听书": "qidian",
+        "蜻蜓FM": "qtfm",
+        "网易云听书": "netease",
     }
     key = key_map.get(platform)
     if not key:
@@ -1224,15 +1225,15 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     album = normalize_album(album)
     chapters = list(chapters or [])
     options = dict(options or {})
-    if album.get("platform") == "鎳掍汉鍚功":
-        sync_platform_cookie("鎳掍汉鍚功")
+    if album.get("platform") == "懒人听书":
+        sync_platform_cookie("懒人听书")
     options["download_dir"] = resolve_download_dir(options.get("download_dir"))
     _write_album_source_file(album, options, task_id)
     warning = str(options.get("warning") or "").strip()
-    if not warning and album.get("platform") == "鎳掍汉鍚功":
+    if not warning and album.get("platform") == "懒人听书":
         expected = _to_int(album.get("episodes"))
         if expected > 0 and len(chapters) < expected:
-            warning = f"鎳掍汉鍚功鐩綍鍙兘鏈畬鏁村姞杞斤細褰撳墠浠诲姟 {len(chapters)}/{expected} 绔犮€?
+            warning = f"懒人听书目录可能未完整加载：当前任务 {len(chapters)}/{expected} 章。"
     set_task(
         task_id,
         status="queued",
@@ -1288,17 +1289,17 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
     )
     append_background_event(
         "download",
-        ("涓嬭浇瀹屾垚" if status == "completed" else "涓嬭浇閮ㄥ垎瀹屾垚" if status == "partial" else "涓嬭浇鍋滄"),
-        f"{task.get('title') or task_id} 鎴愬姛 {success} 绔狅紝澶辫触 {failed} 绔? + (f"锛屽師鍥狅細{failure_reason}" if failure_reason else ""),
+        ("下载完成" if status == "completed" else "下载部分完成" if status == "partial" else "下载停止"),
+        f"{task.get('title') or task_id} 成功 {success} 章，失败 {failed} 章" + (f"，原因：{failure_reason}" if failure_reason else ""),
         {"task_id": task_id, "status": status, "success": success, "failed": failed, "failure_reason": failure_reason},
     )
     if status in ("completed", "partial"):
         scene = "download_completed" if status == "completed" else "download_failed"
-        title = "涓嬭浇瀹屾垚" if status == "completed" else "涓嬭浇閮ㄥ垎瀹屾垚"
+        title = "下载完成" if status == "completed" else "下载部分完成"
         notification_manager.notify(
             scene,
-            f"{title}锛歿task.get('title') or task_id}",
-            f"骞冲彴锛歿album.get('platform') or '-'}\n鎴愬姛锛歿success} 绔燶n澶辫触锛歿failed} 绔燶n浠诲姟锛歿task_id}",
+            f"{title}：{task.get('title') or task_id}",
+            f"平台：{album.get('platform') or '-'}\n成功：{success} 章\n失败：{failed} 章\n任务：{task_id}",
             {"task": task, "album": album, "success": success, "failed": failed},
         )
     return task
@@ -1309,10 +1310,10 @@ def run_download_task(task_id, album, chapters, options):
     chapters = list(chapters or [])
     options = dict(options or {})
     warning = str(options.get("warning") or "").strip()
-    if not warning and album.get("platform") == "鎳掍汉鍚功":
+    if not warning and album.get("platform") == "懒人听书":
         expected = _to_int(album.get("episodes"))
         if expected > 0 and len(chapters) < expected:
-            warning = f"鎳掍汉鍚功鐩綍鍙兘鏈畬鏁村姞杞斤細褰撳墠浠诲姟 {len(chapters)}/{expected} 绔犮€?
+            warning = f"懒人听书目录可能未完整加载：当前任务 {len(chapters)}/{expected} 章。"
     set_task(
         task_id,
         status="running",
@@ -1332,7 +1333,7 @@ def run_download_task(task_id, album, chapters, options):
             chapters=chapters,
             download_dir=resolve_download_dir(options.get("download_dir")),
             quality=options.get("quality") or "M4A 96K",
-            album_title=album.get("title") or "鏈煡涓撹緫",
+            album_title=album.get("title") or "未知专辑",
             album_id=str(album.get("id") or album.get("album_id") or album.get("book_id") or ""),
             platform=album.get("platform") or "",
             task_id=task_id,
@@ -1355,14 +1356,14 @@ def run_download_task(task_id, album, chapters, options):
         task = set_task(task_id, status="failed", error=str(exc), failure_reason=failure_reason, finished_at=time.time())
         append_background_event(
             "download",
-            "涓嬭浇澶辫触",
-            f"{task.get('title') or task_id}锛歿failure_reason}",
+            "下载失败",
+            f"{task.get('title') or task_id}：{failure_reason}",
             {"task_id": task_id, "error": str(exc), "failure_reason": failure_reason},
         )
         notification_manager.notify(
             "download_failed",
-            f"涓嬭浇澶辫触锛歿task.get('title') or task_id}",
-            f"閿欒锛歿exc}\n浠诲姟锛歿task_id}",
+            f"下载失败：{task.get('title') or task_id}",
+            f"错误：{exc}\n任务：{task_id}",
             {"task": task, "error": str(exc)},
         )
         logging.exception("download task failed: %s", task_id)
@@ -1405,7 +1406,7 @@ def api_config():
 
 @app.post("/api/config")
 def api_set_config():
-    """淇濆瓨绯荤粺璁剧疆锛氫笅杞界洰褰曘€侀煶璐ㄣ€佸苟鍙戠嚎绋嬫暟"""
+    """保存系统设置：下载目录、音质、并发线程数"""
     payload = request.get_json(silent=True) or {}
     if "download_dir" in payload:
         cookie_manager.set_download_dir(payload["download_dir"])
@@ -1443,6 +1444,44 @@ def api_set_config():
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
         ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
         ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
+    )
+
+
+
+def _mask_api_key(key):
+    s = str(key or "").strip()
+    if len(s) <= 8:
+        return "*" * len(s) if s else ""
+    return s[:4] + "*" * (len(s) - 8) + s[-4:]
+
+
+@app.get("/api/config/ai")
+def api_ai_config():
+    return json_ok(
+        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
+        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
+        ai_model=cookie_manager.get_cookie("ai_model") or "deepseek-chat",
+        ai_base_url=cookie_manager.get_cookie("ai_base_url") or "https://api.deepseek.com",
+    )
+
+
+@app.post("/api/config/ai")
+def api_save_ai_config():
+    payload = request.get_json(silent=True) or {}
+    if "ai_api_key" in payload:
+        key = str(payload.get("ai_api_key") or "").strip()
+        if key:
+            cookie_manager.set_cookie("ai_api_key", key)
+        else:
+            cookie_manager.set_cookie("ai_api_key", "")
+    if "ai_model" in payload:
+        cookie_manager.set_cookie("ai_model", str(payload.get("ai_model") or "deepseek-chat").strip())
+    if "ai_base_url" in payload:
+        cookie_manager.set_cookie("ai_base_url", str(payload.get("ai_base_url") or "https://api.deepseek.com").strip())
+    return json_ok(
+        saved=True,
+        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
+        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
     )
 
 
@@ -1529,34 +1568,34 @@ def _notification_service(service_id, service_type=None):
 def _wecom_config_for_callback(service_id):
     service = _notification_service(service_id, "wecom_app")
     if not service:
-        raise ValueError("浼佷笟寰俊搴旂敤閫氱煡娓犻亾涓嶅瓨鍦?)
+        raise ValueError("企业微信应用通知渠道不存在")
     config = dict(service.get("config") or {})
     missing = [key for key in ("corp_id", "agent_id", "secret", "token", "encoding_aes_key") if not str(config.get(key) or "").strip()]
     if missing:
-        raise ValueError("浼佷笟寰俊搴旂敤鍥炶皟閰嶇疆涓嶅畬鏁达細" + "銆?.join(missing))
+        raise ValueError("企业微信应用回调配置不完整：" + "、".join(missing))
     return service, config
 
 
 def _wecom_help_text():
     return (
-        "AudioFlow 浼佷笟寰俊鎸囦护锛歕n"
-        "甯姪锛氭樉绀烘寚浠n"
-        "鐘舵€侊細鏌ョ湅鏈嶅姟鐗堟湰鍜屼换鍔℃暟\n"
-        "鎼滅储 鍏抽敭璇嶏細鎼滅储鏈夊０涔n"
-        "璁㈤槄 搴忓彿锛氳闃呮渶杩戜竴娆℃悳绱㈢粨鏋淺n"
-        "涓嬭浇 搴忓彿锛氫笅杞芥渶杩戜竴娆℃悳绱㈢粨鏋滃叏閮ㄧ珷鑺俓n"
-        "绀轰緥锛氭悳绱?涓変綋"
+        "AudioFlow 企业微信指令：\n"
+        "帮助：显示指令\n"
+        "状态：查看服务版本和任务数\n"
+        "搜索 关键词：搜索有声书\n"
+        "订阅 序号：订阅最近一次搜索结果\n"
+        "下载 序号：下载最近一次搜索结果全部章节\n"
+        "示例：搜索 三体"
     )
 
 
 def _wecom_album_lines(results):
     lines = []
     for index, item in enumerate(results[:8], start=1):
-        title = item.get("title") or "鏈煡涓撹緫"
-        platform = item.get("platform") or "鏈煡骞冲彴"
-        author = item.get("author") or "鏈煡浣滆€?
+        title = item.get("title") or "未知专辑"
+        platform = item.get("platform") or "未知平台"
+        author = item.get("author") or "未知作者"
         episodes = item.get("episodes") or "?"
-        lines.append(f"{index}. {title}\n   {platform} / {author} / {episodes} 绔?)
+        lines.append(f"{index}. {title}\n   {platform} / {author} / {episodes} 章")
     return "\n".join(lines)
 
 
@@ -1585,15 +1624,15 @@ def _wecom_get_cached_album(service_id, user_id, index_text):
     try:
         index = int(str(index_text).strip())
     except (TypeError, ValueError):
-        raise ValueError("璇疯緭鍏ユ纭簭鍙凤紝渚嬪锛氳闃?1")
+        raise ValueError("请输入正确序号，例如：订阅 1")
     with wecom_session_lock:
         cleanup_wecom_sessions()
         session = wecom_sessions.get(_wecom_session_key(service_id, user_id)) or {}
     results = session.get("results") or []
     if not results:
-        raise ValueError("杩樻病鏈夋悳绱㈢粨鏋滐紝璇峰厛鍙戦€侊細鎼滅储 鍏抽敭璇?)
+        raise ValueError("还没有搜索结果，请先发送：搜索 关键词")
     if index < 1 or index > len(results):
-        raise ValueError(f"搴忓彿瓒呭嚭鑼冨洿锛岃杈撳叆 1-{len(results)}")
+        raise ValueError(f"序号超出范围，请输入 1-{len(results)}")
     return normalize_album(results[index - 1])
 
 
@@ -1602,37 +1641,37 @@ def _wecom_load_album_chapters(album):
     album_id = album.get("id") or album.get("album_id") or album.get("book_id")
     platform = album.get("platform")
     if not album_id or not platform:
-        raise ValueError("缂哄皯涓撹緫 ID 鎴栧钩鍙?)
+        raise ValueError("缺少专辑 ID 或平台")
     voice = resolve_voice_for_album(album, None)
-    if platform == "涓冪尗鍚功":
+    if platform == "七猫听书":
         search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
         if album.get("book_id"):
             search_manager.qimao_manager._search_cache[str(album.get("book_id"))] = dict(album)
         if album.get("album_id"):
             search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
-    if platform == "鐣寗鐣呭惉" and voice:
+    if platform == "番茄畅听" and voice:
         raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), voice, page=1, page_size=10000)
-    elif platform == "鐣寗鍚功" and voice:
+    elif platform == "番茄听书" and voice:
         raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), voice)
-    elif platform == "涓冪尗鍚功" and voice:
+    elif platform == "七猫听书" and voice:
         raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), voice)
     else:
         raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(raw_chapters or [], start=1)]
     if not chapters:
-        raise ValueError("娌℃湁鑾峰彇鍒扮珷鑺傚垪琛?)
+        raise ValueError("没有获取到章节列表")
     return album, chapters, voice
 
 
 def _wecom_handle_text_command(service_id, user_id, text):
     text = str(text or "").strip()
-    if not text or text in {"甯姪", "help", "/help", "锛?, "?"}:
+    if not text or text in {"帮助", "help", "/help", "？", "?"}:
         return _wecom_help_text()
-    if text in {"鐘舵€?, "status", "/status"}:
+    if text in {"状态", "status", "/status"}:
         tasks_now = task_snapshot()
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
-        return f"AudioFlow v{APP_VERSION}\n浠诲姟鎬绘暟锛歿len(tasks_now)}\n杩涜涓細{running}"
-    match = re.match(r"^(鎼滅储|search|/search)\s+(.+)$", text, re.I)
+        return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
+    match = re.match(r"^(搜索|search|/search)\s+(.+)$", text, re.I)
     if match:
         keyword = match.group(2).strip()
         results = [normalize_album(item) for item in search_manager.search_books(keyword, "all")][:8]
@@ -1640,9 +1679,9 @@ def _wecom_handle_text_command(service_id, user_id, text):
             cleanup_wecom_sessions()
             wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
         if not results:
-            return f"娌℃湁鎼滅储鍒帮細{keyword}"
-        return f"鎼滅储缁撴灉锛歿keyword}\n{_wecom_album_lines(results)}\n\n鍙戦€佲€滆闃?搴忓彿鈥濇垨鈥滀笅杞?搴忓彿鈥濈户缁€?
-    match = re.match(r"^(璁㈤槄|subscribe|/subscribe)\s+(\d+)$", text, re.I)
+            return f"没有搜索到：{keyword}"
+        return f"搜索结果：{keyword}\n{_wecom_album_lines(results)}\n\n发送“订阅 序号”或“下载 序号”继续。"
+    match = re.match(r"^(订阅|subscribe|/subscribe)\s+(\d+)$", text, re.I)
     if match:
         album = _wecom_get_cached_album(service_id, user_id, match.group(2))
         album, chapters, voice = _wecom_load_album_chapters(album)
@@ -1653,9 +1692,9 @@ def _wecom_handle_text_command(service_id, user_id, text):
         if subscription_manager.settings().get("enabled", True):
             ensure_subscription_scheduler()
             job = start_subscription_job(item["id"], queue_missing=subscription_manager.settings().get("auto_download_missing", True))
-        suffix = f"\n宸插惎鍔ㄦ娴嬩换鍔★細{job.get('id')}" if job else ""
-        return f"宸茶闃咃細{album.get('title')}\n绔犺妭鏁帮細{len(chapters)}{suffix}"
-    match = re.match(r"^(涓嬭浇|download|/download)\s+(\d+)$", text, re.I)
+        suffix = f"\n已启动检测任务：{job.get('id')}" if job else ""
+        return f"已订阅：{album.get('title')}\n章节数：{len(chapters)}{suffix}"
+    match = re.match(r"^(下载|download|/download)\s+(\d+)$", text, re.I)
     if match:
         album = _wecom_get_cached_album(service_id, user_id, match.group(2))
         album, chapters, voice = _wecom_load_album_chapters(album)
@@ -1664,8 +1703,8 @@ def _wecom_handle_text_command(service_id, user_id, text):
             options["voice"] = voice
         task_id = f"wecom-{uuid.uuid4().hex[:12]}"
         start_download_task(task_id, album, chapters, options, source="wecom")
-        return f"宸插姞鍏ヤ笅杞斤細{album.get('title')}\n绔犺妭鏁帮細{len(chapters)}\n浠诲姟 ID锛歿task_id}"
-    return "鏃犳硶璇嗗埆鎸囦护銆俓n\n" + _wecom_help_text()
+        return f"已加入下载：{album.get('title')}\n章节数：{len(chapters)}\n任务 ID：{task_id}"
+    return "无法识别指令。\n\n" + _wecom_help_text()
 
 
 def _wecom_text_response_xml(message, content):
@@ -1708,10 +1747,10 @@ def api_wecom_callback(service_id):
             elif msg_type == "event":
                 reply = _wecom_help_text()
             else:
-                reply = "鐩墠浠呮敮鎸佹枃瀛楁寚浠ゃ€俓n\n" + _wecom_help_text()
+                reply = "目前仅支持文字指令。\n\n" + _wecom_help_text()
         except Exception as exc:
             logging.exception("wecom command failed: %s", service_id)
-            reply = f"鎸囦护鎵ц澶辫触锛歿exc}\n\n{_wecom_help_text()}"
+            reply = f"指令执行失败：{exc}\n\n{_wecom_help_text()}"
         response_xml = _wecom_text_response_xml(message, reply)
         return Response(crypto.encrypt(response_xml, nonce=nonce), mimetype="application/xml")
     except Exception as exc:
@@ -1719,23 +1758,9 @@ def api_wecom_callback(service_id):
         return Response(str(exc), status=200, mimetype="text/plain")
 
 
-def _path_status(path):
-    path = Path(path)
-    path.mkdir(parents=True, exist_ok=True)
-    writable = False
-    try:
-        probe = path / ".audioflow_write_test"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        writable = True
-    except Exception:
-        writable = False
-    return {"path": str(path), "exists": path.exists(), "writable": writable}
-
 
 @app.get("/api/files")
 def api_list_files():
-    """列出下载目录中的文件和文件夹"""
     base_str = request.args.get("path", "").strip()
     try:
         base = Path(active_download_dir())
@@ -1775,7 +1800,6 @@ def api_list_files():
 
 @app.post("/api/files/rename")
 def api_rename_file():
-    """重命名文件或文件夹"""
     payload = request.get_json(silent=True) or {}
     file_path = str(payload.get("path") or "").strip()
     new_name = str(payload.get("new_name") or "").strip()
@@ -1811,7 +1835,6 @@ def api_rename_file():
 
 @app.post("/api/files/scrape")
 def api_scrape_file():
-    """刮削文件元数据（预留功能）"""
     payload = request.get_json(silent=True) or {}
     file_path = str(payload.get("path") or "").strip()
     if not file_path:
@@ -1836,7 +1859,6 @@ def api_scrape_file():
 
 @app.post("/api/files/ai-rename")
 def api_ai_rename():
-    """使用 DeepSeek AI 为文件生成新名称"""
     payload = request.get_json(silent=True) or {}
     file_path = str(payload.get("path") or "").strip()
     if not file_path:
@@ -1879,7 +1901,7 @@ def api_ai_rename():
         if resp.status_code != 200:
             return json_error(f"AI 请求失败: {resp.status_code} {resp.text[:200]}", 502)
         result = resp.json()
-        new_stem = (result.get("choices") or [{}])[0].get("message", {}).get("content", "").strip().strip("\"'`").strip()
+        new_stem = (result.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
         if not new_stem:
             return json_error("AI 返回内容为空", 502)
         new_name = new_stem + ext
@@ -1887,6 +1909,7 @@ def api_ai_rename():
             new_name = new_stem + "_renamed" + ext
         dst = src.parent / new_name
         if dst.exists():
+            import uuid
             new_name = new_stem + f"_{uuid.uuid4().hex[:4]}" + ext
             dst = src.parent / new_name
         src.rename(dst)
@@ -1908,6 +1931,18 @@ def api_ai_rename():
         return json_error(str(exc), 500)
 
 
+def _path_status(path):
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    writable = False
+    try:
+        probe = path / ".audioflow_write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        writable = True
+    except Exception:
+        writable = False
+    return {"path": str(path), "exists": path.exists(), "writable": writable}
 
 
 @app.get("/api/diagnostics")
@@ -1950,7 +1985,7 @@ def api_search():
     keyword = request.args.get("q", "").strip()
     platform = request.args.get("platform", "all").strip() or "all"
     if not keyword:
-        return json_error("璇疯緭鍏ユ悳绱㈠叧閿瘝")
+        return json_error("请输入搜索关键词")
     results = [normalize_album(item) for item in search_manager.search_books(keyword, platform)]
     return json_ok(results=results, count=len(results))
 
@@ -1963,24 +1998,24 @@ def api_chapters():
     album_id = album.get("id") or album.get("album_id") or album.get("book_id")
     platform = album.get("platform")
     if not album_id or not platform:
-        return json_error("缂哄皯涓撹緫 ID 鎴栧钩鍙?)
-    if platform == "涓冪尗鍚功":
+        return json_error("缺少专辑 ID 或平台")
+    if platform == "七猫听书":
         search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
         if album.get("book_id"):
             search_manager.qimao_manager._search_cache[str(album.get("book_id"))] = dict(album)
         if album.get("album_id"):
             search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
     active_voice = resolve_voice_for_album(album, voice)
-    if platform == "鐣寗鐣呭惉" and active_voice:
+    if platform == "番茄畅听" and active_voice:
         raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
-    elif platform == "鐣寗鍚功" and active_voice:
+    elif platform == "番茄听书" and active_voice:
         raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
-    elif platform == "涓冪尗鍚功" and active_voice:
+    elif platform == "七猫听书" and active_voice:
         raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
     else:
         raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
     warning = ""
-    if platform == "鎳掍汉鍚功":
+    if platform == "懒人听书":
         warning = str(getattr(search_manager.lrts_manager, "last_chapter_warning", "") or "")
     if _to_int(album.get("episodes")) <= 0 or not album.get("cover") or not album.get("author"):
         try:
@@ -1994,8 +2029,8 @@ def api_chapters():
     if _to_int(album.get("episodes")) <= 0 and chapters:
         album["episodes"] = len(chapters)
     expected = _to_int(album.get("episodes"))
-    if platform == "鎳掍汉鍚功" and expected > 0 and len(chapters) < expected and not warning:
-        warning = f"鎳掍汉鍚功鐩綍鍙兘鏈畬鏁村姞杞斤細褰撳墠鑾峰彇 {len(chapters)}/{expected} 绔犮€?
+    if platform == "懒人听书" and expected > 0 and len(chapters) < expected and not warning:
+        warning = f"懒人听书目录可能未完整加载：当前获取 {len(chapters)}/{expected} 章。"
     if warning:
         album["catalog_warning"] = warning
     return json_ok(album=album, chapters=chapters, count=len(chapters), voice=active_voice, warning=warning)
@@ -2006,7 +2041,7 @@ def api_album_voices():
     payload = request.get_json(silent=True) or {}
     album = normalize_album(payload.get("album") or payload)
     if not album.get("platform"):
-        return json_error("缂哄皯骞冲彴淇℃伅")
+        return json_error("缺少平台信息")
     try:
         voices = get_album_voices(album)
         return json_ok(album=album, voices=voices, count=len(voices))
@@ -2025,12 +2060,12 @@ def api_album_audio():
     album_id = album.get("id") or album.get("album_id") or album.get("book_id")
     track_id = chapter_identifier(chapter)
     if not platform or not album_id or not track_id:
-        return json_error("缂哄皯涓撹緫銆佺珷鑺傛垨骞冲彴淇℃伅锛屾棤娉曟挱鏀?)
+        return json_error("缺少专辑、章节或平台信息，无法播放")
     try:
-        if platform == "鐣寗鐣呭惉":
+        if platform == "番茄畅听":
             info = search_manager.fanqie_manager.get_audio_download_info(
                 str(track_id),
-                voice or "鏃犳崯鐪熶汉褰曞埗",
+                voice or "无损真人录制",
                 str(album_id),
             )
             if info and info.get("url"):
@@ -2041,7 +2076,7 @@ def api_album_audio():
                 if info.get("play") or info.get("encrypted"):
                     ok = search_manager.fanqie_manager.download_changting_chapter(
                         str(track_id),
-                        voice or "鏃犳崯鐪熶汉褰曞埗",
+                        voice or "无损真人录制",
                         tmp, "M4A 64K",
                     )
                 else:
@@ -2053,41 +2088,45 @@ def api_album_audio():
         url = chapter_direct_audio_url(chapter)
         if not url:
             voice_name = (voice or {}).get("name") if isinstance(voice, dict) else None
-            if platform == "鐣寗鍚功" and voice:
+            if platform == "番茄听书" and voice:
                 path_or_url = search_manager.fanqie_tingshu_manager.prepare_playback(str(track_id), voice)
                 url = path_or_url or ""
-            elif platform == "涓冪尗鍚功" and voice:
+            elif platform == "七猫听书" and voice:
                 path_or_url = search_manager.qimao_manager.prepare_playback(str(track_id), voice_config=voice)
                 url = path_or_url or ""
-            elif platform == "鎳掍汉鍚功":
+            elif platform == "懒人听书":
                 sync_platform_cookie(platform)
                 url = search_manager.lrts_manager.get_audio_url(str(album_id), str(track_id), chapter)
             else:
                 url = pick_audio_url(search_manager.get_audio_urls(str(track_id), platform, str(album_id), voice_name))
         if not url:
-            return json_error("鏈幏鍙栧埌鍙挱鏀剧殑闊抽鍦板潃")
+            return json_error("未获取到可播放的音频地址")
         local_url = register_local_audio(url)
         if local_url:
             return json_ok(url=local_url, source_url=local_url)
-        # 娴忚鍣ㄧ洿鎺ユ媺绗笁鏂?CDN 閫氬父浼氬洜 Referer/Origin 鏍￠獙鎴栫己灏?cookie 鑰?403/闈欓煶锛?        # 鏀硅蛋鏈嶅姟绔唬鐞嗐€傚師濮?URL 涔熶竴骞惰繑鍥烇紝鏂逛究鍓嶇/璋冭瘯銆?        proxy_url = register_audio_proxy_url(url, platform)
+        # 浏览器直接拉第三方 CDN 通常会因 Referer/Origin 校验或缺少 cookie 而 403/静音，
+        # 改走服务端代理。原始 URL 也一并返回，方便前端/调试。
+        proxy_url = register_audio_proxy_url(url, platform)
         if not proxy_url:
-            return json_error("闊抽鍦板潃鏃犳硶鐢熸垚瀹夊叏浠ｇ悊閾炬帴")
+            return json_error("音频地址无法生成安全代理链接")
         return json_ok(url=proxy_url, source_url=url)
     except Exception as exc:
         return json_error(str(exc), status=500)
 
 
-# 鈹€鈹€ 闊抽浠ｇ悊 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-# 娴忚鍣ㄦ挱鏀剧涓夋柟 CDN 鏃跺父鍥犱负 Referer / Origin / cookie 鏍￠獙澶辫触鑰屾棤澹般€?# 鏈嶅姟绔唬鐞嗕竴灞傦紝鎸夊钩鍙拌ˉ姝ｇ‘鐨?Referer/UA锛屽啀浠ユ祦寮?chunk 鍥炰紶缁欐祻瑙堝櫒銆?_PLATFORM_REFERER = {
-    "鍠滈┈鎷夐泤": "https://www.ximalaya.com/",
-    "鎳掍汉鍚功": "https://www.lrts.me/",
-    "鐣寗鐣呭惉": "https://fanqienovel.com/",
-    "铚昏湏FM": "https://www.qtfm.cn/",
-    "浜戝惉FM": "https://www.radio.cn/",
-    "璧风偣鍚功": "https://www.qidian.com/",
-    "閰锋垜鍚功": "https://www.kuwo.cn/",
-    "缃戞槗浜戝惉涔?: "https://music.163.com/",
-    "鑽旀灊FM": "https://m.lizhi.fm/",
+# ── 音频代理 ──────────────────────────────────
+# 浏览器播放第三方 CDN 时常因为 Referer / Origin / cookie 校验失败而无声。
+# 服务端代理一层，按平台补正确的 Referer/UA，再以流式 chunk 回传给浏览器。
+_PLATFORM_REFERER = {
+    "喜马拉雅": "https://www.ximalaya.com/",
+    "懒人听书": "https://www.lrts.me/",
+    "番茄畅听": "https://fanqienovel.com/",
+    "蜻蜓FM": "https://www.qtfm.cn/",
+    "云听FM": "https://www.radio.cn/",
+    "起点听书": "https://www.qidian.com/",
+    "酷我听书": "https://www.kuwo.cn/",
+    "网易云听书": "https://music.163.com/",
+    "荔枝FM": "https://m.lizhi.fm/",
 }
 
 _PROXY_ALLOWED_SCHEMES = ("http", "https")
@@ -2095,17 +2134,17 @@ _AUDIO_PROXY_TOKENS = {}
 _AUDIO_PROXY_TOKEN_TTL = 15 * 60
 
 _PLATFORM_AUDIO_HOST_HINTS = {
-    "鍠滈┈鎷夐泤": ("ximalaya.com", "xmcdn.com", "ximalayaos.com"),
-    "鎳掍汉鍚功": ("lrts.me", "lrts1.com", "ting55.com"),
-    "鐣寗鐣呭惉": ("fanqienovel.com", "snssdk.com", "byteimg.com", "toutiao.com", "bytedance.com"),
-    "鐣寗鍚功": ("fanqienovel.com", "snssdk.com", "byteimg.com", "toutiao.com", "bytedance.com"),
-    "涓冪尗鍚功": ("qimao.com", "qimao.tv", "qimaoapi.com"),
-    "铚昏湏FM": ("qtfm.cn", "qingting.fm", "qtfm.com"),
-    "浜戝惉FM": ("radio.cn", "cnr.cn", "yunting.cn"),
-    "璧风偣鍚功": ("qidian.com", "qdmobi.com"),
-    "閰锋垜鍚功": ("kuwo.cn", "kuwo.com"),
-    "缃戞槗浜戝惉涔?: ("music.163.com", "music.126.net", "netease.com"),
-    "鑽旀灊FM": ("lizhi.fm", "lizhi.io"),
+    "喜马拉雅": ("ximalaya.com", "xmcdn.com", "ximalayaos.com"),
+    "懒人听书": ("lrts.me", "lrts1.com", "ting55.com"),
+    "番茄畅听": ("fanqienovel.com", "snssdk.com", "byteimg.com", "toutiao.com", "bytedance.com"),
+    "番茄听书": ("fanqienovel.com", "snssdk.com", "byteimg.com", "toutiao.com", "bytedance.com"),
+    "七猫听书": ("qimao.com", "qimao.tv", "qimaoapi.com"),
+    "蜻蜓FM": ("qtfm.cn", "qingting.fm", "qtfm.com"),
+    "云听FM": ("radio.cn", "cnr.cn", "yunting.cn"),
+    "起点听书": ("qidian.com", "qdmobi.com"),
+    "酷我听书": ("kuwo.cn", "kuwo.com"),
+    "网易云听书": ("music.163.com", "music.126.net", "netease.com"),
+    "荔枝FM": ("lizhi.fm", "lizhi.io"),
 }
 
 
@@ -2162,24 +2201,24 @@ def _resolve_audio_proxy_request():
     if token:
         item = _AUDIO_PROXY_TOKENS.get(token)
         if not item:
-            raise ValueError("鎾斁閾炬帴宸茶繃鏈燂紝璇烽噸鏂版墦寮€璇曞惉")
+            raise ValueError("播放链接已过期，请重新打开试听")
         return str(item.get("url") or ""), str(item.get("platform") or ""), True
     if not audio_proxy_raw_url_enabled():
-        raise ValueError("涓嶅厑璁哥洿鎺ヤ唬鐞嗗閮ㄩ煶棰戝湴鍧€")
+        raise ValueError("不允许直接代理外部音频地址")
     return (request.args.get("url") or "").strip(), (request.args.get("platform") or "").strip(), False
 
 
 def _validate_audio_proxy_target(src, platform, trusted_token=False):
     parsed = urlparse(src)
     if parsed.scheme not in _PROXY_ALLOWED_SCHEMES or not parsed.netloc:
-        raise ValueError("闈炴硶鐨勯煶棰戝湴鍧€")
+        raise ValueError("非法的音频地址")
     if parsed.username or parsed.password:
-        raise ValueError("闊抽鍦板潃涓嶈兘鍖呭惈璁よ瘉淇℃伅")
+        raise ValueError("音频地址不能包含认证信息")
     hostname = parsed.hostname or ""
     if _hostname_is_private(hostname):
-        raise ValueError("涓嶅厑璁歌闂唴缃戞垨鏈満鍦板潃")
+        raise ValueError("不允许访问内网或本机地址")
     if not trusted_token and not _is_allowed_audio_host(platform, hostname):
-        raise ValueError("闊抽鍩熷悕涓嶅湪骞冲彴鐧藉悕鍗曞唴")
+        raise ValueError("音频域名不在平台白名单内")
     return parsed
 
 
@@ -2193,11 +2232,11 @@ def _request_audio_upstream(method, src, platform, headers, trusted_token):
         location = upstream.headers.get("Location", "")
         upstream.close()
         if not location:
-            raise ValueError("涓婃父璺宠浆缂哄皯 Location")
+            raise ValueError("上游跳转缺少 Location")
         current = requests.compat.urljoin(current, location)
         if upstream.status_code == 303:
             method = "GET"
-    raise ValueError("涓婃父璺宠浆娆℃暟杩囧")
+    raise ValueError("上游跳转次数过多")
 
 
 @app.route("/api/local-audio/<token>", methods=["GET", "HEAD"])
@@ -2205,11 +2244,11 @@ def api_local_audio(token):
     cleanup_local_audio_tokens()
     item = _LOCAL_AUDIO_TOKENS.get(token)
     if not item:
-        return json_error("闊抽涓存椂鏂囦欢宸插け鏁?, status=404)
+        return json_error("音频临时文件已失效", status=404)
     path = Path(str(item.get("path") or ""))
     if not path.is_file():
         _LOCAL_AUDIO_TOKENS.pop(token, None)
-        return json_error("闊抽涓存椂鏂囦欢涓嶅瓨鍦?, status=404)
+        return json_error("音频临时文件不存在", status=404)
     mime = mimetypes.guess_type(path.name)[0] or infer_audio_content_type(path.name)
     return send_file(path, mimetype=mime, conditional=True, max_age=0)
 
@@ -2232,14 +2271,16 @@ def infer_audio_content_type(url, upstream_type=""):
 
 @app.route("/api/proxy/audio", methods=["GET", "HEAD"])
 def api_proxy_audio():
-    """娴佸紡浠ｇ悊绗笁鏂归煶棰戙€?
+    """流式代理第三方音频。
+
     Query:
-        url: 鍘熷闊抽 URL锛堝繀濉紝搴斾负 http/https锛?        platform: 骞冲彴鍚嶏紝鐢ㄤ簬琛ユ纭殑 Referer
+        url: 原始音频 URL（必填，应为 http/https）
+        platform: 平台名，用于补正确的 Referer
     """
     try:
         src, platform, trusted_token = _resolve_audio_proxy_request()
         if not src:
-            return json_error("缂哄皯闊抽鍦板潃")
+            return json_error("缺少音频地址")
         _validate_audio_proxy_target(src, platform, trusted_token=trusted_token)
     except ValueError as exc:
         return json_error(str(exc), status=403)
@@ -2248,26 +2289,29 @@ def api_proxy_audio():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "*/*",
-        "Accept-Encoding": "identity",  # 閬垮厤涓婃父 gzip 鍚庢祦寮忎笉鏄撳鐞?        "Connection": "keep-alive",
+        "Accept-Encoding": "identity",  # 避免上游 gzip 后流式不易处理
+        "Connection": "keep-alive",
     }
     referer = _PLATFORM_REFERER.get(platform)
-    if platform == "鐣寗鐣呭惉":
+    if platform == "番茄畅听":
         referer = ""
     if referer:
         headers["Referer"] = referer
         headers["Origin"] = referer.rstrip("/")
-    # 閫忎紶 Range锛屾敮鎸佹祻瑙堝櫒鎷栧姩杩涘害鏉?    range_header = request.headers.get("Range")
+    # 透传 Range，支持浏览器拖动进度条
+    range_header = request.headers.get("Range")
     if range_header:
         headers["Range"] = range_header
 
-    # 閮ㄥ垎骞冲彴闊抽 CDN 闇€瑕佸甫骞冲彴 cookie銆傚彧鏈夋湇鍔＄绛惧彂鐨勭煭鏈?token
-    # 鎵嶈兘瑙﹀彂 Cookie 閫忎紶锛岄伩鍏嶅閮ㄦ瀯閫?URL 绐冨彇 Cookie銆?    cookie_key_map = {
-        "鍠滈┈鎷夐泤": "xmly", "鎳掍汉鍚功": "lrts", "璧风偣鍚功": "qidian",
-        "铚昏湏FM": "qtfm", "鐣寗鐣呭惉": "fanqie", "鐣寗鍚功": "fanqie_tingshu",
-        "涓冪尗鍚功": "qimao", "浜戝惉FM": "yuntu", "閰锋垜鍚功": "kuwo", "缃戞槗浜戝惉涔?: "netease",
-        "鑽旀灊FM": "lizhi",
+    # 部分平台音频 CDN 需要带平台 cookie。只有服务端签发的短期 token
+    # 才能触发 Cookie 透传，避免外部构造 URL 窃取 Cookie。
+    cookie_key_map = {
+        "喜马拉雅": "xmly", "懒人听书": "lrts", "起点听书": "qidian",
+        "蜻蜓FM": "qtfm", "番茄畅听": "fanqie", "番茄听书": "fanqie_tingshu",
+        "七猫听书": "qimao", "云听FM": "yuntu", "酷我听书": "kuwo", "网易云听书": "netease",
+        "荔枝FM": "lizhi",
     }
-    cookie_required_platforms = {"鍠滈┈鎷夐泤", "鎳掍汉鍚功", "璧风偣鍚功", "铚昏湏FM", "缃戞槗浜戝惉涔?}
+    cookie_required_platforms = {"喜马拉雅", "懒人听书", "起点听书", "蜻蜓FM", "网易云听书"}
     ck_key = cookie_key_map.get(platform) if trusted_token and platform in cookie_required_platforms else None
     if ck_key == "lrts":
         ck_key = None
@@ -2282,13 +2326,14 @@ def api_proxy_audio():
         method = "HEAD" if request.method == "HEAD" else "GET"
         upstream, final_src = _request_audio_upstream(method, src, platform, headers, trusted_token)
     except Exception as exc:
-        return json_error(f"涓婃父璇锋眰澶辫触锛歿exc}", status=502)
+        return json_error(f"上游请求失败：{exc}", status=502)
 
     if upstream.status_code >= 400:
         upstream.close()
-        return json_error(f"涓婃父杩斿洖 {upstream.status_code}", status=upstream.status_code)
+        return json_error(f"上游返回 {upstream.status_code}", status=upstream.status_code)
 
-    # 閫忎紶鍏抽敭鍝嶅簲澶?    passthrough = {}
+    # 透传关键响应头
+    passthrough = {}
     for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"):
         v = upstream.headers.get(h)
         if v:
@@ -2323,9 +2368,9 @@ def api_download():
     album = normalize_album(payload.get("album") or {})
     chapters = hydrate_download_chapters(album, payload.get("chapters") or [], payload.get("chapter_ids") or payload.get("chapterIds") or [])
     if not album or not chapters:
-        return json_error("缂哄皯涓撹緫鎴栫珷鑺?)
-    if album.get("platform") == "鎳掍汉鍚功":
-        sync_platform_cookie("鎳掍汉鍚功")
+        return json_error("缺少专辑或章节")
+    if album.get("platform") == "懒人听书":
+        sync_platform_cookie("懒人听书")
     task_id = f"web-{uuid.uuid4().hex[:12]}"
     options = payload.get("options") or {}
     options["download_dir"] = resolve_download_dir(options.get("download_dir"))
@@ -2356,7 +2401,7 @@ def api_retry_unfinished_downloads():
         options = task.get("options") or {}
         new_task_id = f"retry-{uuid.uuid4().hex[:12]}"
         created.append(start_download_task(new_task_id, album, chapters, options, source=f"retry-unfinished:{task.get('id')}"))
-    append_background_event("download", "閲嶈瘯鏈畬鎴愪换鍔?, f"鍒涘缓 {len(created)} 涓噸璇曚换鍔?, {"count": len(created)})
+    append_background_event("download", "重试未完成任务", f"创建 {len(created)} 个重试任务", {"count": len(created)})
     return json_ok(count=len(created), tasks=created)
 
 
@@ -2364,7 +2409,7 @@ def api_retry_unfinished_downloads():
 def api_download_detail(task_id):
     task = task_snapshot(task_id)
     if not task:
-        return json_error("浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("任务不存在", 404)
     return json_ok(task=task)
 
 
@@ -2399,10 +2444,10 @@ def stop_worker(worker):
 def api_download_pause(task_id):
     task = task_snapshot(task_id)
     if not task:
-        return json_error("浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("任务不存在", 404)
     worker = live_worker(task_id)
     if not worker:
-        return json_error("浠诲姟鏈湪杩愯锛屾棤娉曟殏鍋?, 409)
+        return json_error("任务未在运行，无法暂停", 409)
     pause_worker(worker)
     return json_ok(task=set_task(task_id, status="paused"))
 
@@ -2411,10 +2456,10 @@ def api_download_pause(task_id):
 def api_download_resume(task_id):
     task = task_snapshot(task_id)
     if not task:
-        return json_error("浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("任务不存在", 404)
     worker = live_worker(task_id)
     if not worker:
-        return json_error("浠诲姟鏈湪杩愯锛屾棤娉曠户缁?, 409)
+        return json_error("任务未在运行，无法继续", 409)
     resume_worker(worker)
     return json_ok(task=set_task(task_id, status="running"))
 
@@ -2423,7 +2468,7 @@ def api_download_resume(task_id):
 def api_download_stop(task_id):
     task = task_snapshot(task_id)
     if not task:
-        return json_error("浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("任务不存在", 404)
     worker = live_worker(task_id)
     if worker:
         stop_worker(worker)
@@ -2437,12 +2482,12 @@ def api_download_stop(task_id):
 def api_download_retry_failed(task_id):
     task = task_snapshot(task_id)
     if not task:
-        return json_error("浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("任务不存在", 404)
     chapters = task.get("failed_chapters") or []
     if not chapters and task.get("status") in ("failed", "interrupted", "stopped"):
         chapters = task.get("chapters") or []
     if not chapters:
-        return json_error("娌℃湁鍙噸璇曠殑澶辫触绔犺妭")
+        return json_error("没有可重试的失败章节")
     album = task.get("album") or {"title": task.get("title"), "platform": (task.get("task_info") or {}).get("platform")}
     options = task.get("options") or {}
     if not options and task.get("task_info"):
@@ -2459,9 +2504,9 @@ def api_download_retry_failed(task_id):
 def api_download_delete(task_id):
     task = task_snapshot(task_id)
     if not task:
-        return json_error("浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("任务不存在", 404)
     if live_worker(task_id) or task.get("status") in ("running", "queued", "paused", "stopping"):
-        return json_error("杩愯涓殑浠诲姟涓嶈兘鍒犻櫎锛岃鍏堝仠姝?, 409)
+        return json_error("运行中的任务不能删除，请先停止", 409)
     with task_lock:
         tasks.pop(task_id, None)
         save_tasks(force=True)
@@ -2505,7 +2550,7 @@ def _album_cover_value(album):
 def _ensure_subscription_cover(item):
     album = item.get("album") or {}
     platform = item.get("platform") or album.get("platform")
-    if platform != "閰锋垜鍚功" or item.get("cover") or _album_cover_value(album):
+    if platform != "酷我听书" or item.get("cover") or _album_cover_value(album):
         return item
     album_id = item.get("album_id") or album.get("id") or album.get("album_id") or album.get("book_id")
     if not album_id:
@@ -2559,7 +2604,7 @@ def api_organize_downloads_by_platform():
     moved = []
     skipped = []
     if not root.exists():
-        return json_error("涓嬭浇鐩綍涓嶅瓨鍦?, 404)
+        return json_error("下载目录不存在", 404)
     for item in subscription_manager.all_subscriptions():
         title = item.get("title") or (item.get("album") or {}).get("title")
         platform = item.get("platform") or (item.get("album") or {}).get("platform")
@@ -2570,7 +2615,7 @@ def api_organize_downloads_by_platform():
         if not source.exists() or not source.is_dir():
             continue
         if target.exists():
-            skipped.append({"title": title, "platform": platform, "reason": "鐩爣鐩綍宸插瓨鍦?, "source": str(source), "target": str(target)})
+            skipped.append({"title": title, "platform": platform, "reason": "目标目录已存在", "source": str(source), "target": str(target)})
             continue
         moved.append({"title": title, "platform": platform, "source": str(source), "target": str(target)})
         if not dry_run:
@@ -2580,8 +2625,8 @@ def api_organize_downloads_by_platform():
         subscription_manager.build_audio_index(active_download_dir(), force=True)
     append_background_event(
         "maintenance",
-        "涓嬭浇鐩綍鏁寸悊",
-        f"{'棰勮' if dry_run else '瀹屾垚'}锛氱Щ鍔?{len(moved)} 涓紝璺宠繃 {len(skipped)} 涓?,
+        "下载目录整理",
+        f"{'预览' if dry_run else '完成'}：移动 {len(moved)} 个，跳过 {len(skipped)} 个",
         {"dry_run": dry_run, "moved": moved, "skipped": skipped},
     )
     return json_ok(dry_run=dry_run, moved=moved, skipped=skipped, moved_count=len(moved), skipped_count=len(skipped))
@@ -2589,15 +2634,16 @@ def api_organize_downloads_by_platform():
 
 @app.get("/api/subscriptions/settings")
 def api_get_subscription_settings():
-    """璇诲彇璁㈤槄鑷姩妫€娴嬭缃€?""
+    """读取订阅自动检测设置。"""
     ensure_subscription_scheduler()
     return json_ok(settings=subscription_manager.settings())
 
 
 @app.post("/api/subscriptions/settings")
 def api_update_subscription_settings():
-    """鏇存柊璁㈤槄鑷姩妫€娴嬭缃€?
-    Body: {"enabled": bool, "auto_download_missing": bool, "interval_hours": int, "interval_minutes": int, "quality": str(鍙€?}
+    """更新订阅自动检测设置。
+
+    Body: {"enabled": bool, "auto_download_missing": bool, "interval_hours": int, "interval_minutes": int, "quality": str(可选)}
     """
     payload = request.get_json(silent=True) or {}
     updates = {}
@@ -2609,22 +2655,23 @@ def api_update_subscription_settings():
         try:
             hours = int(payload.get("interval_hours") or 0)
         except Exception:
-            return json_error("interval_hours 蹇呴』鏄暣鏁?)
+            return json_error("interval_hours 必须是整数")
         if hours < 1:
-            return json_error("妫€娴嬮棿闅旇嚦灏?1 灏忔椂")
+            return json_error("检测间隔至少 1 小时")
         if hours > 24 * 30:
-            return json_error("妫€娴嬮棿闅旇繃澶?)
+            return json_error("检测间隔过大")
         updates["interval_hours"] = hours
-        # 閲嶇疆鍒嗛挓瀛楁锛屾寜灏忔椂涓哄崟浣?        updates["interval_minutes"] = 0
+        # 重置分钟字段，按小时为单位
+        updates["interval_minutes"] = 0
     if "interval_minutes" in payload:
         try:
             minutes = int(payload.get("interval_minutes") or 0)
         except Exception:
-            return json_error("interval_minutes 蹇呴』鏄暣鏁?)
+            return json_error("interval_minutes 必须是整数")
         if minutes < 1:
-            return json_error("妫€娴嬮棿闅旇嚦灏?1 鍒嗛挓")
+            return json_error("检测间隔至少 1 分钟")
         if minutes > 24 * 30 * 60:
-            return json_error("妫€娴嬮棿闅旇繃澶?)
+            return json_error("检测间隔过大")
         updates["interval_hours"] = 0
         updates["interval_minutes"] = minutes
     if "quality" in payload and str(payload.get("quality") or "").strip():
@@ -2634,34 +2681,35 @@ def api_update_subscription_settings():
     if "personal_sync_platform" in payload and str(payload.get("personal_sync_platform") or "").strip():
         platform = str(payload.get("personal_sync_platform")).strip()
         if platform != "ximalaya":
-            return json_error("鐩墠浠呮敮鎸佸悓姝ュ枩椹媺闆呬釜浜轰腑蹇冭闃?)
+            return json_error("目前仅支持同步喜马拉雅个人中心订阅")
         updates["personal_sync_platform"] = platform
     if "personal_sync_interval_hours" in payload:
         try:
             hours = int(payload.get("personal_sync_interval_hours") or 0)
         except Exception:
-            return json_error("personal_sync_interval_hours 蹇呴』鏄暣鏁?)
+            return json_error("personal_sync_interval_hours 必须是整数")
         if hours < 1:
-            return json_error("涓汉涓績鍚屾闂撮殧鑷冲皯 1 灏忔椂")
+            return json_error("个人中心同步间隔至少 1 小时")
         if hours > 24 * 30:
-            return json_error("涓汉涓績鍚屾闂撮殧杩囧ぇ")
+            return json_error("个人中心同步间隔过大")
         updates["personal_sync_interval_hours"] = hours
         updates["personal_sync_interval_minutes"] = 0
     if "personal_sync_interval_minutes" in payload:
         try:
             minutes = int(payload.get("personal_sync_interval_minutes") or 0)
         except Exception:
-            return json_error("personal_sync_interval_minutes 蹇呴』鏄暣鏁?)
+            return json_error("personal_sync_interval_minutes 必须是整数")
         if minutes < 1:
-            return json_error("涓汉涓績鍚屾闂撮殧鑷冲皯 1 鍒嗛挓")
+            return json_error("个人中心同步间隔至少 1 分钟")
         if minutes > 24 * 30 * 60:
-            return json_error("涓汉涓績鍚屾闂撮殧杩囧ぇ")
+            return json_error("个人中心同步间隔过大")
         updates["personal_sync_interval_hours"] = 0
         updates["personal_sync_interval_minutes"] = minutes
     if not updates:
-        return json_error("鏈彁渚涗换浣曞彲鏇存柊鐨勫瓧娈?)
+        return json_error("未提供任何可更新的字段")
     subscription_manager.update_settings(**updates)
-    # 寮€鍚椂纭繚璋冨害绾跨▼宸插惎鍔?    if subscription_manager.settings().get("enabled", True):
+    # 开启时确保调度线程已启动
+    if subscription_manager.settings().get("enabled", True):
         wake_subscription_scheduler(force=bool(payload.get("run_now", True)))
     elif subscription_manager.settings().get("personal_sync_enabled", False):
         wake_subscription_scheduler(force=False)
@@ -2671,7 +2719,7 @@ def api_update_subscription_settings():
 @app.post("/api/subscriptions/run")
 def api_run_subscriptions_now():
     if not subscription_manager.settings().get("enabled", True):
-        return json_error("璁㈤槄鑷姩妫€娴嬫湭鍚敤")
+        return json_error("订阅自动检测未启用")
     ensure_subscription_scheduler()
     auto_download = subscription_manager.settings().get("auto_download_missing", True)
     jobs = [
@@ -2691,21 +2739,21 @@ def api_subscriptions_batch():
         ids = [item.get("id") for item in subscription_manager.active_subscriptions()]
     ids = [str(item) for item in ids or [] if item]
     if action not in {"check", "complete", "cancel", "enable"}:
-        return json_error("涓嶆敮鎸佺殑鎵归噺鎿嶄綔")
+        return json_error("不支持的批量操作")
     jobs = []
     changed = 0
     if action in {"check", "complete"}:
         for sid in ids:
             if subscription_manager.get(sid):
                 jobs.append(start_subscription_job(sid, queue_missing=(action == "complete")))
-        append_background_event("subscription", "鎵归噺璁㈤槄鎿嶄綔", f"{action} {len(jobs)} 涓闃?, {"action": action, "count": len(jobs)})
+        append_background_event("subscription", "批量订阅操作", f"{action} {len(jobs)} 个订阅", {"action": action, "count": len(jobs)})
         return json_ok(action=action, jobs=jobs, count=len(jobs), scheduler=subscription_scheduler_status())
     for sid in ids:
         if action == "cancel":
             changed += 1 if subscription_manager.cancel(sid) else 0
         elif action == "enable":
             changed += 1 if subscription_manager.set_status(sid, "active") else 0
-    append_background_event("subscription", "鎵归噺璁㈤槄鎿嶄綔", f"{action} {changed} 涓闃?, {"action": action, "count": changed})
+    append_background_event("subscription", "批量订阅操作", f"{action} {changed} 个订阅", {"action": action, "count": changed})
     return json_ok(action=action, count=changed, scheduler=subscription_scheduler_status())
 
 
@@ -2734,7 +2782,7 @@ def api_subscribe():
     chapters = payload.get("chapters") or []
     voice = resolve_voice_for_album(album, payload.get("voice"))
     if not album:
-        return json_error("缂哄皯涓撹緫淇℃伅")
+        return json_error("缺少专辑信息")
     if voice:
         album["voice"] = voice
     item = subscription_manager.add_or_update(album, chapters, active_download_dir())
@@ -2755,7 +2803,7 @@ def api_unsubscribe(sid):
 @app.post("/api/subscriptions/<path:sid>/check")
 def api_subscription_check(sid):
     if not subscription_manager.get(sid):
-        return json_error("璁㈤槄涓嶅瓨鍦?, 404)
+        return json_error("订阅不存在", 404)
     return json_ok(job=start_subscription_job(sid, queue_missing=False))
 
 
@@ -2765,28 +2813,28 @@ def api_subscription_job(job_id):
         cleanup_subscription_jobs()
         job = dict(subscription_jobs.get(job_id) or {})
     if not job:
-        return json_error("璁㈤槄浠诲姟涓嶅瓨鍦?, 404)
+        return json_error("订阅任务不存在", 404)
     return json_ok(job=job)
 
 
 @app.post("/api/subscriptions/<path:sid>/complete")
 def api_subscription_complete(sid):
     if not subscription_manager.get(sid):
-        return json_error("璁㈤槄涓嶅瓨鍦?, 404)
+        return json_error("订阅不存在", 404)
     return json_ok(job=start_subscription_job(sid, queue_missing=True))
 
 
 @app.get("/api/player/url")
 def api_player_url():
-    """鑾峰彇绔犺妭鐨勬挱鏀?URL"""
+    """获取章节的播放 URL"""
     platform = request.args.get("platform", "").strip()
     album_id = request.args.get("album_id", "").strip()
     chapter_id = request.args.get("chapter_id", "").strip()
     if not chapter_id:
-        return json_error("缂哄皯 chapter_id 鍙傛暟")
+        return json_error("缺少 chapter_id 参数")
     try:
         url = None
-        if platform == "鍠滈┈鎷夐泤":
+        if platform == "喜马拉雅":
             urls = search_manager.ximalaya_manager.get_audio_urls(chapter_id)
             if isinstance(urls, dict):
                 for q, info in sorted(urls.items(), key=lambda x: x[1].get('quality_level', 0) if isinstance(x[1], dict) else 0, reverse=True):
@@ -2797,34 +2845,34 @@ def api_player_url():
                             break
             else:
                 url = urls
-        elif platform == "鎳掍汉鍚功":
+        elif platform == "懒人听书":
             sync_platform_cookie(platform)
             url = search_manager.lrts_manager.get_audio_url(album_id, chapter_id)
-        elif platform == "鐣寗鐣呭惉":
-            voice_name = request.args.get("voice_name", "").strip() or "鏃犳崯鐪熶汉褰曞埗"
+        elif platform == "番茄畅听":
+            voice_name = request.args.get("voice_name", "").strip() or "无损真人录制"
             info = search_manager.fanqie_manager.get_audio_download_info(chapter_id, voice_name, album_id)
             url = info.get("url") if info else None
-        elif platform == "浜戝惉FM":
+        elif platform == "云听FM":
             url = request.args.get("direct_url", "")
-        elif platform == "璧风偣鍚功":
+        elif platform == "起点听书":
             audio_dict = search_manager.search_manager.get_qidian_audio_url(album_id, chapter_id)
             if audio_dict and "default" in audio_dict:
                 url = audio_dict["default"].get("url", "")
-        elif platform == "铚昏湏FM":
+        elif platform == "蜻蜓FM":
             url = search_manager.qtfm_manager.get_audio_url(album_id, chapter_id)
-        elif platform == "閰锋垜鍚功":
+        elif platform == "酷我听书":
             info = search_manager.kuwo_manager.get_download_info(chapter_id, "lossless")
             url = info.get("url") if info else None
-        elif platform == "缃戞槗浜戝惉涔?:
+        elif platform == "网易云听书":
             info = search_manager.netease_manager.get_download_info(chapter_id, "exhigh")
             url = info.get("url") if info else None
         if url and str(url).startswith("http"):
             proxy_url = register_audio_proxy_url(str(url), platform)
             if not proxy_url:
-                return json_error("闊抽鍦板潃鏃犳硶鐢熸垚瀹夊叏浠ｇ悊閾炬帴")
+                return json_error("音频地址无法生成安全代理链接")
             return json_ok(url=proxy_url, source_url=str(url))
         else:
-            return json_error(f"鏃犳硶鑾峰彇 {platform} 鐨勬挱鏀惧湴鍧€")
+            return json_error(f"无法获取 {platform} 的播放地址")
     except Exception as e:
         return json_error(str(e), status=500)
 
@@ -2847,8 +2895,8 @@ def api_get_player_session():
 
 SOURCE_INFO_FILE = "source.json"
 SOURCE_PLATFORM_ALIASES = {
-    "浜戝惉FM": "浜戝惉fm",
-    "铚昏湏FM": "铚昏湏fm",
+    "云听FM": "云听fm",
+    "蜻蜓FM": "蜻蜓fm",
 }
 
 
@@ -2856,7 +2904,7 @@ def _safe_child_path(root, relative):
     base = Path(root).resolve()
     target = (base / str(relative or "")).resolve()
     if target != base and base not in target.parents:
-        raise ValueError("璺緞瓒婄晫")
+        raise ValueError("路径越界")
     return target
 
 
@@ -2870,10 +2918,10 @@ def _format_bytes(size):
 
 
 def _sanitize_download_folder_name(name):
-    text = str(name or "").strip() or "鏈煡涓撹緫"
+    text = str(name or "").strip() or "未知专辑"
     for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
         text = text.replace(char, "_")
-    return text[:200] or "鏈煡涓撹緫"
+    return text[:200] or "未知专辑"
 
 
 def _album_download_folder(album, options=None):
@@ -2885,7 +2933,7 @@ def _album_download_folder(album, options=None):
         return None
     parts = [root]
     if cookie_manager.get_cookie("organize_by_platform_enabled") == "true":
-        parts.append(_sanitize_download_folder_name(album.get("platform") or "鏈煡骞冲彴"))
+        parts.append(_sanitize_download_folder_name(album.get("platform") or "未知平台"))
     parts.append(_sanitize_download_folder_name(title))
     return Path(*parts)
 
@@ -2985,7 +3033,7 @@ def api_clear_logs():
             cleared.append(path.name)
         except Exception as exc:
             logging.exception("clear log failed: %s", path)
-            return json_error(f"娓呯┖鏃ュ織澶辫触锛歿path.name}: {exc}", 500)
+            return json_error(f"清空日志失败：{path.name}: {exc}", 500)
     logging.info("logs cleared by web ui")
     return json_ok(cleared=cleared, max_bytes=LOG_MAX_BYTES, backups=LOG_BACKUP_COUNT)
 
@@ -3007,7 +3055,7 @@ def api_log_files():
 
 @app.get("/api/cookies")
 def api_get_cookies():
-    """鑾峰彇鍚勫钩鍙板凡淇濆瓨鐨?Cookie 鐘舵€?""
+    """获取各平台已保存的 Cookie 状态"""
     cookie_manager.load()
     platforms = ["xmly", "lrts", "qidian", "qtfm", "fanqie", "fanqie_tingshu", "qimao", "yuntu", "kuwo", "netease", "lizhi"]
     result = {}
@@ -3112,16 +3160,16 @@ def _cookie_account_display(platform, cookie):
 
 @app.post("/api/cookies")
 def api_set_cookie():
-    """淇濆瓨骞冲彴 Cookie"""
+    """保存平台 Cookie"""
     payload = request.get_json(silent=True) or {}
     platform = payload.get("platform", "").strip()
     cookie = payload.get("cookie", "").strip()
     if not platform or not cookie:
-        return json_error("缂哄皯 platform 鎴?cookie")
-    if platform in ("lrts", "鎳掍汉鍚功"):
+        return json_error("缺少 platform 或 cookie")
+    if platform in ("lrts", "懒人听书"):
         cookie = normalize_lrts_credentials(cookie)
         if not cookie:
-            return json_error("鎳掍汉鍚功宸叉敼鐢ㄦ墜鏈哄彿楠岃瘉鐮佺櫥褰曪紝璇蜂娇鐢ㄩ獙璇佺爜鏂瑰紡鑾峰彇鍑瘉")
+            return json_error("懒人听书已改用手机号验证码登录，请使用验证码方式获取凭证")
     cookie_manager.set_cookie(platform, cookie)
     search_manager.set_cookie(platform, cookie)
     return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file))
@@ -3131,7 +3179,7 @@ def api_set_cookie():
 def api_delete_cookie(platform):
     platform = (platform or "").strip()
     if not platform:
-        return json_error("缂哄皯 platform")
+        return json_error("缺少 platform")
     cookie_manager.delete_cookie(platform)
     try:
         search_manager.set_cookie(platform, "")
@@ -3189,13 +3237,13 @@ def api_set_personal_cookie():
     cookie = str(payload.get("cookie") or "").strip()
     key = _personal_cookie_key(platform)
     if not key:
-        return json_error("涓嶆敮鎸佺殑骞冲彴")
+        return json_error("不支持的平台")
     if not cookie:
-        return json_error("缂哄皯 Cookie 鎴栧嚟璇?)
+        return json_error("缺少 Cookie 或凭证")
     if platform == "lrts":
         cookie = normalize_lrts_credentials(cookie)
         if not cookie:
-            return json_error("鎳掍汉鍚功涓汉涓績闇€瑕?App 鍑瘉锛岃浣跨敤楠岃瘉鐮佺櫥褰曟垨绮樿创 token/imei")
+            return json_error("懒人听书个人中心需要 App 凭证，请使用验证码登录或粘贴 token/imei")
     cookie_manager.set_cookie(key, cookie)
     return json_ok(saved=True, platform=platform, key=key, info=_personal_cookie_status(platform), config_file=str(cookie_manager.config_file))
 
@@ -3204,7 +3252,7 @@ def api_set_personal_cookie():
 def api_delete_personal_cookie(platform):
     key = _personal_cookie_key(platform)
     if not key:
-        return json_error("涓嶆敮鎸佺殑骞冲彴")
+        return json_error("不支持的平台")
     cookie_manager.delete_cookie(key)
     return json_ok(deleted=True, platform=platform, key=key, config_file=str(cookie_manager.config_file))
 
@@ -3220,15 +3268,15 @@ def api_clear_cookies():
 def api_lrts_check():
     credential = parse_lrts_credentials(cookie_manager.get_cookie("lrts"))
     if not credential.get("token") or not credential.get("imei"):
-        return json_ok(ok=False, logged_in=False, is_vip=False, message="鏈娴嬪埌鎳掍汉鍚功 App 鍑瘉锛岃鍏堢敤鎵嬫満鍙烽獙璇佺爜鐧诲綍")
+        return json_ok(ok=False, logged_in=False, is_vip=False, message="未检测到懒人听书 App 凭证，请先用手机号验证码登录")
     try:
         search_manager.set_cookie("lrts", credential)
-        probe = search_manager.lrts_manager._client_or_guest().book_search("娴嬭瘯", page_size=1)
+        probe = search_manager.lrts_manager._client_or_guest().book_search("测试", page_size=1)
         valid = probe.get("status") == 0
     except Exception as exc:
-        return json_ok(ok=False, logged_in=False, is_vip=False, message=f"鎳掍汉鍚功鍑瘉鏍￠獙澶辫触锛歿exc}")
+        return json_ok(ok=False, logged_in=False, is_vip=False, message=f"懒人听书凭证校验失败：{exc}")
     if not valid:
-        return json_ok(ok=False, logged_in=False, is_vip=False, message=f"鎳掍汉鍚功鍑瘉鏃犳晥锛歿probe.get('msg') or probe.get('status')}")
+        return json_ok(ok=False, logged_in=False, is_vip=False, message=f"懒人听书凭证无效：{probe.get('msg') or probe.get('status')}")
     vip_expire = str(credential.get("vipExpireTime") or "")
     return json_ok(
         ok=True,
@@ -3241,7 +3289,7 @@ def api_lrts_check():
             "nickname": str(credential.get("nickname") or ""),
             "vip_expire": vip_expire,
         },
-        message="鎳掍汉鍚功 App 鍑瘉鏈夋晥" + (f"锛孷IP 鍒版湡锛歿vip_expire}" if vip_expire else ""),
+        message="懒人听书 App 凭证有效" + (f"，VIP 到期：{vip_expire}" if vip_expire else ""),
     )
 
 
@@ -3250,15 +3298,15 @@ def api_lrts_send_code():
     payload = request.get_json(silent=True) or {}
     phone = str(payload.get("phone") or "").strip()
     if not phone:
-        return json_error("璇疯緭鍏ユ墜鏈哄彿")
+        return json_error("请输入手机号")
     try:
         data = lrts_send_sms_code(phone)
     except Exception as exc:
         logging.exception("lrts send sms failed")
-        return json_error(f"鍙戦€侀獙璇佺爜澶辫触锛歿exc}", status=500)
+        return json_error(f"发送验证码失败：{exc}", status=500)
     if data.get("status") != 0:
-        return json_error(data.get("msg") or f"鍙戦€侀獙璇佺爜澶辫触锛歴tatus={data.get('status')}")
-    return json_ok(message="楠岃瘉鐮佸凡鍙戦€?, imei=data.get("_imei", ""), temp_token=data.get("_token", ""))
+        return json_error(data.get("msg") or f"发送验证码失败：status={data.get('status')}")
+    return json_ok(message="验证码已发送", imei=data.get("_imei", ""), temp_token=data.get("_token", ""))
 
 
 @app.post("/api/lrts/login")
@@ -3269,17 +3317,17 @@ def api_lrts_login():
     imei = str(payload.get("imei") or "").strip()
     temp_token = str(payload.get("temp_token") or "").strip()
     if not phone or not code:
-        return json_error("璇疯緭鍏ユ墜鏈哄彿鍜岄獙璇佺爜")
+        return json_error("请输入手机号和验证码")
     try:
         data, credential = lrts_sms_login(phone, code, imei=imei, temp_token=temp_token)
     except Exception as exc:
         logging.exception("lrts sms login failed")
-        return json_error(f"楠岃瘉鐮佺櫥褰曞け璐ワ細{exc}", status=500)
+        return json_error(f"验证码登录失败：{exc}", status=500)
     if data.get("status") != 0 or not credential:
-        return json_error(data.get("msg") or f"楠岃瘉鐮佺櫥褰曞け璐ワ細status={data.get('status')}")
+        return json_error(data.get("msg") or f"验证码登录失败：status={data.get('status')}")
     cookie_manager.set_cookie("lrts", credential)
     search_manager.set_cookie("lrts", credential)
-    return json_ok(message="鎳掍汉鍚功鐧诲綍鎴愬姛", credential_saved=True, userId=data.get("userId"), nickname=data.get("nickname") or data.get("nickName", ""))
+    return json_ok(message="懒人听书登录成功", credential_saved=True, userId=data.get("userId"), nickname=data.get("nickname") or data.get("nickName", ""))
 
 
 @app.post("/api/personal/lrts/login")
@@ -3290,17 +3338,17 @@ def api_personal_lrts_login():
     imei = str(payload.get("imei") or "").strip()
     temp_token = str(payload.get("temp_token") or "").strip()
     if not phone or not code:
-        return json_error("璇疯緭鍏ユ墜鏈哄彿鍜岄獙璇佺爜")
+        return json_error("请输入手机号和验证码")
     try:
         data, credential = lrts_sms_login(phone, code, imei=imei, temp_token=temp_token)
     except Exception as exc:
         logging.exception("personal lrts sms login failed")
-        return json_error(f"楠岃瘉鐮佺櫥褰曞け璐ワ細{exc}", status=500)
+        return json_error(f"验证码登录失败：{exc}", status=500)
     if data.get("status") != 0 or not credential:
-        return json_error(data.get("msg") or f"楠岃瘉鐮佺櫥褰曞け璐ワ細status={data.get('status')}")
+        return json_error(data.get("msg") or f"验证码登录失败：status={data.get('status')}")
     cookie_manager.set_cookie("personal_lrts", credential)
     return json_ok(
-        message="鎳掍汉鍚功涓汉涓績鐧诲綍鎴愬姛",
+        message="懒人听书个人中心登录成功",
         credential_saved=True,
         userId=data.get("userId"),
         nickname=data.get("nickname") or data.get("nickName", ""),
@@ -3330,7 +3378,7 @@ def api_qr_start():
     payload = request.get_json(silent=True) or {}
     platform = payload.get("platform", "").strip()
     if platform == "lrts":
-        return json_error("鎳掍汉鍚功宸叉敼鐢ㄦ墜鏈哄彿楠岃瘉鐮佺櫥褰?)
+        return json_error("懒人听书已改用手机号验证码登录")
     try:
         session = qr_manager.start(platform)
     except ValueError as exc:
@@ -3343,7 +3391,7 @@ def api_qr_poll(sid):
     from core.qr_login import manager as qr_manager
     session = qr_manager.get(sid)
     if not session:
-        return json_error("浼氳瘽涓嶅瓨鍦ㄦ垨宸茶繃鏈?, 404)
+        return json_error("会话不存在或已过期", 404)
     snap = session.snapshot()
     if snap["status"] == "success" and snap.get("cookies"):
         cookie_str = _cookies_to_string(snap["cookies"])
@@ -3363,7 +3411,7 @@ def api_personal_qr_poll(sid):
     from core.qr_login import manager as qr_manager
     session = qr_manager.get(sid)
     if not session:
-        return json_error("浼氳瘽涓嶅瓨鍦ㄦ垨宸茶繃鏈?, 404)
+        return json_error("会话不存在或已过期", 404)
     snap = session.snapshot()
     if snap["status"] == "success" and snap.get("cookies"):
         cookie_str = _cookies_to_string(snap["cookies"])
@@ -3384,83 +3432,85 @@ def api_qr_cancel(sid):
     return json_ok(cancelled=ok)
 
 
-# 鈹€鈹€ 鎳掍汉鍚功鍙嶅悜浠ｇ悊鐧诲綍 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-# 鍘熺悊锛氱敤鎴烽€氳繃 /lrts-proxy/ 璁块棶 m.lrts.me锛屽悗绔唬鐞嗘墍鏈夎姹傚苟鎹曡幏 Cookie銆?# 鐧诲綍鎴愬姛鍚庯紙妫€娴嬪埌 session Cookie锛夛紝鑷姩淇濆瓨骞堕€氱煡鍓嶇銆?
+# ── 懒人听书反向代理登录 ──────────────────────────────────────────────────────
+# 原理：用户通过 /lrts-proxy/ 访问 m.lrts.me，后端代理所有请求并捕获 Cookie。
+# 登录成功后（检测到 session Cookie），自动保存并通知前端。
+
 @app.get("/api/cookies/script/<platform>")
 def api_cookie_script(platform):
-    """杩斿洖璇ュ钩鍙扮殑娴忚鍣ㄦ姄鍙栬剼鏈笌璇存槑銆?""
+    """返回该平台的浏览器抓取脚本与说明。"""
     scripts = {
         "xmly": {
-            "name": "鍠滈┈鎷夐泤",
+            "name": "喜马拉雅",
             "login_url": "https://www.ximalaya.com/",
             "script": (
-                "/* 鍠滈┈鎷夐泤 Cookie 鎶撳彇鑴氭湰 */\n"
+                "/* 喜马拉雅 Cookie 抓取脚本 */\n"
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
         "qidian": {
-            "name": "璧风偣鍚功",
+            "name": "起点听书",
             "login_url": "https://www.qidian.com/",
             "script": (
-                "/* 璧风偣 Cookie 鎶撳彇鑴氭湰 */\n"
+                "/* 起点 Cookie 抓取脚本 */\n"
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
         "qtfm": {
-            "name": "铚昏湏FM",
+            "name": "蜻蜓FM",
             "login_url": "https://www.qtfm.cn/",
             "script": (
-                "/* 铚昏湏FM Cookie 鎶撳彇鑴氭湰 */\n"
+                "/* 蜻蜓FM Cookie 抓取脚本 */\n"
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
         "fanqie": {
-            "name": "鐣寗鐣呭惉",
+            "name": "番茄畅听",
             "login_url": "https://fanqienovel.com/",
             "script": (
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
         "yuntu": {
-            "name": "浜戝惉FM",
+            "name": "云听FM",
             "login_url": "https://www.radio.cn/",
             "script": (
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
         "kuwo": {
-            "name": "閰锋垜鍚功",
+            "name": "酷我听书",
             "login_url": "https://www.kuwo.cn/",
             "script": (
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
         "netease": {
-            "name": "缃戞槗浜戝惉涔?,
+            "name": "网易云听书",
             "login_url": "https://music.163.com/",
             "script": (
-                "/* 缃戞槗浜戦煶涔?Cookie 鎶撳彇鑴氭湰 */\n"
+                "/* 网易云音乐 Cookie 抓取脚本 */\n"
                 "(function(){var c=document.cookie;"
-                "prompt('璇峰鍒朵笅闈㈣繖娈?Cookie 鍚庡洖鍒癆udioFlow绮樿创锛?, c);}())"
+                "prompt('请复制下面这段 Cookie 后回到AudioFlow粘贴：', c);}())"
             ),
         },
     }
     info = scripts.get(platform)
     if not info:
-        return json_error("涓嶆敮鎸佺殑骞冲彴")
+        return json_error("不支持的平台")
     return json_ok(**info)
 
 
-# 鈹€鈹€ 涓汉涓績 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── 个人中心 ──────────────────────────────────
 @app.get("/api/personal/<platform>/<feature>")
 def api_personal(platform, feature):
-    """鑾峰彇涓汉涓績鏁版嵁锛堝鐢ㄦ闈㈢増 UserDataWorker 閫昏緫锛?""
+    """获取个人中心数据（复用桌面版 UserDataWorker 逻辑）"""
     try:
         if platform == "ximalaya":
             items = _load_ximalaya_personal(feature, all_pages=(feature == "subscriptions"))
@@ -3469,7 +3519,7 @@ def api_personal(platform, feature):
         elif platform == "qidian":
             items = _load_qidian_personal(feature)
         else:
-            return json_error(f"涓嶆敮鎸佺殑骞冲彴: {platform}")
+            return json_error(f"不支持的平台: {platform}")
         return json_ok(items=items, platform=platform, feature=feature)
     except RuntimeError as e:
         return json_error(str(e), status=400)
@@ -3482,7 +3532,7 @@ def api_personal(platform, feature):
 def _load_ximalaya_personal(feature, all_pages=False):
     cookie = _get_personal_cookie("ximalaya")
     if not cookie:
-        raise RuntimeError("璇峰厛鍦ㄤ釜浜轰腑蹇冧负鍠滈┈鎷夐泤鐧诲綍鎴栫矘璐?Cookie")
+        raise RuntimeError("请先在个人中心为喜马拉雅登录或粘贴 Cookie")
     from core.ximalaya_manager import XimalayaManager
     api = XimalayaManager()
     api.set_cookie(cookie)
@@ -3545,7 +3595,7 @@ def _extract_ximalaya_personal_items(content, feature=""):
             "cover": album.get("coverPath", ""),
             "episodes": album.get("trackCount", 0),
             "plays": album.get("playCount", 0),
-        }, "鍠滈┈鎷夐泤"))
+        }, "喜马拉雅"))
     # albumList
     for album in content.get("albumList", []) or []:
         anchor = album.get("anchor") if isinstance(album.get("anchor"), dict) else {}
@@ -3556,7 +3606,7 @@ def _extract_ximalaya_personal_items(content, feature=""):
             "cover": album.get("coverPath", ""),
             "episodes": album.get("trackCount", 0),
             "plays": album.get("playCount", 0),
-        }, "鍠滈┈鎷夐泤"))
+        }, "喜马拉雅"))
     # tracksList
     for track in content.get("tracksList", []) or []:
         items.append(_normalize_personal_item({
@@ -3564,7 +3614,7 @@ def _extract_ximalaya_personal_items(content, feature=""):
             "title": track.get("albumName") or track.get("trackTitle", ""),
             "author": _pick_ximalaya_author(track),
             "cover": track.get("trackCoverPath", ""),
-        }, "鍠滈┈鎷夐泤"))
+        }, "喜马拉雅"))
     # history groups
     for group in ("today", "yesterday", "earlier"):
         for record in content.get(group, []) or []:
@@ -3573,7 +3623,7 @@ def _extract_ximalaya_personal_items(content, feature=""):
                 "title": record.get("itemTitle") or record.get("albumTitle") or record.get("childTitle", ""),
                 "author": _pick_ximalaya_author(record),
             "cover": record.get("itemCoverUrl") or record.get("itemSquareCoverUrl", ""),
-        }, "鍠滈┈鎷夐泤"))
+        }, "喜马拉雅"))
     return items
 
 
@@ -3601,7 +3651,7 @@ def _pick_ximalaya_author(item):
 def _load_lrts_personal(feature):
     cookie = _get_personal_cookie("lrts")
     if not cookie:
-        raise RuntimeError("璇峰厛鍦ㄤ釜浜轰腑蹇冧负鎳掍汉鍚功鐧诲綍鎴栫矘璐村嚟璇?)
+        raise RuntimeError("请先在个人中心为懒人听书登录或粘贴凭证")
     from core.lrts_manager import LRTSManager
     api = LRTSManager()
     api.set_cookie(cookie)
@@ -3623,7 +3673,7 @@ def _load_lrts_personal(feature):
                     "author": item.get("announcer") or item.get("author", ""),
                     "cover": item.get("cover") or item.get("cover_url", ""),
                     "episodes": item.get("sum") or item.get("sections", 0),
-                }, "鎳掍汉鍚功"))
+                }, "懒人听书"))
         elif feature == "favorites":
             resp = api.session.get(
                 "https://m.lrts.me/ajax/getFolderEntities",
@@ -3639,7 +3689,7 @@ def _load_lrts_personal(feature):
                     "author": item.get("announcer") or item.get("author", ""),
                     "cover": item.get("cover") or item.get("cover_url", ""),
                     "episodes": item.get("sum") or item.get("sections", 0),
-                }, "鎳掍汉鍚功"))
+                }, "懒人听书"))
         elif feature == "programs":
             resp = api.session.get(
                 "https://m.lrts.me/ajax/getMyBookList",
@@ -3655,9 +3705,9 @@ def _load_lrts_personal(feature):
                     "author": item.get("announcer") or item.get("author", ""),
                     "cover": item.get("cover") or item.get("cover_url", ""),
                     "episodes": item.get("sum") or item.get("sections", 0),
-                }, "鎳掍汉鍚功"))
+                }, "懒人听书"))
     except Exception as e:
-        print(f"鉂?鎳掍汉鍚功涓汉鏁版嵁鍔犺浇澶辫触({feature}): {e}")
+        print(f"❌ 懒人听书个人数据加载失败({feature}): {e}")
     return items
 
 
@@ -3702,7 +3752,7 @@ def _normalize_lrts_personal_record(item):
         "episodes": item.get("sections") or item.get("countTrack") or item.get("chapterCount") or item.get("audioCount") or 0,
         "plays": item.get("plays") or item.get("playCount") or item.get("play") or 0,
         "raw_data": item,
-    }, "鎳掍汉鍚功")
+    }, "懒人听书")
 
 
 def _load_lrts_personal_from_app(client, feature):
@@ -3750,7 +3800,7 @@ def _load_lrts_personal_from_app(client, feature):
 def _load_qidian_personal(feature):
     cookie = _get_personal_cookie("qidian")
     if not cookie:
-        raise RuntimeError("璇峰厛鍦ㄤ釜浜轰腑蹇冧负璧风偣鍚功鐧诲綍鎴栫矘璐?Cookie")
+        raise RuntimeError("请先在个人中心为起点听书登录或粘贴 Cookie")
     from core.search_manager import SearchManager
     api = SearchManager()
     api.set_qidian_cookie(cookie)
@@ -3759,7 +3809,7 @@ def _load_qidian_personal(feature):
         if feature == "favorites":
             account = api.get_qidian_user_account()
             if not account:
-                raise RuntimeError("璧风偣璐﹀彿鏍￠獙澶辫触锛岃鍦ㄤ釜浜轰腑蹇冮噸鏂版壂鐮佹垨绮樿创 Cookie")
+                raise RuntimeError("起点账号校验失败，请在个人中心重新扫码或粘贴 Cookie")
             resp = api.qidian_session.get(
                 "https://wxapp.qidian.com/api/bookShelf/list",
                 params={"page": 1, "pageSize": 100},
@@ -3775,7 +3825,7 @@ def _load_qidian_personal(feature):
             resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:
-                raise RuntimeError(data.get("msg") or f"璧风偣涔︽灦鑾峰彇澶辫触锛歝ode={data.get('code')}")
+                raise RuntimeError(data.get("msg") or f"起点书架获取失败：code={data.get('code')}")
             for book in ((data.get("data") or {}).get("booksInfo") or []):
                 items.append(_normalize_personal_item({
                     "id": book.get("bookId"),
@@ -3785,20 +3835,20 @@ def _load_qidian_personal(feature):
                     "last_chapter": book.get("lastChapterName"),
                     "update_time": book.get("updateTime"),
                     "raw_data": book,
-                }, "璧风偣鍚功"))
+                }, "起点听书"))
     except Exception as e:
-        print(f"鉂?璧风偣鍚功涓汉鏁版嵁鍔犺浇澶辫触({feature}): {e}")
+        print(f"❌ 起点听书个人数据加载失败({feature}): {e}")
         if isinstance(e, RuntimeError):
             raise
     return items
 
 
 def _normalize_personal_item(item, platform):
-    """灏嗗悇骞冲彴涓汉涓績鏉＄洰缁熶竴涓哄墠绔彲鐢ㄦ牸寮忋€?""
+    """将各平台个人中心条目统一为前端可用格式。"""
     d = dict(item or {})
     return normalize_album({
         "id": d.get("id") or d.get("album_id") or d.get("book_id") or "",
-        "title": d.get("title") or d.get("name") or d.get("album_title") or "鏈煡涓撹緫",
+        "title": d.get("title") or d.get("name") or d.get("album_title") or "未知专辑",
         "author": d.get("author") or d.get("anchor") or d.get("announcer") or "",
         "cover": d.get("cover") or d.get("cover_url") or d.get("coverUrl") or "",
         "episodes": d.get("episodes") or d.get("track_count") or d.get("sections") or 0,
@@ -3808,49 +3858,47 @@ def _normalize_personal_item(item, platform):
     })
 
 
-# 鈹€鈹€ 鍓嶇闈欐€佹枃浠舵湇鍔?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── 前端静态文件服务 ──────────────────────────────────────────────────────────
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
-    """鏈嶅姟鍓嶇 SPA 鍙婇潤鎬佽祫婧愩€?""
-    # 1. 浼樺厛浠?dist 鐩綍鎻愪緵宸叉瀯寤烘枃浠?    if path and FRONTEND_DIST_DIR.exists():
+    """服务前端 SPA 及静态资源。"""
+    # 1. 优先从 dist 目录提供已构建文件
+    if path and FRONTEND_DIST_DIR.exists():
         target = FRONTEND_DIST_DIR / path
         if target.is_file():
             return send_from_directory(str(FRONTEND_DIST_DIR), path)
-    # 2. public 鐩綍锛坰ervice-worker銆乵anifest 绛夛級
+    # 2. public 目录（service-worker、manifest 等）
     if path:
         pub = FRONTEND_PUBLIC_DIR / path
         if pub.is_file():
             return send_from_directory(str(FRONTEND_PUBLIC_DIR), path)
-    # 3. SPA fallback锛氳繑鍥?index.html
+    # 3. SPA fallback：返回 index.html
     index = FRONTEND_DIST_DIR / "index.html"
     if index.exists():
         return send_from_directory(str(FRONTEND_DIST_DIR), "index.html")
-    # 4. dist 鏈瀯寤烘椂缁欏嚭鎻愮ず
+    # 4. dist 未构建时给出提示
     return (
-        "<h2>鍓嶇鏈瀯寤?/h2><p>璇峰湪瀹瑰櫒鍐呮墽琛?<code>cd frontend && npm run build</code>锛?
-        "鎴栦娇鐢?Docker 闀滃儚锛圖ockerfile 浼氳嚜鍔ㄦ瀯寤猴級銆?/p>",
+        "<h2>前端未构建</h2><p>请在容器内执行 <code>cd frontend && npm run build</code>，"
+        "或使用 Docker 镜像（Dockerfile 会自动构建）。</p>",
         503,
     )
 
 
 def main():
-    """鍚姩 Web 鏈嶅姟鍣ㄥ叆鍙ｃ€?""
+    """启动 Web 服务器入口。"""
     import os
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 8082))
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true")
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         ensure_subscription_scheduler()
-    print(f"馃殌 鍚姩鏈嶅姟鍣? http://{host}:{port}  debug={debug}")
+    print(f"🚀 启动服务器: http://{host}:{port}  debug={debug}")
     try:
         from waitress import serve
-        print("馃摗 浣跨敤 waitress 鐢熶骇鏈嶅姟鍣?)
+        print("📡 使用 waitress 生产服务器")
         serve(app, host=host, port=port, threads=8)
     except ImportError:
-        print("馃摗 waitress 鏈畨瑁咃紝浣跨敤 Flask 鍐呯疆鏈嶅姟鍣?)
+        print("📡 waitress 未安装，使用 Flask 内置服务器")
         app.run(host=host, port=port, debug=debug, threaded=True)
-
-
-
