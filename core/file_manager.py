@@ -33,12 +33,13 @@ AD_PATTERNS = [
 ]
 
 DEFAULT_TEMPLATES = [
-    {"id": "t1", "name": "原序号-《书名》[系列]-第N集 章节名", "template": "{original_prefix}-《{book_title}》{series_block}第{chapter_index_3}集 {chapter_title}.{ext}"},
-    {"id": "t2", "name": "序号-章节名",               "template": "{chapter_index_3}-{chapter_title}.{ext}"},
-    {"id": "t3", "name": "书名-序号-章节名",           "template": "{book_title}-{chapter_index_3}-{chapter_title}.{ext}"},
-    {"id": "t4", "name": "作者-书名-序号",             "template": "[{author}]{book_title}-{chapter_index_3}.{ext}"},
-    {"id": "t5", "name": "纯序号",                    "template": "{chapter_index_4}.{ext}"},
-    {"id": "t6", "name": "第N章 章节名",              "template": "第{chapter_index_3}章 {chapter_title}.{ext}"},
+    {"id": "t1", "name": "原序号-《书名》第N集 章节名",         "template": "{original_prefix}-《{book_title}》第{chapter_index_3}集 {chapter_title}.{ext}"},
+    {"id": "t2", "name": "原序号-《书名》[系列]-第N集 章节名",  "template": "{original_prefix}-《{book_title}》{series_block}第{chapter_index_3}集 {chapter_title}.{ext}"},
+    {"id": "t3", "name": "序号-章节名",                        "template": "{chapter_index_3}-{chapter_title}.{ext}"},
+    {"id": "t4", "name": "书名-序号-章节名",                   "template": "{book_title}-{chapter_index_3}-{chapter_title}.{ext}"},
+    {"id": "t5", "name": "作者-书名-序号",                     "template": "[{author}]{book_title}-{chapter_index_3}.{ext}"},
+    {"id": "t6", "name": "纯序号",                             "template": "{chapter_index_4}.{ext}"},
+    {"id": "t7", "name": "第N章 章节名",                       "template": "第{chapter_index_3}章 {chapter_title}.{ext}"},
 ]
 
 
