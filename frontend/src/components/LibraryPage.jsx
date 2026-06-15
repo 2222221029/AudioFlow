@@ -34,9 +34,11 @@ function simulateTemplate(tpl,meta,fileName,idx){
   const chapterTitle=(meta.chapter_titles||{})[fileName]||stem;
   const prefixMatch=stem.match(/^(\d+)/);
   const originalPrefix=prefixMatch?prefixMatch[1]:String(i).padStart(4,'0');
+  const seriesVal=(meta.series||'').trim();
+  const seriesBlock=seriesVal?`-【${seriesVal}】-`:'';
   const vars={book_title:meta.book_title||'',author:meta.author||'',narrator:meta.narrator||'',
     category:meta.category||'',series:meta.series||'',volume:meta.volume||'',
-    original_prefix:originalPrefix,
+    original_prefix:originalPrefix,series_block:seriesBlock,
     chapter_index:String(i),chapter_index_2:String(i).padStart(2,'0'),
     chapter_index_3:String(i).padStart(3,'0'),chapter_index_4:String(i).padStart(4,'0'),
     chapter_title:chapterTitle,chapter_full:String(i).padStart(3,'0')+'-'+chapterTitle,
@@ -794,8 +796,10 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
               placeholder="{chapter_index_3}-{chapter_title}.{ext}" style={{...S.input,fontFamily:'monospace'}}/>
           </div>
           <div style={{fontSize:12,color:'var(--text-mute)',lineHeight:1.8}}>
-            变量：<code>{'{original_prefix}'}</code> <code>{'{book_title}'}</code> <code>{'{author}'}</code> <code>{'{narrator}'}</code> <code>{'{chapter_index_3}'}</code> <code>{'{chapter_title}'}</code> <code>{'{ext}'}</code> <code>{'{date}'}</code>
-            <br/><span style={{fontSize:11,color:'var(--text-faint)'}}>{'{original_prefix}'} = 原文件名开头的数字（如 0001），保持下载器序号不变</span>
+            变量：<code>{'{original_prefix}'}</code> <code>{'{book_title}'}</code> <code>{'{series_block}'}</code> <code>{'{author}'}</code> <code>{'{narrator}'}</code> <code>{'{chapter_index_3}'}</code> <code>{'{chapter_title}'}</code> <code>{'{ext}'}</code> <code>{'{date}'}</code>
+            <br/><span style={{fontSize:11,color:'var(--text-faint)'}}>
+              {'{original_prefix}'} = 原文件名开头数字（如 0001）；{'{series_block}'} = 有系列名时输出 -【系列】-，否则为空
+            </span>
           </div>
           {folderFiles.length>0&&(
             <div style={{background:'var(--bg-0)',borderRadius:6,padding:12,border:'1px solid var(--border)'}}>

@@ -33,7 +33,7 @@ AD_PATTERNS = [
 ]
 
 DEFAULT_TEMPLATES = [
-    {"id": "t1", "name": "原序号-《书名》 第N集 章节名", "template": "{original_prefix}-《{book_title}》 第{chapter_index_3}集 {chapter_title}.{ext}"},
+    {"id": "t1", "name": "原序号-《书名》[系列]-第N集 章节名", "template": "{original_prefix}-《{book_title}》{series_block}第{chapter_index_3}集 {chapter_title}.{ext}"},
     {"id": "t2", "name": "序号-章节名",               "template": "{chapter_index_3}-{chapter_title}.{ext}"},
     {"id": "t3", "name": "书名-序号-章节名",           "template": "{book_title}-{chapter_index_3}-{chapter_title}.{ext}"},
     {"id": "t4", "name": "作者-书名-序号",             "template": "[{author}]{book_title}-{chapter_index_3}.{ext}"},
@@ -184,6 +184,10 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int) 
     prefix_match = re.match(r'^(\d+)', name_no_ext)
     original_prefix = prefix_match.group(1) if prefix_match else str(idx).zfill(4)
 
+    # 系列名块：有 series 时输出 "-【series】-"，没有时为空
+    series = book_meta.get("series", "").strip()
+    series_block = f"-【{series}】-" if series else ""
+
     variables = {
         "book_title": book_meta.get("book_title", ""),
         "author": book_meta.get("author", ""),
@@ -192,6 +196,7 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int) 
         "series": book_meta.get("series", ""),
         "volume": book_meta.get("volume", ""),
         "original_prefix": original_prefix,
+        "series_block": series_block,
         "chapter_index": str(idx),
         "chapter_index_2": str(idx).zfill(2),
         "chapter_index_3": str(idx).zfill(3),
@@ -543,9 +548,9 @@ def ai_analyze(file_names: list, config: dict) -> dict:
 1. 删除广告内容：网址、QQ号、微信号、公众号、"听书""下载"等促销文字、录制方/上传方署名（如"【xxx出品】""@xxx"）
 2. 删除平台水印：如"喜马拉雅""懒人听书""番茄畅听"等平台名称附加内容
 3. 统一标点：将全角标点转为对应中文标点（保留正常的中文句号、逗号等），删除多余的括号、方括号修饰
-4. 规范章节序号：统一格式，如"第001章"→"第1章"，"第01回"→"第1回"，保留原有中文序数词格式
+4. **剥离章节序号**：chapter_title 只保留正文标题，去掉开头/结尾的数字序号和"集/章/回/话/期"等单位词。例："1离家"→"离家"，"003集 酣睡"→"酣睡"，"第5章破晓"→"破晓"（序号由模板变量单独控制，不要留在标题里）
 5. 去除重复信息：如文件名已含书名，则章节标题不重复包含书名
-6. 保留核心信息：保留章节正文标题、回目名称等有意义内容
+6. 保留核心信息：保留章节正文标题、回目名称等有意义内容，保留【篇章名】等分卷标记
 7. 删除冗余后缀：如"（完结）""[全集]""_高清"等
 8. is_ad 为 true 表示该文件整体是广告/片头片尾，建议跳过重命名
 - original 必须与输入文件名完全一致（含扩展名），用于精确匹配"""
