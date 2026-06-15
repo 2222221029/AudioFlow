@@ -169,6 +169,36 @@ def collect_album_audio_files(album, download_dir, dir_cache=None, file_cache=No
     return files
 
 
+def build_local_file_match_index(local_files, has_album_scope=False):
+    index = {
+        "names": set(),
+        "norm_stems": set(),
+        "orders": {},
+        "file_count": 0,
+        "has_album_scope": bool(has_album_scope),
+    }
+    prefix_re = re.compile(r"^0*(\d+)(\D|$)")
+    for path in local_files or []:
+        try:
+            if not path.exists() or not path.is_file() or path.suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
+            if path.stat().st_size <= 1024:
+                continue
+            index["file_count"] += 1
+            index["names"].add(path.name.lower())
+            norm_stem = normalize_match_text(path.stem)
+            if norm_stem:
+                index["norm_stems"].add(norm_stem)
+            match = prefix_re.search(path.stem)
+            if match:
+                order = int(match.group(1))
+                index["orders"].setdefault(order, 0)
+                index["orders"][order] += 1
+        except Exception:
+            continue
+    return index
+
+
 def local_audio_count(album, download_dir, dir_cache=None, file_cache=None):
     files = []
     for base in album_dir_candidates(album, download_dir, dir_cache=dir_cache):
@@ -278,8 +308,30 @@ def possible_chapter_files(album, chapter, index, download_dir, local_files=None
     return candidates
 
 
-def is_chapter_file_complete(album, chapter, index, download_dir, local_files=None):
+def is_chapter_file_complete(album, chapter, index, download_dir, local_files=None, local_index=None):
     try:
+        if local_index:
+            titles = [sanitize_filename(v) for v in (chapter_title_values(chapter) or [chapter_title(chapter)])]
+            norm_titles = [normalize_match_text(v) for v in titles if normalize_match_text(v)]
+            order = chapter_order(chapter, index)
+            numbers = chapter_number_variants(order)
+            names = set()
+            for ext in AUDIO_EXTENSIONS:
+                for number in numbers:
+                    for title in titles:
+                        names.add(f"{number}-{title}{ext}".lower())
+                        names.add(f"{number} - {title}{ext}".lower())
+                        names.add(f"{number}_{title}{ext}".lower())
+                for title in titles:
+                    names.add(f"{title}{ext}".lower())
+            if names & local_index.get("names", set()):
+                return True
+            if local_index.get("has_album_scope") and order in local_index.get("orders", {}):
+                return True
+            norm_stems = local_index.get("norm_stems", set())
+            if any(title and title in norm_stems for title in norm_titles):
+                return True
+            return False
         for path in possible_chapter_files(album, chapter, index, download_dir, local_files=local_files):
             if path.exists() and path.is_file() and path.stat().st_size > 1024:
                 return True
@@ -661,12 +713,14 @@ class SubscriptionManager:
         saved_keys = {chapter_key(ch): ch for ch in saved if isinstance(ch, dict)}
         downloaded = subscription.setdefault("downloaded", {})
         album = subscription.get("album") or subscription
+        album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
         local_files = [] if skip_local else collect_album_audio_files(
             album,
             download_dir,
             dir_cache=scan_cache.setdefault("dirs", {}),
             file_cache=scan_cache.setdefault("files", {}),
         )
+        local_index = {} if skip_local else build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
         missing = []
         matched_keys = set()
         restricted_count = 0
@@ -683,7 +737,14 @@ class SubscriptionManager:
             restricted_now = is_restricted_chapter(chapter)
             state_restricted = state.get("status") == "restricted"
             state_ok = state.get("status") in ("downloaded", "skipped")
-            local_ok = False if skip_local else is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files)
+            local_ok = False if skip_local else is_chapter_file_complete(
+                album,
+                chapter,
+                idx,
+                download_dir,
+                local_files=local_files,
+                local_index=local_index,
+            )
             if skip_local and state_ok:
                 local_ok = True
             if local_ok:
@@ -707,12 +768,7 @@ class SubscriptionManager:
                 item["_subscription_key"] = key
                 item["_missing_reason"] = "restricted_released" if state_restricted and not restricted_now else "new" if is_new else "missing_or_incomplete"
                 missing.append(item)
-        file_count = 0 if skip_local else local_audio_count(
-            album,
-            download_dir,
-            dir_cache=scan_cache.setdefault("dirs", {}),
-            file_cache=scan_cache.setdefault("files", {}),
-        )
+        file_count = 0 if skip_local else local_index.get("file_count", 0)
         if not saved_keys and file_count > len(matched_keys):
             known_local_count = min(len(remote_chapters or []), file_count)
             assumed_keys = set()
@@ -813,25 +869,22 @@ class SubscriptionManager:
                 subscription["updated_at"] = now
                 self.save()
             return local_stats
+        album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
         local_files = collect_album_audio_files(
             album,
             download_dir,
             dir_cache=scan_cache.setdefault("dirs", {}),
             file_cache=scan_cache.setdefault("files", {}),
         )
+        local_index = build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
         matched = 0
         downloaded = subscription.setdefault("downloaded", {})
         now = utc_now_iso()
         for idx, chapter in enumerate(chapters, start=1):
-            if is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files):
+            if is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files, local_index=local_index):
                 matched += 1
                 downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now, "source": "local"}
-        file_count = local_audio_count(
-            album,
-            download_dir,
-            dir_cache=scan_cache.setdefault("dirs", {}),
-            file_cache=scan_cache.setdefault("files", {}),
-        )
+        file_count = local_index.get("file_count", 0)
         downloaded_count = min(total, max(matched, file_count))
         restricted_count = sum(1 for state in downloaded.values() if (state or {}).get("status") == "restricted")
         local_stats = {
