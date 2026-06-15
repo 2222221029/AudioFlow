@@ -1258,6 +1258,16 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     return task_snapshot(task_id)
 
 
+def refresh_subscription_audio_index_async():
+    def worker():
+        try:
+            subscription_manager.build_audio_index(active_download_dir(), force=True)
+        except Exception:
+            logging.debug("refresh subscription audio index failed", exc_info=True)
+
+    threading.Thread(target=worker, name="subscription-index-refresh", daemon=True).start()
+
+
 def handle_download_completed(task_id, success, failed, success_chapters, failed_chapters):
     current = task_snapshot(task_id)
     status = "stopped" if current.get("status") == "stopping" else ("completed" if failed == 0 else "partial")
@@ -1265,6 +1275,7 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
     failure_reason = classify_failure_reason(current.get("error", ""), failed_chapters) if failed else ""
     if album:
         subscription_manager.mark_download_results(album, success_chapters, failed_chapters)
+        refresh_subscription_audio_index_async()
     task = set_task(
         task_id,
         status=status,

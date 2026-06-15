@@ -217,6 +217,41 @@ def local_audio_count(album, download_dir, dir_cache=None, file_cache=None):
     return sum(1 for path in files if path.exists() and path.stat().st_size > 1024)
 
 
+def indexed_album_audio_files(index_files, album):
+    title_values = album_title_values(album)
+    norm_titles = [normalize_match_text(v) for v in title_values if normalize_match_text(v)]
+    id_values = album_id_values(album)
+    result = []
+    seen = set()
+    has_album_scope = False
+    for item in index_files or []:
+        path_text = str((item or {}).get("path") or "")
+        if not path_text:
+            continue
+        norm_parent = str((item or {}).get("norm_parent") or "")
+        norm_path = normalize_match_text(path_text)
+        matched = False
+        if any(norm_parent == t or norm_parent in t or t in norm_parent or t in norm_path for t in norm_titles):
+            matched = True
+            has_album_scope = True
+        elif any(value and value in path_text for value in id_values):
+            matched = True
+            has_album_scope = True
+        if not matched:
+            continue
+        try:
+            path = Path(path_text)
+            resolved = path.resolve()
+        except Exception:
+            path = Path(path_text)
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(path)
+    return result, has_album_scope
+
+
 def chapter_key(chapter):
     for key in ("id", "track_id", "trackId", "chapter_id", "chapterId", "program_id", "programId", "acid"):
         value = chapter.get(key)
@@ -515,6 +550,11 @@ class SubscriptionManager:
                 count += 1
         return count
 
+    def indexed_album_files(self, album, download_dir, max_age=3600):
+        index = self.build_audio_index(download_dir, max_age=max_age, force=False)
+        files, has_album_scope = indexed_album_audio_files(index.get("files") or [], album)
+        return files, has_album_scope, index
+
     def load(self):
         if self._db_has_data():
             try:
@@ -707,19 +747,35 @@ class SubscriptionManager:
             result.append(data)
         return result
 
-    def diff_chapters(self, subscription, remote_chapters, download_dir, scan_cache=None, skip_local=False):
+    def diff_chapters(self, subscription, remote_chapters, download_dir, scan_cache=None, skip_local=False, prefer_index=True):
         scan_cache = scan_cache if isinstance(scan_cache, dict) else {}
         saved = subscription.get("chapters") or []
         saved_keys = {chapter_key(ch): ch for ch in saved if isinstance(ch, dict)}
         downloaded = subscription.setdefault("downloaded", {})
         album = subscription.get("album") or subscription
-        album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
-        local_files = [] if skip_local else collect_album_audio_files(
-            album,
-            download_dir,
-            dir_cache=scan_cache.setdefault("dirs", {}),
-            file_cache=scan_cache.setdefault("files", {}),
-        )
+        album_dirs = []
+        index = {}
+        if skip_local:
+            local_files = []
+        elif prefer_index:
+            local_files, has_album_scope, index = self.indexed_album_files(album, download_dir)
+            album_dirs = [Path("__indexed_album_scope__")] if has_album_scope else []
+            if not local_files and not index.get("exists"):
+                album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
+                local_files = collect_album_audio_files(
+                    album,
+                    download_dir,
+                    dir_cache=scan_cache.setdefault("dirs", {}),
+                    file_cache=scan_cache.setdefault("files", {}),
+                )
+        else:
+            album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
+            local_files = collect_album_audio_files(
+                album,
+                download_dir,
+                dir_cache=scan_cache.setdefault("dirs", {}),
+                file_cache=scan_cache.setdefault("files", {}),
+            )
         local_index = {} if skip_local else build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
         missing = []
         matched_keys = set()
@@ -848,35 +904,19 @@ class SubscriptionManager:
         chapters = subscription.get("chapters") or []
         total = len(chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
         album = subscription.get("album") or subscription
-        indexed_count = self.index_album_file_count(album, download_dir)
         states = subscription.get("downloaded") or {}
         restricted_count = sum(1 for state in states.values() if (state or {}).get("status") == "restricted")
-        if indexed_count > 0:
-            now = utc_now_iso()
-            downloaded_count = min(total, indexed_count) if total else indexed_count
-            local_stats = {
-                "total": total,
-                "downloaded": downloaded_count,
-                "missing": max(0, total - downloaded_count - restricted_count) if total else 0,
-                "restricted": restricted_count,
-                "matched": 0,
-                "file_count": indexed_count,
-                "source": "index",
-                "updated_at": now,
-            }
-            subscription["local_stats"] = local_stats
-            if save:
-                subscription["updated_at"] = now
-                self.save()
-            return local_stats
-        album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
-        local_files = collect_album_audio_files(
-            album,
-            download_dir,
-            dir_cache=scan_cache.setdefault("dirs", {}),
-            file_cache=scan_cache.setdefault("files", {}),
-        )
-        local_index = build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
+        local_files, has_album_scope, index = self.indexed_album_files(album, download_dir)
+        if not local_files and not index.get("exists"):
+            album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
+            local_files = collect_album_audio_files(
+                album,
+                download_dir,
+                dir_cache=scan_cache.setdefault("dirs", {}),
+                file_cache=scan_cache.setdefault("files", {}),
+            )
+            has_album_scope = bool(album_dirs)
+        local_index = build_local_file_match_index(local_files, has_album_scope=has_album_scope)
         matched = 0
         downloaded = subscription.setdefault("downloaded", {})
         now = utc_now_iso()
@@ -918,7 +958,9 @@ class SubscriptionManager:
                 local_count = 0
             if not local_count:
                 try:
-                    local_count = self.index_album_file_count(subscription.get("album") or subscription, download_dir)
+                    album = subscription.get("album") or subscription
+                    local_files, has_album_scope, _index = self.indexed_album_files(album, download_dir)
+                    local_count = build_local_file_match_index(local_files, has_album_scope=has_album_scope).get("file_count", 0)
                 except Exception:
                     local_count = 0
             downloaded = min(total, max(state_count, local_count))
