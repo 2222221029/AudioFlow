@@ -597,6 +597,9 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
 
 // ─── Tab 2：章节重命名 ────────────────────────────────────────────────────────
 
+// 虚拟列表常量
+const ROW_H=40,VLIST_H=460,VBUF=12;
+
 function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoScrape}){
   const[step,setStep]=useState(1);
   const[folderFiles,setFolderFiles]=useState([]);
@@ -604,6 +607,11 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[template,setTemplate]=useState('{chapter_index_3}-{chapter_title}.{ext}');
   const[templates,setTemplates]=useState([]);
   const[previews,setPreviews]=useState([]);
+  const[overrides,setOverrides]=useState({});  // idx -> 手动改后的文件名
+  const[editIdx,setEditIdx]=useState(null);
+  const[editVal,setEditVal]=useState('');
+  const[scrollTop,setScrollTop]=useState(0);
+  const vScrollRef=useRef(null);
   const[note,setNote]=useState('');
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
@@ -612,10 +620,13 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[scrapeOpen,setScrapeOpen]=useState(false);
   const[scrapeInput,setScrapeInput]=useState({api_source:'喜马拉雅',api_id:'',link_url:'',link_platform:'起点听书'});
 
+  function startEdit(i,name){setEditIdx(i);setEditVal(name);}
+  function commitEdit(i){if(editVal.trim())setOverrides(o=>({...o,[i]:editVal.trim()}));setEditIdx(null);}
+
   // selectedFolder 变化时自动重新加载文件列表，重置到步骤1
   useEffect(()=>{
     if(!selectedFolder){setFolderFiles([]);setStep(1);return;}
-    setStep(1);setFolderFiles([]);setError('');setApplyResult(null);
+    setStep(1);setFolderFiles([]);setError('');setApplyResult(null);setOverrides({});
     loadFolderFiles(selectedFolder);
   },[selectedFolder]);
 
@@ -692,7 +703,14 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   async function doApply(){
     setLoading(true);setError('');setApplyResult(null);
     try{
-      const r=await api('/api/file-manager/rename-apply',{method:'POST',body:JSON.stringify({previews,note})});
+      const sep=previews[0]?.original_path?.includes('\\')?'\\':'/';
+      const merged=previews.map((p,i)=>{
+        const ov=overrides[i];
+        if(!ov)return p;
+        const dir=p.original_path.substring(0,p.original_path.lastIndexOf(sep)+1);
+        return{...p,new_name:ov,new_path:dir+ov,conflict:false};
+      });
+      const r=await api('/api/file-manager/rename-apply',{method:'POST',body:JSON.stringify({previews:merged,note})});
       if(!r.ok)throw new Error(r.error);
       setApplyResult({success:r.success,failed:r.failed});
       onFolderChange(selectedFolder);
@@ -835,30 +853,70 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
       {/* 步骤4 */}
       {step===4&&(
         <div className="glass glass-pad" style={{display:'flex',flexDirection:'column',gap:12}}>
-          <div style={{fontWeight:600,fontSize:14}}>预览确认（共 {previews.length} 个文件）</div>
-          <div style={{overflowX:'auto',borderRadius:6,border:'1px solid var(--border)'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
-              <thead><tr style={{background:'var(--bg-1)',color:'var(--text-mute)'}}>
-                <th style={{padding:'7px 10px',textAlign:'left',fontWeight:500}}>原文件名</th>
-                <th style={{padding:'7px 10px',textAlign:'left',fontWeight:500}}>新文件名</th>
-                <th style={{padding:'7px 10px',textAlign:'left',fontWeight:500}}>状态</th>
-              </tr></thead>
-              <tbody>
-                {previews.map((p,i)=>(
-                  <tr key={i} style={{borderTop:'1px solid var(--border)',background:p.conflict?'rgba(239,68,68,.05)':'transparent'}}>
-                    <td style={{padding:'5px 10px',color:'var(--text-mute)',wordBreak:'break-all'}}>
-                      {p.original_name}
-                      {(()=>{const stem=p.original_name.replace(/\.[^.]+$/,'');const nt=(bookMeta.chapter_titles||{})[p.original_name];return nt&&nt!==stem?<span style={{marginLeft:5,fontSize:10,background:'rgba(99,102,241,.15)',color:'var(--primary)',padding:'1px 5px',borderRadius:99,whiteSpace:'nowrap'}}>AI规范</span>:null;})()}
-                    </td>
-                    <td style={{padding:'5px 10px',color:p.conflict?'var(--danger)':'var(--primary)',wordBreak:'break-all'}}>{p.new_name}</td>
-                    <td style={{padding:'5px 10px',whiteSpace:'nowrap'}}>
-                      {p.conflict?<Tag c="danger">冲突</Tag>:p.original_name===p.new_name?<Tag c="mute">未变</Tag>:<Tag c="success">正常</Tag>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:6}}>
+            <div style={{fontWeight:600,fontSize:14}}>预览确认（共 {previews.length} 个文件{Object.keys(overrides).length>0&&`，已手动编辑 ${Object.keys(overrides).length} 个`}）</div>
+            <span style={{fontSize:11,color:'var(--text-mute)'}}>点击新文件名可手动编辑 · Enter 确认 · Esc 取消</span>
           </div>
+          {/* 虚拟列表 */}
+          {(()=>{
+            const vStart=Math.max(0,Math.floor(scrollTop/ROW_H)-VBUF);
+            const vEnd=Math.min(previews.length,Math.ceil((scrollTop+VLIST_H)/ROW_H)+VBUF);
+            return(
+              <div style={{border:'1px solid var(--border)',borderRadius:6,overflow:'hidden'}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 64px',background:'var(--bg-1)',padding:'6px 10px',fontSize:11.5,color:'var(--text-mute)',fontWeight:600,borderBottom:'1px solid var(--border)'}}>
+                  <span>原文件名</span><span>新文件名（点击编辑）</span><span>状态</span>
+                </div>
+                <div ref={vScrollRef} style={{height:Math.min(previews.length*ROW_H,VLIST_H),overflowY:'auto'}}
+                  onScroll={e=>setScrollTop(e.currentTarget.scrollTop)}>
+                  <div style={{height:previews.length*ROW_H,position:'relative'}}>
+                    <div style={{position:'absolute',top:vStart*ROW_H,left:0,right:0}}>
+                      {previews.slice(vStart,vEnd).map((p,offset)=>{
+                        const i=vStart+offset;
+                        const ov=overrides[i];
+                        const displayName=ov||p.new_name;
+                        const isEditing=editIdx===i;
+                        const conflict=!ov&&p.conflict;
+                        const unchanged=p.original_name===displayName;
+                        const aiTagged=(()=>{const stem=p.original_name.replace(/\.[^.]+$/,'');const nt=(bookMeta.chapter_titles||{})[p.original_name];return nt&&nt!==stem;})();
+                        return(
+                          <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 64px',
+                            height:ROW_H,alignItems:'center',padding:'0 10px',gap:6,
+                            borderBottom:'1px solid var(--border)',
+                            background:conflict?'rgba(239,68,68,.04)':i%2===0?'transparent':'rgba(0,0,0,.015)'}}>
+                            <div style={{fontSize:12,color:'var(--text-mute)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:4}}>
+                              <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.original_name}</span>
+                              {aiTagged&&<span style={{flexShrink:0,fontSize:9,background:'rgba(99,102,241,.15)',color:'var(--primary)',padding:'1px 4px',borderRadius:99}}>AI</span>}
+                            </div>
+                            {isEditing?(
+                              <input autoFocus value={editVal}
+                                onChange={e=>setEditVal(e.target.value)}
+                                onBlur={()=>commitEdit(i)}
+                                onKeyDown={e=>{if(e.key==='Enter')commitEdit(i);if(e.key==='Escape')setEditIdx(null);}}
+                                style={{...S.input,fontSize:12,padding:'3px 7px',height:28}}/>
+                            ):(
+                              <div onClick={()=>startEdit(i,displayName)}
+                                title="点击编辑"
+                                style={{fontSize:12,color:conflict?'var(--danger)':ov?'var(--warning)':'var(--primary)',
+                                  cursor:'text',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+                                  borderRadius:4,padding:'3px 6px',border:'1px solid transparent'}}
+                                onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--bg-0)';}}
+                                onMouseLeave={e=>{e.currentTarget.style.borderColor='transparent';e.currentTarget.style.background='';}}>
+                                {displayName}
+                                {ov&&<span style={{fontSize:10,marginLeft:5,opacity:.7}}>✎</span>}
+                              </div>
+                            )}
+                            <div style={{fontSize:11}}>
+                              {conflict?<Tag c="danger">冲突</Tag>:unchanged?<Tag c="mute">未变</Tag>:<Tag c="success">正常</Tag>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           <div>
             <label style={S.label}>操作备注（可选）</label>
             <input value={note} onChange={e=>setNote(e.target.value)} placeholder="记录此次操作目的..." style={S.input}/>
