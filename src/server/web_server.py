@@ -3968,8 +3968,9 @@ def fm_save_config():
 def fm_scan():
     if not current_user(): return json_error("未登录", 401)
     root = request.args.get('root') or None
+    quick = request.args.get('quick', 'true').lower() != 'false'  # 默认 quick，重命名不需要时长
     try:
-        return json_ok(**_fm.scan_directory(root))
+        return json_ok(**_fm.scan_directory(root, quick=quick))
     except Exception as e:
         return json_error(str(e), 500)
 

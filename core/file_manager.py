@@ -80,8 +80,8 @@ def _format_duration(seconds: float) -> str:
 
 # ============ 扫描功能 ============
 
-def scan_directory(root: str = None) -> dict:
-    """扫描目录，返回 books 列表"""
+def scan_directory(root: str = None, quick: bool = False) -> dict:
+    """扫描目录，返回 books 列表。quick=True 跳过音频时长读取，适合大量文件场景"""
     if root:
         root_path = Path(root)
     else:
@@ -131,7 +131,7 @@ def scan_directory(root: str = None) -> dict:
                 size = 0
                 mtime = ""
 
-            duration = _get_audio_duration(f)
+            duration = 0.0 if quick else _get_audio_duration(f)
             folder_total_size += size
             folder_total_duration += duration
 
@@ -142,7 +142,7 @@ def scan_directory(root: str = None) -> dict:
                 "size": size,
                 "size_fmt": _format_size(size),
                 "duration": duration,
-                "duration_fmt": _format_duration(duration),
+                "duration_fmt": _format_duration(duration) if duration else "",
                 "mtime": mtime,
             })
 
@@ -260,19 +260,16 @@ def preview_rename(folder_path: str, template: str, book_meta: dict) -> list:
 
     for idx, f in enumerate(audio_files):
         try:
-            stat = f.stat()
-            size = stat.st_size
-            duration = _get_audio_duration(f)
+            size = f.stat().st_size
         except OSError:
             size = 0
-            duration = 0.0
 
         file_info = {
             "path": str(f),
             "name": f.name,
             "ext": f.suffix.lstrip('.').lower(),
             "size": size,
-            "duration": duration,
+            "duration": 0.0,  # 重命名不需要时长，跳过读取以支持大量文件
         }
 
         new_name = apply_template(template, book_meta, file_info, idx)
