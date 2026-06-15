@@ -89,6 +89,8 @@ _log_handler = RotatingFileHandler(
 _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _log_handler.addFilter(RedactingFilter())
 logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
+# httpx 内部日志用 %d 格式化状态码字符串会触发 logging 错误，屏蔽其 INFO 日志
+logging.getLogger("httpx").setLevel(logging.WARNING)
 install_safe_print()
 
 cookie_manager = CookieManager()
