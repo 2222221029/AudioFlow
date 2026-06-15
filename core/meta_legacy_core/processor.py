@@ -168,21 +168,21 @@ def _fetch_desc_and_subtitle_from_api(api_source: str, api_id: str, album_subtit
 
 def process_single_audio(args):
     try:
-        audio_file, idx, total_tracks, album_title, album_subtitle, author, anchor, clean_desc, final_year, category_name, platform, cover_data, audio_info, series_name, series_number, logger, target_format, target_bitrate = args
-        
+        audio_file, idx, total_tracks, album_title, album_subtitle, author, anchor, clean_desc, final_year, category_name, platform, cover_data, audio_info, series_name, series_number, logger, target_format, target_bitrate, album_tags = args
+
         file_name = os.path.basename(audio_file)
         current_format = audio_info[audio_file]["codec"].upper()
         current_bitrate = audio_info[audio_file]["bitrate"]
-        
+
         final_file = audio_file
         skip_conversion = False
-        
+
         if _is_auto_bitrate(target_bitrate) and target_format == "原格式保留":
             skip_conversion = True
         elif target_format == current_format and target_bitrate == current_bitrate:
             if logger: logger.info(f"⏭️ 码率格式一致，自动跳过转换: {file_name}")
             skip_conversion = True
-            
+
         if not skip_conversion:
             try:
                 from .audio_converter import convert_audio_format_and_bitrate
@@ -190,45 +190,48 @@ def process_single_audio(args):
                 success, temp_final_file, err = convert_audio_format_and_bitrate(audio_file, target_format, target_bitrate, logger)
                 if not success:
                     return (audio_file, False, idx, f"引擎转换失败: {err}")
-                
+
                 if temp_final_file != audio_file and os.path.exists(temp_final_file):
                     final_file = replace_converted_audio(audio_file, temp_final_file)
             except ImportError:
                 if logger: logger.warning("⚠️ 未找到 audio_converter 模块，跳过转换")
                 final_file = audio_file
-        
+
         codec = target_format if target_format != "原格式保留" else audio_info[audio_file]["codec"]
         grouping_value = build_series_grouping(series_name, series_number)
-        
-        # 🎵 核心修复：将原有的逗号(中英均可)彻底转换为分号(;) 以符合音频标签底层多艺术家分割标准
         tag_author = join_people_for_tag(author)
         tag_anchor = join_people_for_tag(anchor)
-        
+
+        # 将 album_tags 追加到 genre 字段（以分号分隔）
+        extra_tags = [t for t in (album_tags or []) if t and t not in (category_name,)]
+        genre_parts = ["Audiobook", "有声书", category_name] + extra_tags
+        genre_str = ";".join(p for p in genre_parts if p)
+
         tags = {
-            "title": os.path.splitext(os.path.basename(final_file))[0], 
-            "album": album_title, 
-            "artist": tag_author, 
-            "album_artist": tag_author, 
+            "title": os.path.splitext(os.path.basename(final_file))[0],
+            "album": album_title,
+            "artist": tag_author,
+            "album_artist": tag_author,
             "composer": tag_anchor,
-            "genre": f"Audiobook;有声书;{category_name}", 
-            "date": final_year, 
+            "genre": genre_str,
+            "date": final_year,
             "track": f"{idx}/{total_tracks}",
             "copyright": f"{platform} {final_year} © {tag_author.replace(';', ' & ')} - 版权所有" if platform else f"{final_year} © {tag_author.replace(';', ' & ')} - 版权所有",
-            "comment": clean_desc, 
-            "publisher": platform, 
-            "language": "chi", 
-            "DESCRIPTION": clean_desc, 
-            "ENCODING": codec, 
+            "comment": clean_desc,
+            "publisher": platform,
+            "language": "chi",
+            "DESCRIPTION": clean_desc,
+            "ENCODING": codec,
             "TRACKTOTAL": str(total_tracks)
         }
         if album_subtitle: tags["subtitle"] = album_subtitle
         if grouping_value: tags["grouping"] = grouping_value
-        
+
         success = write_tags_and_cover(final_file, tags, cover_data, None)
         return (final_file, success, idx, None)
     except Exception as e: return (args[0], False, args[1], f"{type(e).__name__}: {str(e)}")
 
-def batch_process_audio_parallel(audio_list: list, album_title: str, album_subtitle: str, author: str, anchor: str, clean_desc: str, final_year: str, category_name: str, platform: str, cover_data: bytes = None, audio_info: dict = None, series_name: str = None, series_number: str = None, logger=None, progress_callback=None, failed_audios_callback=None, stop_event=None, retry_set: set = None, target_format: str = "原格式保留", target_bitrate: str = "自动检测") -> tuple:
+def batch_process_audio_parallel(audio_list: list, album_title: str, album_subtitle: str, author: str, anchor: str, clean_desc: str, final_year: str, category_name: str, platform: str, cover_data: bytes = None, audio_info: dict = None, series_name: str = None, series_number: str = None, logger=None, progress_callback=None, failed_audios_callback=None, stop_event=None, retry_set: set = None, target_format: str = "原格式保留", target_bitrate: str = "自动检测", album_tags: list = None) -> tuple:
     success_count, fail_count, total_tracks = 0, 0, len(audio_list)
     tasks_to_run = [(idx, f) for idx, f in enumerate(audio_list, 1) if (not retry_set or os.path.basename(f) in retry_set)]
     total_tasks = len(tasks_to_run)
@@ -243,7 +246,7 @@ def batch_process_audio_parallel(audio_list: list, album_title: str, album_subti
         future_list = []
         for idx, audio_file in tasks_to_run:
             if stop_event and stop_event.is_set(): break
-            future_list.append((executor.submit(process_single_audio, (audio_file, idx, total_tracks, album_title, album_subtitle, author, anchor, clean_desc, final_year, category_name, platform, cover_data, audio_info, series_name, series_number, logger, target_format, target_bitrate)), audio_file, idx))
+            future_list.append((executor.submit(process_single_audio, (audio_file, idx, total_tracks, album_title, album_subtitle, author, anchor, clean_desc, final_year, category_name, platform, cover_data, audio_info, series_name, series_number, logger, target_format, target_bitrate, album_tags or [])), audio_file, idx))
             
         for i, (future, audio_file, idx) in enumerate(future_list, 1):
             if stop_event and stop_event.is_set():
@@ -440,7 +443,7 @@ def process_audio_books(params: dict, logger, progress_callback=None, failed_aud
         if stop_event and stop_event.is_set(): return
         if progress_callback: progress_callback(60, "开始批量处理音频文件...")
         
-        success_count, fail_count, audio_list = batch_process_audio_parallel(audio_list, album_title, final_album_subtitle, author, anchor, clean_desc, final_year, category_name, platform, cover_data, audio_info, series_name, series_number, logger, lambda p, m: progress_callback(60 + (p * 0.35), m) if progress_callback else None, failed_audios_callback, stop_event, retry_set, target_format, target_bitrate)
+        success_count, fail_count, audio_list = batch_process_audio_parallel(audio_list, album_title, final_album_subtitle, author, anchor, clean_desc, final_year, category_name, platform, cover_data, audio_info, series_name, series_number, logger, lambda p, m: progress_callback(60 + (p * 0.35), m) if progress_callback else None, failed_audios_callback, stop_event, retry_set, target_format, target_bitrate, album_tags)
 
         if stop_event and stop_event.is_set(): return
         if progress_callback: progress_callback(95, "生成metadata文件...")

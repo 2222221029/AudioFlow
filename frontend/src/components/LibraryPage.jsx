@@ -321,6 +321,7 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
   const[metaStatus,setMetaStatus]=useState(null);
   const[paramsBusy,setParamsBusy]=useState(false);
   const[paramsMsg,setParamsMsg]=useState('');
+  const[coverPreview,setCoverPreview]=useState(null); // {url, w, h}
   const evtRef=useRef(null);
 
   // 加载选项和配置
@@ -346,12 +347,21 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
 
   function setParam(k,v){setParams(p=>({...p,[k]:v}));}
 
+  function _saveCoverPreview(meta){
+    if(meta?.cover_url){
+      const img=new Image();
+      img.onload=()=>setCoverPreview({url:meta.cover_url,w:img.naturalWidth,h:img.naturalHeight});
+      img.onerror=()=>setCoverPreview({url:meta.cover_url,w:0,h:0});
+      img.src=meta.cover_url;
+    }
+  }
+
   async function doFetchById(){
     if(!apiSource||!apiId.trim())return;
     setFetchBusy(true);setFetchError('');setFetchedMeta(null);
     try{
       const r=await api('/api/meta/fetch-metadata',{method:'POST',body:JSON.stringify({api_source:apiSource,api_id:apiId.trim()})});
-      if(r.ok)setFetchedMeta(r.metadata);
+      if(r.ok){setFetchedMeta(r.metadata);_saveCoverPreview(r.metadata);}
       else setFetchError(r.error||'获取失败');
     }catch(e){setFetchError(String(e));}
     setFetchBusy(false);
@@ -362,7 +372,7 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
     setFetchBusy(true);setFetchError('');setFetchedMeta(null);
     try{
       const r=await api('/api/meta/fetch-link',{method:'POST',body:JSON.stringify({platform:linkPlatform,url:linkUrl.trim()})});
-      if(r.ok)setFetchedMeta(r.metadata);
+      if(r.ok){setFetchedMeta(r.metadata);_saveCoverPreview(r.metadata);}
       else setFetchError(r.error||'获取失败');
     }catch(e){setFetchError(String(e));}
     setFetchBusy(false);
@@ -532,25 +542,51 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
           {/* 基本信息 */}
           <div className="glass" style={{padding:14}}>
             <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>基本信息</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-              {[['title','专辑标题'],['subtitle','副标题'],['author','原著作者'],['anchor','演播艺术家']].map(([k,l])=>(
-                <div key={k}><label style={S.label}>{l}</label><input style={S.input} value={params[k]||''} onChange={e=>setParam(k,e.target.value)}/></div>
-              ))}
-              <div><label style={S.label}>发布平台</label>
-                <select style={S.select} value={params.platform} onChange={e=>setParam('platform',e.target.value)}>
-                  {(options.platforms||[]).map(p=><option key={p}>{p}</option>)}
-                </select>
+            <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+              {/* 封面预览 */}
+              <div style={{flexShrink:0,display:'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                {coverPreview?.url?(
+                  <>
+                    <img src={coverPreview.url} alt="封面预览"
+                      style={{width:120,height:120,objectFit:'cover',borderRadius:8,border:'1px solid var(--border)',display:'block'}}
+                      onError={e=>{e.target.style.display='none';}}/>
+                    {coverPreview.w>0&&(
+                      <span style={{fontSize:10,color:'var(--text-mute)',textAlign:'center',lineHeight:1.4}}>
+                        {coverPreview.w}×{coverPreview.h}px<br/>
+                        <span style={{color:coverPreview.w>=500?'var(--success)':'var(--warning)'}}>
+                          {coverPreview.w>=500?'✓ 高清':'⚠ 低分辨率'}
+                        </span>
+                      </span>
+                    )}
+                  </>
+                ):(
+                  <div style={{width:120,height:120,borderRadius:8,border:'2px dashed var(--border)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:6,color:'var(--text-faint)',fontSize:11}}>
+                    <Icon id="i-folder" className="icon icon-sm" style={{opacity:.4}}/>
+                    <span style={{textAlign:'center',lineHeight:1.4}}>刮削后<br/>自动获取</span>
+                  </div>
+                )}
               </div>
-              <div><label style={S.label}>发布年份</label><input style={S.input} value={params.year||''} onChange={e=>setParam('year',e.target.value)}/></div>
-              <div><label style={S.label}>专辑分类</label>
-                <select style={S.select} value={params.category} onChange={e=>setParam('category',e.target.value)}>
-                  {(options.categories||[]).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-              <div><label style={S.label}>完结状态</label>
-                <select style={S.select} value={params.finished} onChange={e=>setParam('finished',e.target.value)}>
-                  {(options.finished||[]).map(f=><option key={f}>{f}</option>)}
-                </select>
+              {/* 字段网格 */}
+              <div style={{flex:1,display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                {[['title','专辑标题'],['subtitle','副标题'],['author','原著作者'],['anchor','演播艺术家']].map(([k,l])=>(
+                  <div key={k}><label style={S.label}>{l}</label><input style={S.input} value={params[k]||''} onChange={e=>setParam(k,e.target.value)}/></div>
+                ))}
+                <div><label style={S.label}>发布平台</label>
+                  <select style={S.select} value={params.platform} onChange={e=>setParam('platform',e.target.value)}>
+                    {(options.platforms||[]).map(p=><option key={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div><label style={S.label}>发布年份</label><input style={S.input} value={params.year||''} onChange={e=>setParam('year',e.target.value)}/></div>
+                <div><label style={S.label}>专辑分类</label>
+                  <select style={S.select} value={params.category} onChange={e=>setParam('category',e.target.value)}>
+                    {(options.categories||[]).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div><label style={S.label}>完结状态</label>
+                  <select style={S.select} value={params.finished} onChange={e=>setParam('finished',e.target.value)}>
+                    {(options.finished||[]).map(f=><option key={f}>{f}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
           </div>
