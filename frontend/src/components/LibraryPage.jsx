@@ -630,9 +630,10 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[note,setNote]=useState('');
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
+  const[localStats,setLocalStats]=useState(null);  // {confidence, needsAi:N}
   const[aiLoading,setAiLoading]=useState(false);
   const[aiNormStats,setAiNormStats]=useState(null);
-  const[aiProgress,setAiProgress]=useState(null); // {cur,total,samples:[]}
+  const[aiProgress,setAiProgress]=useState(null);
   const[fmConfig,setFmConfig]=useState({custom_ad_rules:[]});
   const[scrapeOpen,setScrapeOpen]=useState(false);
   const[scrapeInput,setScrapeInput]=useState({api_source:'喜马拉雅',api_id:'',link_url:'',link_platform:'起点听书'});
@@ -644,6 +645,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   useEffect(()=>{
     if(!selectedFolder){setFolderFiles([]);setStep(1);return;}
     setStep(1);setFolderFiles([]);setError('');setApplyResult(null);setOverrides({});
+    setLocalStats(null);setAiNormStats(null);
     loadFolderFiles(selectedFolder);
   },[selectedFolder]);
 
@@ -662,28 +664,52 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
       const allFiles=r.books.flatMap(b=>b.files);
       setFolderFiles(allFiles);
       setStep(2);
+      // 扫描完成后立即触发本地智能分析（无需 AI，秒级完成）
+      doLocalAnalyze(target);
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
   }
 
-  async function doAiAnalyze(){
-    if(!folderFiles.length)return;
-    const names=folderFiles.map(f=>f.name);
+  async function doLocalAnalyze(folderPath){
+    try{
+      const r=await api('/api/file-manager/local-analyze',{method:'POST',
+        body:JSON.stringify({folder_path:folderPath||selectedFolder})});
+      if(!r.ok)return;
+      const{book_title,chapter_titles,needs_ai,confidence}=r;
+      setBookMeta(p=>({...p,
+        book_title:book_title||p.book_title,
+        chapter_titles:chapter_titles||{},
+      }));
+      setLocalStats({confidence,needsAi:(needs_ai||[]).length,total:Object.keys(chapter_titles||{}).length});
+    }catch(e){}
+  }
+
+  async function doAiDeepClean(){
+    // AI 深度清理：只处理本地提取置信度低的文件，节省 token
+    const allNames=folderFiles.map(f=>f.name);
+    // 找出需要 AI 清理的文件：本地未提取到标题、或含广告特征的
+    const currentTitles=bookMeta.chapter_titles||{};
+    const AD_SUSPECT=/QQ|qq|微信|公众号|http|www\.|听书|下载/;
+    const targetNames=allNames.filter(n=>{
+      const t=currentTitles[n]||'';
+      return !t||t===n.replace(/\.[^.]+$/,'')||AD_SUSPECT.test(t);
+    });
+    if(!targetNames.length){setError('所有章节标题已提取完整，无需 AI 清理');return;}
     const BATCH=80;
     const batches=[];
-    for(let i=0;i<names.length;i+=BATCH)batches.push(names.slice(i,i+BATCH));
+    for(let i=0;i<targetNames.length;i+=BATCH)batches.push(targetNames.slice(i,i+BATCH));
     const total=batches.length;
     setAiLoading(true);setError('');setAiNormStats(null);setAiProgress({cur:0,total,samples:[]});
-    const chapter_titles={};
+    const chapter_titles={...currentTitles};
     let adCount=0,normCount=0;
-    let firstMeta={};
+    let firstMeta=null;
     try{
       for(let i=0;i<batches.length;i++){
         const r=await api('/api/file-manager/ai-analyze-batch',{method:'POST',
-          body:JSON.stringify({file_names:batches[i],is_first_batch:i===0})});
+          body:JSON.stringify({file_names:batches[i],is_first_batch:i===0&&!firstMeta})});
         if(!r.ok)throw new Error(r.error);
         const res=r.result||{};
-        if(i===0)firstMeta=res;
+        if(i===0&&!firstMeta)firstMeta=res;
         const samples=[];
         (res.items||[]).forEach(item=>{
           if(!item.original)return;
@@ -694,19 +720,21 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             if(samples.length<3)samples.push({from:item.original,to:item.chapter_title});
           }
         });
-        setAiProgress(p=>({cur:i+1,total,samples}));
+        setAiProgress(p=>({...p,cur:i+1,samples}));
       }
       setBookMeta(p=>({...p,
-        book_title:firstMeta.book_title||p.book_title,
-        author:firstMeta.author||p.author,
-        narrator:firstMeta.narrator||p.narrator,
-        category:firstMeta.category||p.category,
-        series:firstMeta.series||p.series,
-        volume:firstMeta.volume||p.volume,
+        ...(firstMeta&&{
+          book_title:firstMeta.book_title||p.book_title,
+          author:firstMeta.author||p.author,
+          narrator:firstMeta.narrator||p.narrator,
+          category:firstMeta.category||p.category,
+          series:firstMeta.series||p.series,
+          volume:firstMeta.volume||p.volume,
+        }),
         chapter_titles,
       }));
-      setAiNormStats({normalized:normCount,ads:adCount});
-    }catch(e){setError('AI 识别失败: '+e.message);}
+      setAiNormStats({normalized:normCount,ads:adCount,total:targetNames.length});
+    }catch(e){setError('AI 清理失败: '+e.message);}
     finally{setAiLoading(false);setAiProgress(null);}
   }
 
@@ -798,12 +826,22 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
         <div className="glass glass-pad" style={{display:'flex',flexDirection:'column',gap:12}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <div style={{fontWeight:600,fontSize:14}}>填写书籍元数据</div>
-            <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-ghost btn-sm" onClick={doAiAnalyze} disabled={aiLoading}>
-                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}{aiLoading?`处理中 ${aiProgress?aiProgress.cur:0}/${aiProgress?aiProgress.total:Math.ceil(folderFiles.length/80)} 批`:'AI 规范章节名'}
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              {localStats&&!aiLoading&&(
+                <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,
+                  background:localStats.confidence>=0.8?'rgba(34,197,94,.15)':'rgba(234,179,8,.15)',
+                  color:localStats.confidence>=0.8?'var(--success)':'#ca8a04'}}>
+                  {localStats.confidence>=0.8?'✓':'~'} 本地提取 {localStats.total-localStats.needsAi}/{localStats.total}
+                  {localStats.needsAi>0&&<span style={{opacity:.7}}> · {localStats.needsAi}个待清理</span>}
+                </span>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={doAiDeepClean} disabled={aiLoading}
+                title={localStats&&localStats.needsAi>0?`对 ${localStats.needsAi} 个疑似广告/空标题文件调用 AI 清理`:'对含广告特征章节调用 AI 清理'}>
+                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}
+                {aiLoading?`AI 清理中 ${aiProgress?aiProgress.cur:0}/${aiProgress?aiProgress.total:1} 批`:'AI 深度清理'}
               </button>
               {aiNormStats&&!aiLoading&&<span style={{fontSize:11,color:'var(--success)'}}>
-                ✓ 已规范 {aiNormStats.normalized} 个{aiNormStats.ads>0&&`，广告 ${aiNormStats.ads} 个`}
+                ✓ 清理 {aiNormStats.normalized}/{aiNormStats.total}{aiNormStats.ads>0&&`，跳过广告 ${aiNormStats.ads}`}
               </span>}
               {aiProgress&&aiLoading&&(
                 <div style={{fontSize:11,color:'var(--text-mute)',display:'flex',flexDirection:'column',gap:3,marginLeft:4}}>
@@ -813,7 +851,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
                     </div>
                     <span>{aiProgress.total?Math.round(aiProgress.cur/aiProgress.total*100):0}%</span>
                   </div>
-                  {aiProgress.samples.map((s,i)=>(
+                  {aiProgress.samples&&aiProgress.samples.map((s,i)=>(
                     <div key={i} style={{fontSize:10.5,color:'var(--text-faint)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:340}}>
                       <span style={{color:'var(--text-mute)'}}>{s.from.replace(/\.[^.]+$/,'')}</span>
                       <span style={{margin:'0 4px',color:'var(--primary)'}}>→</span>

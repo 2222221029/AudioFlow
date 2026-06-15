@@ -3984,6 +3984,21 @@ def fm_books():
     except Exception as e:
         return json_error(str(e), 500)
 
+@app.route('/api/file-manager/local-analyze', methods=['POST'])
+def fm_local_analyze():
+    """本地智能分析：无需 AI，秒级提取书名和章节标题"""
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    folder_path = data.get('folder_path', '')
+    if not folder_path:
+        return json_error("缺少 folder_path", 400)
+    cfg = _fm.load_fm_config()
+    try:
+        result = _fm.local_analyze(folder_path, cfg.get('custom_ad_rules', []))
+        return json_ok(**result)
+    except Exception as e:
+        return json_error(str(e), 500)
+
 @app.route('/api/file-manager/ai-analyze', methods=['POST'])
 def fm_ai_analyze():
     if not current_user(): return json_error("未登录", 401)

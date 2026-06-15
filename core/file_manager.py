@@ -516,6 +516,89 @@ def save_fm_config(cfg: dict) -> dict:
     return cfg
 
 
+# ============ 本地智能分析 ============
+
+def _longest_common_prefix(strings: list) -> str:
+    if not strings: return ""
+    prefix = strings[0]
+    for s in strings[1:]:
+        while not s.startswith(prefix):
+            prefix = prefix[:-1]
+            if not prefix: return ""
+    return prefix
+
+
+# 判断标题是否可能含广告（用于决定是否需要 AI 深度清理）
+_AD_SUSPECT = re.compile(
+    r'QQ|qq|微信|公众号|http|www\.|听书|下载|[！-～]{3,}', re.IGNORECASE
+)
+
+def _suspect_ad(title: str) -> bool:
+    return bool(_AD_SUSPECT.search(title))
+
+
+def local_analyze(folder_path: str, custom_ad_rules: list = None) -> dict:
+    """
+    本地智能分析：无需 AI，从文件名结构中提取书名和章节标题。
+    返回 {book_title, chapter_titles:{filename:title}, needs_ai:[filename,...], confidence}
+    """
+    folder = Path(folder_path)
+    audio_files = sorted(
+        [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTS],
+        key=lambda x: x.name
+    )
+    if not audio_files:
+        return {"book_title": "", "chapter_titles": {}, "needs_ai": [], "confidence": 0.0}
+
+    stems = [f.stem for f in audio_files]
+
+    # Step 1: 剥离开头下载序号前缀（如 "0001-", "001 "）
+    def strip_dl_prefix(stem):
+        return re.sub(r'^\d+[-_\s－—]+', '', stem).strip()
+
+    no_prefix = [strip_dl_prefix(s) for s in stems]
+
+    # Step 2: 求去掉序号后的最长公共前缀 → 书名
+    raw_lcp = _longest_common_prefix(no_prefix)
+    # 清理末尾的数字、分隔符（防止 "书名 00" 这样的截断）
+    book_title = re.sub(r'[\d\s\-_－—]+$', '', raw_lcp).strip()
+    # 去掉书名末尾可能多余的空格或标点
+    book_title = book_title.rstrip(' \t-_－—')
+
+    # Step 3: 逐文件提取章节标题
+    chapter_titles = {}
+    needs_ai = []
+
+    for f, stem, np in zip(audio_files, stems, no_prefix):
+        title = np
+        # 剥离书名
+        if book_title:
+            title = re.sub(r'^' + re.escape(book_title) + r'[\s\-_－—]*', '', title).strip()
+        # 剥离章节编号（如 001、第001集、001集、第001章）
+        title = re.sub(r'^第?\d+[集章回话期]?\s*', '', title).strip()
+        # 应用广告清理规则
+        title = clean_filename(title, custom_ad_rules or [])
+        # 括号前不允许空格
+        title = re.sub(r'\s+（', '（', title)
+
+        chapter_titles[f.name] = title
+
+        # 判断是否需要 AI 深度清理
+        if not title or _suspect_ad(title) or len(title) < 1:
+            needs_ai.append(f.name)
+
+    # 置信度：书名非空 + 平均标题长度合理 → 高置信
+    avg_len = sum(len(t) for t in chapter_titles.values()) / max(len(chapter_titles), 1)
+    confidence = round(min(1.0, (1.0 if book_title else 0.3) * min(1.0, avg_len / 3)), 2)
+
+    return {
+        "book_title": book_title,
+        "chapter_titles": chapter_titles,
+        "needs_ai": needs_ai,
+        "confidence": confidence,
+    }
+
+
 # ============ AI 分析 ============
 
 _AI_RULES = """**章节标题规范化规则（非常重要）：**
