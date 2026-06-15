@@ -31,7 +31,16 @@ function simulateTemplate(tpl,meta,fileName,idx){
   const stem=fileName.replace(/\.[^.]+$/,'');
   const ext=(fileName.match(/\.([^.]+)$/)||['',''])[1].toLowerCase();
   const i=idx+1;
-  const chapterTitle=(meta.chapter_titles||{})[fileName]||stem;
+  const aiTitle=(meta.chapter_titles||{})[fileName];
+  let chapterTitle=aiTitle||stem;
+  if(!aiTitle){
+    // 无AI结果时基础提取：去掉"序号-书名"前缀 + 章节编号
+    let s=stem;
+    const bt=(meta.book_title||'').trim();
+    if(bt) s=s.replace(new RegExp('^\\d+[-\\s]+'+bt.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[-\\s]*'),'').trim();
+    s=s.replace(/^\d+[集章回话期]?\s*/,'').trim();
+    chapterTitle=s||stem;
+  }
   const prefixMatch=stem.match(/^(\d+)/);
   const originalPrefix=prefixMatch?prefixMatch[1]:String(i).padStart(4,'0');
   const seriesVal=(meta.series||'').trim();

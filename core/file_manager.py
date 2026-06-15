@@ -179,7 +179,17 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int) 
     idx = index + 1  # 1-based
 
     name_no_ext = Path(file_info.get("name", "")).stem
-    chapter_title = book_meta.get("chapter_titles", {}).get(file_info.get("name", ""), name_no_ext)
+    ai_title = book_meta.get("chapter_titles", {}).get(file_info.get("name", ""))
+    if ai_title:
+        chapter_title = ai_title
+    else:
+        # 无 AI 结果时基础提取：去掉"序号-书名"前缀 + 章节编号
+        stem = name_no_ext
+        book_title_val = book_meta.get("book_title", "").strip()
+        if book_title_val:
+            stem = re.sub(r'^\d+[-\s]+' + re.escape(book_title_val) + r'[-\s]*', '', stem).strip()
+        stem = re.sub(r'^\d+[集章回话期]?\s*', '', stem).strip()
+        chapter_title = stem if stem else name_no_ext
 
     # 从原文件名开头提取数字前缀（如 "0001-xxx" → "0001"）
     prefix_match = re.match(r'^(\d+)', name_no_ext)
