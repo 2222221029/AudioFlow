@@ -576,7 +576,7 @@ export function SubscriptionsPage({app}) {
         </div>
       </div>
       <div className="sub-grid">
-        {!subscriptions.length ? <div className="empty"><Icon id="i-star" />暂无订阅<br />在专辑详情点击“订阅追更”</div> : subscriptions.map((sub) => {
+        {!subscriptions.length ? <div className="empty"><Icon id="i-star" />暂无订阅<br />在专辑详情点击"订阅追更"</div> : subscriptions.map((sub) => {
           const album = sub.album || sub;
           const stats = sub.stats || {};
           const activeJob = Object.values(subscriptionJobs).find((job) => job.sid === sub.id && ['queued', 'running'].includes(job.status));
@@ -1110,8 +1110,8 @@ export function SettingsPage({app}) {
             <option value="none">不添加序号前缀</option>
           </select>
         </div>
-        <div className=”field-row”><label className=”field-label”>登录账号</label><div className=”settings-account-actions”><button className=”btn btn-ghost btn-sm” onClick={openPassword}><Icon id=”i-key” className=”icon icon-sm” />修改密码</button><button className=”btn btn-danger btn-sm” onClick={actions.logoutAccount}><Icon id=”i-close” className=”icon icon-sm” />退出登录</button></div></div>
-        <button className=”btn btn-primary” disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon=”i-check” />保存设置</button>
+        <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
+        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
       </div>
       <DiagnosticsPanel config={config} diagnostics={diagnostics} loading={busy.diagnostics} onLoad={actions.loadDiagnostics} />
       <div className="glass glass-pad settings-log-card">
