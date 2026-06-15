@@ -33,7 +33,7 @@ AD_PATTERNS = [
 ]
 
 DEFAULT_TEMPLATES = [
-    {"id": "t1", "name": "序号-《书名》 第N集 章节名", "template": "{chapter_index_4}-《{book_title}》 第{chapter_index_3}集 {chapter_title}.{ext}"},
+    {"id": "t1", "name": "原序号-《书名》 第N集 章节名", "template": "{original_prefix}-《{book_title}》 第{chapter_index_3}集 {chapter_title}.{ext}"},
     {"id": "t2", "name": "序号-章节名",               "template": "{chapter_index_3}-{chapter_title}.{ext}"},
     {"id": "t3", "name": "书名-序号-章节名",           "template": "{book_title}-{chapter_index_3}-{chapter_title}.{ext}"},
     {"id": "t4", "name": "作者-书名-序号",             "template": "[{author}]{book_title}-{chapter_index_3}.{ext}"},
@@ -180,6 +180,10 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int) 
     name_no_ext = Path(file_info.get("name", "")).stem
     chapter_title = book_meta.get("chapter_titles", {}).get(file_info.get("name", ""), name_no_ext)
 
+    # 从原文件名开头提取数字前缀（如 "0001-xxx" → "0001"）
+    prefix_match = re.match(r'^(\d+)', name_no_ext)
+    original_prefix = prefix_match.group(1) if prefix_match else str(idx).zfill(4)
+
     variables = {
         "book_title": book_meta.get("book_title", ""),
         "author": book_meta.get("author", ""),
@@ -187,6 +191,7 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int) 
         "category": book_meta.get("category", ""),
         "series": book_meta.get("series", ""),
         "volume": book_meta.get("volume", ""),
+        "original_prefix": original_prefix,
         "chapter_index": str(idx),
         "chapter_index_2": str(idx).zfill(2),
         "chapter_index_3": str(idx).zfill(3),

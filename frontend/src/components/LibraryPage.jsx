@@ -31,11 +31,15 @@ function simulateTemplate(tpl,meta,fileName,idx){
   const stem=fileName.replace(/\.[^.]+$/,'');
   const ext=(fileName.match(/\.([^.]+)$/)||['',''])[1].toLowerCase();
   const i=idx+1;
+  const chapterTitle=(meta.chapter_titles||{})[fileName]||stem;
+  const prefixMatch=stem.match(/^(\d+)/);
+  const originalPrefix=prefixMatch?prefixMatch[1]:String(i).padStart(4,'0');
   const vars={book_title:meta.book_title||'',author:meta.author||'',narrator:meta.narrator||'',
     category:meta.category||'',series:meta.series||'',volume:meta.volume||'',
+    original_prefix:originalPrefix,
     chapter_index:String(i),chapter_index_2:String(i).padStart(2,'0'),
     chapter_index_3:String(i).padStart(3,'0'),chapter_index_4:String(i).padStart(4,'0'),
-    chapter_title:(meta.chapter_titles||{})[fileName]||stem,chapter_full:String(i).padStart(3,'0')+'-'+((meta.chapter_titles||{})[fileName]||stem),
+    chapter_title:chapterTitle,chapter_full:String(i).padStart(3,'0')+'-'+chapterTitle,
     name:stem,ext,date:new Date().toISOString().slice(0,10).replace(/-/g,'')};
   let r=tpl;
   for(const[k,v]of Object.entries(vars))r=r.replaceAll(`{${k}}`,v);
@@ -790,7 +794,8 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
               placeholder="{chapter_index_3}-{chapter_title}.{ext}" style={{...S.input,fontFamily:'monospace'}}/>
           </div>
           <div style={{fontSize:12,color:'var(--text-mute)',lineHeight:1.8}}>
-            变量：<code>{'{book_title}'}</code> <code>{'{author}'}</code> <code>{'{narrator}'}</code> <code>{'{chapter_index_3}'}</code> <code>{'{chapter_title}'}</code> <code>{'{ext}'}</code> <code>{'{date}'}</code>
+            变量：<code>{'{original_prefix}'}</code> <code>{'{book_title}'}</code> <code>{'{author}'}</code> <code>{'{narrator}'}</code> <code>{'{chapter_index_3}'}</code> <code>{'{chapter_title}'}</code> <code>{'{ext}'}</code> <code>{'{date}'}</code>
+            <br/><span style={{fontSize:11,color:'var(--text-faint)'}}>{'{original_prefix}'} = 原文件名开头的数字（如 0001），保持下载器序号不变</span>
           </div>
           {folderFiles.length>0&&(
             <div style={{background:'var(--bg-0)',borderRadius:6,padding:12,border:'1px solid var(--border)'}}>
