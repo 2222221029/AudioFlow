@@ -3,14 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from .app_config import META_DATA_DIR
+from core.platform_config import download_dir
 
 
 AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus"}
 COVER_NAMES = {"cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png"}
 
 
+def _browse_root() -> Path:
+    return download_dir().resolve()
+
+
 def safe_path(path_text: str | None = None) -> Path:
-    root = META_DATA_DIR.resolve()
+    root = _browse_root()
     candidate = Path(path_text or root).resolve()
     if not str(candidate).startswith(str(root)):
         return root
@@ -18,7 +23,7 @@ def safe_path(path_text: str | None = None) -> Path:
 
 
 def browse(path_text: str | None = None) -> dict:
-    root = META_DATA_DIR.resolve()
+    root = _browse_root()
     current = safe_path(path_text)
     if not current.exists() or not current.is_dir():
         current = root
@@ -37,6 +42,7 @@ def browse(path_text: str | None = None) -> dict:
     except PermissionError:
         pass
     return {"root": str(root), "current": str(current), "items": dirs}
+
 
 
 def find_cover(folder: str, manual_cover_path: str = "") -> str:
