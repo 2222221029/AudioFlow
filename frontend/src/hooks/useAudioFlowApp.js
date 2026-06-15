@@ -663,7 +663,6 @@ export function useAudioFlowApp() {
     downloadDir,
     quality,
     downloadThreads,
-    organizeByPlatformEnabled,
     splitChaptersEnabled,
     chaptersPerFolder,
     filenamePrefixFormat,
@@ -675,7 +674,6 @@ export function useAudioFlowApp() {
           download_dir: downloadDir,
           quality,
           download_threads: downloadThreads,
-          organize_by_platform_enabled: organizeByPlatformEnabled,
           split_chapters_enabled: splitChaptersEnabled,
           chapters_per_folder: chaptersPerFolder,
           filename_prefix_format: filenamePrefixFormat,
@@ -708,15 +706,6 @@ export function useAudioFlowApp() {
     }
   }, [showToast]);
 
-  const organizeDownloadsByPlatform = useCallback(async (dryRun = false) => {
-    await runBusy('organizeDownloads', async () => {
-      const data = await api('/api/downloads/organize-by-platform', {method: 'POST', body: {dry_run: dryRun}});
-      showToast((dryRun ? '整理预览：' : '整理完成：') + `移动 ${data.moved_count || 0}，跳过 ${data.skipped_count || 0}`, 'ok');
-      await loadSubscriptions({refreshLocal: true}).catch(() => {});
-      loadEvents().catch(() => {});
-      return data;
-    }).catch((error) => showToast('整理失败：' + error.message, 'err'));
-  }, [loadEvents, loadSubscriptions, runBusy, showToast]);
 
   const loadDiagnostics = useCallback(async () => {
     await runBusy('diagnostics', async () => {
@@ -966,7 +955,6 @@ export function useAudioFlowApp() {
       clearLogs,
       loadEvents,
       clearEvents,
-      organizeDownloadsByPlatform,
       loadDiagnostics,
       loadNotifications,
       saveNotifications,

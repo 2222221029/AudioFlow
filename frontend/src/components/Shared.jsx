@@ -1070,7 +1070,6 @@ export function SettingsPage({app}) {
   const [downloadDir, setDownloadDir] = useState('');
   const [quality, setQuality] = useState('M4A 96K');
   const [downloadThreads, setDownloadThreads] = useState(16);
-  const [organizeByPlatformEnabled, setOrganizeByPlatformEnabled] = useState(false);
   const [splitChaptersEnabled, setSplitChaptersEnabled] = useState(false);
   const [chaptersPerFolder, setChaptersPerFolder] = useState(200);
   const [filenamePrefixFormat, setFilenamePrefixFormat] = useState('0001-');
@@ -1078,7 +1077,6 @@ export function SettingsPage({app}) {
     setDownloadDir(config.download_dir || '');
     setQuality(config.quality || 'M4A 96K');
     setDownloadThreads(config.download_threads || 16);
-    setOrganizeByPlatformEnabled(!!config.organize_by_platform_enabled);
     setSplitChaptersEnabled(!!config.split_chapters_enabled);
     setChaptersPerFolder(config.chapters_per_folder || 200);
     setFilenamePrefixFormat(config.filename_prefix_format || '0001-');
@@ -1091,10 +1089,6 @@ export function SettingsPage({app}) {
         <div className="field-row"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
         <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损真人录制（最高）</option></select></div>
         <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64，默认16" style={{maxWidth:'120px'}} /></div>
-        <div className="field-row">
-          <label className="check-row"><input type="checkbox" checked={organizeByPlatformEnabled} onChange={(e) => setOrganizeByPlatformEnabled(e.target.checked)} /><span>按平台名称保存专辑目录</span></label>
-          <div className="field-hint">开启后保存为：下载目录 / 平台名称 / 专辑名称 / 章节文件</div>
-        </div>
         <div className="field-row">
           <label className="check-row"><input type="checkbox" checked={splitChaptersEnabled} onChange={(e) => setSplitChaptersEnabled(e.target.checked)} /><span>按文件数量分文件夹保存</span></label>
           <div className="field-row-inline">
@@ -1116,9 +1110,8 @@ export function SettingsPage({app}) {
             <option value="none">不添加序号前缀</option>
           </select>
         </div>
-        <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
-        <div className="field-row"><label className="field-label">下载目录整理</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" disabled={busy.organizeDownloads} onClick={() => actions.organizeDownloadsByPlatform(true)}><BusyIcon busy={busy.organizeDownloads} icon="i-folder" />预览平台目录整理</button><button className="btn btn-primary btn-sm" disabled={busy.organizeDownloads} onClick={() => actions.organizeDownloadsByPlatform(false)}><BusyIcon busy={busy.organizeDownloads} icon="i-check" />执行整理</button></div><div className="field-hint">将旧目录“下载目录/专辑名”移动为“下载目录/平台名/专辑名”，目标已存在时会跳过。</div></div>
-        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
+        <div className=”field-row”><label className=”field-label”>登录账号</label><div className=”settings-account-actions”><button className=”btn btn-ghost btn-sm” onClick={openPassword}><Icon id=”i-key” className=”icon icon-sm” />修改密码</button><button className=”btn btn-danger btn-sm” onClick={actions.logoutAccount}><Icon id=”i-close” className=”icon icon-sm” />退出登录</button></div></div>
+        <button className=”btn btn-primary” disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon=”i-check” />保存设置</button>
       </div>
       <DiagnosticsPanel config={config} diagnostics={diagnostics} loading={busy.diagnostics} onLoad={actions.loadDiagnostics} />
       <div className="glass glass-pad settings-log-card">
