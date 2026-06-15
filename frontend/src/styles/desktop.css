@@ -5,7 +5,7 @@
    公共半径
    ============================================================ */
 :root{
-  --radius-card:18px; --radius-pill:999px; --radius-input:12px;
+  --radius-card:18px; --radius-pill:999px; --radius-input:9px;
   --logo-a:var(--aurora-a); --logo-b:var(--aurora-b); --logo-c:var(--aurora-c);
 }
 
@@ -178,6 +178,36 @@ html[data-theme="pearl_mint"]{
   --bg-grad-a: rgba(14,165,233,.10);
   --bg-grad-b: rgba(34,211,238,.08);
   --bg-grad-c: rgba(163,230,53,.06);
+}
+
+/* ===== 风格主题：纸墨书香 Paper & Ink — 浅色 ===== */
+html[data-theme="paper_ink"]{
+  --bg-0:#f2ede3; --bg-1:#f8f4ec; --bg-2:#ede5d4;
+  --aurora-a:#8b5c2a; --aurora-b:#6b4226; --aurora-c:#b87333;
+  --panel:rgba(250,246,238,.94); --panel-2:rgba(255,252,246,.98);
+  --panel-hi:rgba(237,229,212,.96);
+  --border:rgba(107,66,38,.20); --border-hi:rgba(107,66,38,.42);
+  --text:#2c1e0f; --text-mute:#7a5a38; --text-faint:#a88060;
+  --primary:#6b4226; --primary-2:#8b5c2a; --primary-soft:rgba(107,66,38,.10);
+  --accent:#b87333; --success:#4a7c3f; --warning:#c47a0a; --danger:#b03020;
+  --shadow-card:0 2px 10px -3px rgba(107,66,38,.18);
+  --pre-bg:rgba(107,66,38,.06); --kbd-bg:rgba(107,66,38,.10);
+  --bg-grad-a:rgba(139,92,42,.10); --bg-grad-b:rgba(107,66,38,.07); --bg-grad-c:rgba(184,115,51,.05);
+}
+
+/* ===== 风格主题：墨夜书房 Paper & Ink — 深色 ===== */
+html[data-theme="paper_ink_night"]{
+  --bg-0:#14100a; --bg-1:#1f1810; --bg-2:#2a2016;
+  --aurora-a:#c4860a; --aurora-b:#96600a; --aurora-c:#d4a44c;
+  --panel:rgba(36,26,14,.82); --panel-2:rgba(52,38,18,.92);
+  --panel-hi:rgba(64,48,24,.72);
+  --border:rgba(196,134,10,.22); --border-hi:rgba(196,134,10,.46);
+  --text:#f0e6cc; --text-mute:#c4a870; --text-faint:#8a6c40;
+  --primary:#d4a44c; --primary-2:#c4860a; --primary-soft:rgba(196,134,10,.14);
+  --accent:#e8c060; --success:#6aaa5a; --warning:#e8a020; --danger:#d04030;
+  --shadow-card:0 8px 28px -10px rgba(0,0,0,.60);
+  --pre-bg:rgba(0,0,0,.36); --kbd-bg:rgba(196,134,10,.14);
+  --bg-grad-a:rgba(196,134,10,.16); --bg-grad-b:rgba(150,96,10,.12); --bg-grad-c:rgba(212,164,76,.08);
 }
 
 *,*::before,*::after{box-sizing:border-box}
@@ -952,3 +982,148 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
     grid-template-columns:1fr!important;
   }
 }
+
+/* ============================================================
+   纸墨书香 Paper & Ink 风格结构覆盖
+   匹配 paper_ink（浅色）和 paper_ink_night（深色）
+   ============================================================ */
+
+html[data-theme^="paper_ink"]{
+  --radius-card:5px;
+  --radius-input:4px;
+  --radius-pill:5px;
+}
+
+/* 衬线字体覆盖全局 */
+html[data-theme^="paper_ink"],
+html[data-theme^="paper_ink"] body{
+  font-family:Georgia,"Noto Serif SC","Source Han Serif SC","STSong",serif;
+}
+
+/* 横格纸纹背景 */
+html[data-theme^="paper_ink"] body{
+  background:
+    repeating-linear-gradient(180deg,transparent,transparent 27px,var(--border) 27px,var(--border) 28px),
+    linear-gradient(180deg,var(--bg-0) 0%,var(--bg-1) 100%);
+}
+
+/* 侧边栏 & 顶栏：实体边框，去玻璃模糊 */
+html[data-theme^="paper_ink"] .sidebar,
+html[data-theme^="paper_ink"] .topbar{
+  border-radius:5px;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+
+/* 品牌区：实体色块 */
+html[data-theme^="paper_ink"] .brand{
+  background:var(--panel-hi);
+  border-color:var(--border-hi);
+}
+
+/* 导航项：左侧墨色条形 active 指示器 */
+html[data-theme^="paper_ink"] .nav-item{border-radius:2px}
+html[data-theme^="paper_ink"] .nav-item.active{
+  background:var(--panel-hi)!important;
+  color:var(--primary)!important;
+  border-color:transparent!important;
+  border-left:3px solid var(--primary)!important;
+  border-radius:0 2px 2px 0!important;
+  box-shadow:none!important;
+}
+
+/* 按钮：方角，solid 主色 */
+html[data-theme^="paper_ink"] .btn{border-radius:3px}
+html[data-theme^="paper_ink"] .btn-primary{
+  background:var(--primary);
+  box-shadow:2px 2px 0 rgba(0,0,0,.20);
+}
+html[data-theme^="paper_ink"] .btn-primary:hover{
+  background:var(--primary-2);
+  transform:none;
+  box-shadow:1px 1px 0 rgba(0,0,0,.25);
+}
+html[data-theme^="paper_ink"] .btn-icon{border-radius:3px}
+html[data-theme^="paper_ink"] .btn-tiny{border-radius:2px}
+html[data-theme^="paper_ink"] .chip{border-radius:2px}
+
+/* 搜索框 & 平台选择 */
+html[data-theme^="paper_ink"] .search-input,
+html[data-theme^="paper_ink"] .platform-select{border-radius:3px}
+html[data-theme^="paper_ink"] .platform-menu{
+  border-radius:4px;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+html[data-theme^="paper_ink"] .platform-option{border-radius:2px}
+html[data-theme^="paper_ink"] .platform-option.active{
+  background:var(--panel-hi)!important;
+}
+
+/* 自定义下拉菜单 */
+html[data-theme^="paper_ink"] .ui-select-menu{
+  border-radius:4px;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+
+/* glass 卡片：去blur，实体 */
+html[data-theme^="paper_ink"] .glass,
+html[data-theme^="paper_ink"] .glass.glass-pad{
+  border-radius:5px;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+
+/* 内容卡片：统一方角 */
+html[data-theme^="paper_ink"] .result-row,
+html[data-theme^="paper_ink"] .task-card,
+html[data-theme^="paper_ink"] .sub-card,
+html[data-theme^="paper_ink"] .aside-card,
+html[data-theme^="paper_ink"] .cookie-card,
+html[data-theme^="paper_ink"] .event-row{border-radius:4px}
+html[data-theme^="paper_ink"] .result-row.selected{background:var(--panel-hi)!important}
+html[data-theme^="paper_ink"] .result-cover{border-radius:4px}
+
+/* 订阅封面：方角+墨影 */
+html[data-theme^="paper_ink"] .sub-cover{
+  border-radius:4px;
+  box-shadow:2px 2px 0 rgba(0,0,0,.20);
+}
+
+/* 进度条：纯色无渐变 */
+html[data-theme^="paper_ink"] .sub-progress span{background:var(--primary)}
+
+/* pill 标签 → 方角 */
+html[data-theme^="paper_ink"] .sub-stats span,
+html[data-theme^="paper_ink"] .cookie-account,
+html[data-theme^="paper_ink"] .cookie-status,
+html[data-theme^="paper_ink"] .history-chip,
+html[data-theme^="paper_ink"] .subscription-scheduler span,
+html[data-theme^="paper_ink"] .result-platform .platform-tag{border-radius:3px}
+
+/* 工具区、通知服务、登录弹窗 */
+html[data-theme^="paper_ink"] .compact-tools,
+html[data-theme^="paper_ink"] .notification-service{border-radius:4px}
+html[data-theme^="paper_ink"] .lrts-mode-tabs{border-radius:4px}
+html[data-theme^="paper_ink"] .lrts-mode-tabs button{border-radius:2px}
+html[data-theme^="paper_ink"] .lrts-mode-tabs button.active{
+  background:var(--primary);
+  box-shadow:none;
+}
+html[data-theme^="paper_ink"] .lrts-login .field-input{border-radius:3px}
+
+/* 弹窗 & 二维码 */
+html[data-theme^="paper_ink"] .modal,
+html[data-theme^="paper_ink"] .qr-box,
+html[data-theme^="paper_ink"] .cookie-modal-textarea{border-radius:4px}
+
+/* 滚动条：方角 */
+html[data-theme^="paper_ink"] ::-webkit-scrollbar-thumb{border-radius:2px}
+
+/* ThemePicker 卡片 */
+html[data-theme^="paper_ink"] .theme-card{border-radius:4px}
+html[data-theme^="paper_ink"] .theme-card .tc-preview{border-radius:3px}
+
+/* 设置页订阅控制组 */
+html[data-theme^="paper_ink"] .subscription-control-group{border-radius:4px}

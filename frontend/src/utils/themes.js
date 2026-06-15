@@ -9,6 +9,8 @@ export const THEMES = [
   {value: 'golden_dune', name: '沙金黎明', mode: 'light', colors: ['#d97706', '#ca8a04', '#84cc16']},
   {value: 'celadon_valley', name: '青瓷溪谷', mode: 'light', colors: ['#0d9488', '#10b981', '#22d3ee']},
   {value: 'pearl_mint', name: '月白薄荷', mode: 'light', colors: ['#0ea5e9', '#22d3ee', '#a3e635']},
+  {value: 'paper_ink', name: '纸墨书香', mode: 'light', colors: ['#8b5c2a', '#6b4226', '#b87333']},
+  {value: 'paper_ink_night', name: '墨夜书房', mode: 'dark', colors: ['#c4860a', '#96600a', '#d4a44c']},
 ];
 
 export const DEFAULT_THEME = 'midnight_aurora';

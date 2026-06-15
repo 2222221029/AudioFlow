@@ -14,9 +14,9 @@ const TABS = [
 ];
 
 const S = {
-  input: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:9,padding:'0 12px',height:34,color:'var(--text)',fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:'inherit'},
-  select: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:9,padding:'0 12px',height:34,color:'var(--text)',fontSize:13,outline:'none',fontFamily:'inherit'},
-  textarea: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:9,padding:'8px 12px',color:'var(--text)',fontSize:12.5,outline:'none',boxSizing:'border-box',fontFamily:'Consolas,monospace',resize:'vertical'},
+  input: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:'var(--radius-input)',padding:'0 12px',height:34,color:'var(--text)',fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:'inherit'},
+  select: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:'var(--radius-input)',padding:'0 12px',height:34,color:'var(--text)',fontSize:13,outline:'none',fontFamily:'inherit'},
+  textarea: {width:'100%',background:'var(--panel-hi)',border:'1px solid var(--border)',borderRadius:'var(--radius-input)',padding:'8px 12px',color:'var(--text)',fontSize:12.5,outline:'none',boxSizing:'border-box',fontFamily:'Consolas,monospace',resize:'vertical'},
   label: {fontSize:11,color:'var(--text-faint)',marginBottom:5,fontWeight:600,display:'block',textTransform:'uppercase',letterSpacing:'.5px'},
 };
 
