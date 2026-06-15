@@ -6,7 +6,6 @@ import {Icon} from './Icons.jsx';
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
 const TABS = [
-  ['scan',      'i-folder',   '书库扫描'],
   ['rename',    'i-edit',     '章节重命名'],
   ['scrape',    'i-tag',      '刮削写标签'],
   ['templates', 'i-file',     '模板管理'],
@@ -117,7 +116,7 @@ function FileBrowserModal({data,onNav,onSelect,onClose}){
 // ─── 主组件 ──────────────────────────────────────────────────────────────────
 
 export function LibraryPage(){
-  const[tab,setTab]=useState('scan');
+  const[tab,setTab]=useState('rename');
   const[folder,setFolder]=useState('');       // 当前选中专辑文件夹（共享）
   const[browserOpen,setBrowserOpen]=useState(false);
   const[browserData,setBrowserData]=useState(null);
@@ -146,7 +145,7 @@ export function LibraryPage(){
       <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',borderBottom:'1px solid var(--border)',background:'var(--bg-1)',flexShrink:0}}>
         <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)',flexShrink:0}}/>
         <span style={{flex:1,fontSize:13,color:folder?'var(--text)':'var(--text-mute)',fontFamily:folder?'monospace':'inherit',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-          {folder||'未选择专辑文件夹 — 在书库扫描中点击专辑，或直接点击右侧"浏览"按钮'}
+          {folder||'未选择专辑文件夹 — 点击右侧"浏览"按钮选择目标专辑文件夹'}
         </span>
         {folder&&<button className="btn btn-ghost btn-sm" onClick={()=>setFolder('')} style={{flexShrink:0}}>清除</button>}
         <button className="btn btn-primary btn-sm" onClick={()=>openBrowser(folder)} style={{flexShrink:0}}>
@@ -169,7 +168,6 @@ export function LibraryPage(){
 
       {/* 内容区 */}
       <div style={{flex:1,overflow:'auto',padding:'16px'}}>
-        {tab==='scan'      && <ScanTab selectedFolder={folder} onSelectFolder={f=>{setFolder(f);setTab('rename');}} onBrowse={openBrowser}/>}
         {tab==='rename'    && <RenameTab selectedFolder={folder} onBrowse={()=>openBrowser(folder)} onFolderChange={setFolder} onGotoHistory={()=>setTab('history')} onGotoScrape={()=>setTab('scrape')}/>}
         {tab==='scrape'    && <ScrapeTab selectedFolder={folder} onBrowse={()=>openBrowser(folder)} onFolderChange={setFolder}/>}
         {tab==='templates' && <TemplatesTab/>}
@@ -182,129 +180,7 @@ export function LibraryPage(){
   );
 }
 
-// ─── Tab 1：书库扫描 ──────────────────────────────────────────────────────────
-
-function ScanTab({selectedFolder,onSelectFolder,onBrowse}){
-  const[result,setResult]=useState(null);
-  const[loading,setLoading]=useState(false);
-  const[error,setError]=useState('');
-  const[search,setSearch]=useState('');
-  const[sortBy,setSortBy]=useState('name');
-  const[expanded,setExpanded]=useState({});
-
-  async function doScan(){
-    setLoading(true);setError('');
-    try{
-      const url='/api/file-manager/scan'+(selectedFolder?`?root=${encodeURIComponent(selectedFolder)}`:'');
-      const r=await api(url);
-      if(!r.ok)throw new Error(r.error||'扫描失败');
-      setResult(r);
-    }catch(e){setError(e.message);}
-    finally{setLoading(false);}
-  }
-
-  const books=[...(result?.books||[])];
-  const filtered=books
-    .filter(b=>!search||b.folder_name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a,b)=>{
-      if(sortBy==='name')return a.folder_name.localeCompare(b.folder_name);
-      if(sortBy==='files')return b.file_count-a.file_count;
-      if(sortBy==='size')return b.total_size-a.total_size;
-      return 0;
-    });
-
-  return(
-    <div style={{display:'flex',flexDirection:'column',gap:12}}>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-        <button className="btn btn-primary" onClick={doScan} disabled={loading}>
-          {loading?<span className="loading"/>:<Icon id="i-folder" className="icon icon-sm"/>}
-          {selectedFolder?'重新扫描所选目录':'扫描下载目录'}
-        </button>
-        {result&&(
-          <>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索书名..."
-              style={{flex:1,minWidth:140,...S.input,width:'auto'}}/>
-            <span style={{fontSize:12.5,color:'var(--text-mute)'}}>排序：</span>
-            {[['name','书名'],['files','文件数'],['size','大小']].map(([v,l])=>(
-              <button key={v} onClick={()=>setSortBy(v)}
-                style={{padding:'5px 10px',borderRadius:5,border:'1px solid var(--border)',
-                  background:sortBy===v?'var(--primary)':'var(--bg-0)',
-                  color:sortBy===v?'#fff':'var(--text)',fontSize:12.5,cursor:'pointer'}}>{l}</button>
-            ))}
-          </>
-        )}
-      </div>
-
-      {error&&<Err>{error}</Err>}
-
-      {result&&(
-        <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13}}>
-          {[['共',result.total_books+' 本书'],['文件',result.total_files+' 个'],['大小',result.total_size_fmt||fmtSize(result.total_size)],['目录',result.root]].map(([k,v])=>(
-            <div key={k} style={{background:'var(--bg-0)',borderRadius:6,padding:'5px 12px',border:'1px solid var(--border)'}}>
-              <span style={{color:'var(--text-mute)'}}>{k}：</span><span style={{fontWeight:600}}>{v}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {result&&filtered.length===0&&<div style={{color:'var(--text-mute)',fontSize:13,padding:20,textAlign:'center'}}>未找到匹配的书籍</div>}
-
-      <div style={{display:'flex',flexDirection:'column',gap:6}}>
-        {filtered.map(book=>{
-          const exts=[...new Set(book.files.map(f=>f.ext))];
-          const isSelected=selectedFolder===book.folder_path;
-          return(
-            <div key={book.folder_path} className="glass" style={{borderRadius:8,overflow:'hidden',
-              outline:isSelected?'2px solid var(--primary)':'none'}}>
-              <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',cursor:'pointer'}}
-                onClick={()=>setExpanded(p=>({...p,[book.folder_path]:!p[book.folder_path]}))}>
-                <Icon id="i-folder" className="icon icon-sm" style={{color:'var(--primary)',flexShrink:0}}/>
-                <span style={{flex:1,fontWeight:600,fontSize:13.5}}>{book.folder_name}</span>
-                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                  {exts.map(e=><span key={e} style={{padding:'1px 7px',borderRadius:99,background:'var(--bg-1)',fontSize:11,color:'var(--text-mute)',border:'1px solid var(--border)'}}>{e}</span>)}
-                </div>
-                <span style={{fontSize:12.5,color:'var(--text-mute)',whiteSpace:'nowrap'}}>{book.file_count} 个文件</span>
-                <span style={{fontSize:12.5,color:'var(--text-mute)',whiteSpace:'nowrap'}}>{book.total_size_fmt||fmtSize(book.total_size)}</span>
-                <button className="btn btn-primary btn-sm" style={{flexShrink:0}}
-                  onClick={e=>{e.stopPropagation();onSelectFolder(book.folder_path);}}>
-                  选择此专辑
-                </button>
-              </div>
-              {expanded[book.folder_path]&&(
-                <div style={{borderTop:'1px solid var(--border)'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
-                    <thead><tr style={{background:'var(--bg-1)',color:'var(--text-mute)'}}>
-                      {['文件名','大小','时长','修改时间'].map(h=><th key={h} style={{padding:'5px 12px',textAlign:'left',fontWeight:500}}>{h}</th>)}
-                    </tr></thead>
-                    <tbody>
-                      {book.files.map(f=>(
-                        <tr key={f.path} style={{borderTop:'1px solid var(--border)'}}>
-                          <td style={{padding:'5px 12px',wordBreak:'break-all'}}>{f.name}</td>
-                          <td style={{padding:'5px 12px',color:'var(--text-mute)',whiteSpace:'nowrap'}}>{f.size_fmt||fmtSize(f.size)}</td>
-                          <td style={{padding:'5px 12px',color:'var(--text-mute)',whiteSpace:'nowrap'}}>{f.duration_fmt||'-'}</td>
-                          <td style={{padding:'5px 12px',color:'var(--text-mute)',whiteSpace:'nowrap'}}>{f.mtime?f.mtime.slice(0,10):'-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {!result&&!loading&&(
-        <div className="glass glass-pad" style={{color:'var(--text-mute)',textAlign:'center',padding:60,fontSize:14}}>
-          <Icon id="i-folder" style={{width:48,height:48,opacity:.25}}/>
-          <div style={{marginTop:12}}>点击"扫描下载目录"开始，或先选择专辑文件夹再扫描</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Tab 2：刮削写标签 ────────────────────────────────────────────────────────
+// ─── Tab 1：刮削写标签 ────────────────────────────────────────────────────────
 
 function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
   const[subTab,setSubTab]=useState('meta');  // meta | params | queue | logs
@@ -542,14 +418,12 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
       {/* 处理参数 */}
       {subTab==='params'&&(
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
-          {/* 音频目录 */}
-          <div className="glass" style={{padding:14}}>
-            <label style={S.label}>音频目录（专辑文件夹）</label>
-            <div style={{display:'flex',gap:8}}>
-              <input style={S.input} value={params.input_folder} onChange={e=>{setParam('input_folder',e.target.value);onFolderChange(e.target.value);}} placeholder="/path/to/audiobook/"/>
-              <button className="btn btn-ghost btn-sm" onClick={onBrowse}><Icon id="i-folder" className="icon icon-sm"/>浏览</button>
+          {/* 当前目录提示 */}
+          {params.input_folder&&(
+            <div style={{fontSize:12,color:'var(--text-mute)',padding:'6px 10px',background:'var(--bg-1)',borderRadius:6,border:'1px solid var(--border)',fontFamily:'monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              目录：{params.input_folder}
             </div>
-          </div>
+          )}
           {/* 基本信息 */}
           <div className="glass" style={{padding:14}}>
             <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>基本信息</div>
@@ -709,7 +583,6 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
 
 function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoScrape}){
   const[step,setStep]=useState(1);
-  const[folderPath,setFolderPath]=useState(selectedFolder||'');
   const[folderFiles,setFolderFiles]=useState([]);
   const[bookMeta,setBookMeta]=useState({book_title:'',author:'',narrator:'',category:'',series:'',volume:''});
   const[template,setTemplate]=useState('{chapter_index_3}-{chapter_title}.{ext}');
@@ -722,23 +595,26 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[scrapeOpen,setScrapeOpen]=useState(false);
   const[scrapeInput,setScrapeInput]=useState({api_source:'喜马拉雅',api_id:'',link_url:'',link_platform:'起点听书'});
 
-  // selectedFolder 从父组件传入时同步
-  useEffect(()=>{if(selectedFolder&&selectedFolder!==folderPath){setFolderPath(selectedFolder);setStep(1);}},
-    [selectedFolder]);
+  // selectedFolder 变化时自动重新加载文件列表，重置到步骤1
+  useEffect(()=>{
+    if(!selectedFolder){setFolderFiles([]);setStep(1);return;}
+    setStep(1);setFolderFiles([]);setError('');setApplyResult(null);
+    loadFolderFiles(selectedFolder);
+  },[selectedFolder]);
 
   useEffect(()=>{
     api('/api/file-manager/templates').then(r=>r.ok&&setTemplates(r.templates)).catch(()=>{});
   },[]);
 
-  async function loadFolderFiles(){
-    if(!folderPath)return;
+  async function loadFolderFiles(path){
+    const target=path||selectedFolder;
+    if(!target)return;
     setLoading(true);setError('');
     try{
-      const r=await api(`/api/file-manager/scan?root=${encodeURIComponent(folderPath)}`);
+      const r=await api(`/api/file-manager/scan?root=${encodeURIComponent(target)}`);
       if(!r.ok)throw new Error(r.error||'扫描失败');
       const allFiles=r.books.flatMap(b=>b.files);
       setFolderFiles(allFiles);
-      onFolderChange(folderPath);
       setStep(2);
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
@@ -771,7 +647,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   async function doPreview(){
     setLoading(true);setError('');
     try{
-      const r=await api('/api/file-manager/rename-preview',{method:'POST',body:JSON.stringify({folder_path:folderPath,template,book_meta:bookMeta})});
+      const r=await api('/api/file-manager/rename-preview',{method:'POST',body:JSON.stringify({folder_path:selectedFolder,template,book_meta:bookMeta})});
       if(!r.ok)throw new Error(r.error);
       setPreviews(r.previews);setStep(4);
     }catch(e){setError(e.message);}
@@ -786,52 +662,49 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
       const r=await api('/api/file-manager/rename-apply',{method:'POST',body:JSON.stringify({previews,note})});
       if(!r.ok)throw new Error(r.error);
       setApplyResult({success:r.success,failed:r.failed});
-      onFolderChange(folderPath);
+      onFolderChange(selectedFolder);
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
   }
 
   const livePreview=folderFiles.slice(0,3).map((f,i)=>simulateTemplate(template,bookMeta,f.name,i));
 
+  if(!selectedFolder){
+    return(
+      <div className="glass glass-pad" style={{color:'var(--text-mute)',textAlign:'center',padding:60,fontSize:14,display:'flex',flexDirection:'column',alignItems:'center',gap:12}}>
+        <Icon id="i-folder" style={{width:48,height:48,opacity:.25}}/>
+        <div>请先点击顶部「浏览」按钮选择专辑文件夹</div>
+      </div>
+    );
+  }
+
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
       {/* 步骤条 */}
       <div style={{display:'flex',alignItems:'center',gap:0}}>
-        {['选择文件夹','填写元数据','选择模板','预览确认'].map((label,i)=>(
+        {['填写元数据','选择模板','预览确认'].map((label,i)=>(
           <div key={i} style={{display:'flex',alignItems:'center'}}>
-            <div onClick={()=>i+1<=step&&setStep(i+1)}
+            <div onClick={()=>i+2<=step&&setStep(i+2)}
               style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:20,fontSize:12.5,
-                cursor:i+1<=step?'pointer':'default',
-                background:step===i+1?'var(--primary)':i+1<step?'var(--bg-1)':'var(--bg-0)',
-                color:step===i+1?'#fff':i+1<step?'var(--text)':'var(--text-mute)',border:'1px solid var(--border)'}}>
+                cursor:i+2<=step?'pointer':'default',
+                background:step===i+2?'var(--primary)':i+2<step?'var(--bg-1)':'var(--bg-0)',
+                color:step===i+2?'#fff':i+2<step?'var(--text)':'var(--text-mute)',border:'1px solid var(--border)'}}>
               <span style={{width:18,height:18,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',
-                background:step===i+1?'rgba(255,255,255,.3)':'var(--border)',fontSize:10,fontWeight:700}}>{i+1}</span>
+                background:step===i+2?'rgba(255,255,255,.3)':'var(--border)',fontSize:10,fontWeight:700}}>{i+1}</span>
               {label}
             </div>
-            {i<3&&<div style={{width:14,height:1,background:'var(--border)'}}/>}
+            {i<2&&<div style={{width:14,height:1,background:'var(--border)'}}/>}
           </div>
         ))}
+        {loading&&<span style={{marginLeft:12,fontSize:12,color:'var(--text-mute)',display:'flex',alignItems:'center',gap:5}}><span className="loading" style={{width:13,height:13}}/>扫描中...</span>}
       </div>
 
       {error&&<Err>{error}</Err>}
 
-      {/* 步骤1 */}
-      {step===1&&(
-        <div className="glass glass-pad" style={{display:'flex',flexDirection:'column',gap:10}}>
-          <div style={{fontWeight:600,fontSize:14}}>选择目标文件夹</div>
-          <div style={{display:'flex',gap:8}}>
-            <input value={folderPath} onChange={e=>{setFolderPath(e.target.value);onFolderChange(e.target.value);}}
-              placeholder="输入包含音频文件的文件夹路径..."
-              style={{...S.input,flex:1}}/>
-            <button className="btn btn-ghost btn-sm" onClick={onBrowse}>浏览</button>
-            <button className="btn btn-primary" onClick={loadFolderFiles} disabled={loading||!folderPath}>
-              {loading?<span className="loading"/>:'确认'}
-            </button>
-          </div>
-          <div style={{fontSize:12,color:'var(--text-mute)'}}>
-            支持 mp3 · m4a · m4b · flac · wav · aac · ogg · opus
-            {selectedFolder&&<span style={{color:'var(--primary)'}}> — 已从书库扫描预填当前专辑</span>}
-          </div>
+      {/* 加载中/无文件 */}
+      {step===1&&!loading&&(
+        <div style={{color:'var(--text-mute)',fontSize:13,padding:20,textAlign:'center'}}>
+          正在扫描文件夹... 若未自动加载，<button className="btn btn-ghost btn-sm" onClick={()=>loadFolderFiles()}>点击重试</button>
         </div>
       )}
 
