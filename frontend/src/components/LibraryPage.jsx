@@ -41,6 +41,7 @@ function simulateTemplate(tpl,meta,fileName,idx){
     s=s.replace(/^\d+[集章回话期]?\s*/,'').trim();
     chapterTitle=s||stem;
   }
+  chapterTitle=chapterTitle.replace(/\s+（/g,'（');
   const prefixMatch=stem.match(/^(\d+)/);
   const originalPrefix=prefixMatch?prefixMatch[1]:String(i).padStart(4,'0');
   const seriesVal=(meta.series||'').trim();
