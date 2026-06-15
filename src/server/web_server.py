@@ -92,6 +92,7 @@ subscription_job_lock = threading.Lock()
 subscription_jobs = {}
 SUBSCRIPTION_JOB_TTL_SECONDS = int(os.getenv("SUBSCRIPTION_JOB_TTL_SECONDS", "3600") or "3600")
 SUBSCRIPTION_JOB_MAX_ITEMS = int(os.getenv("SUBSCRIPTION_JOB_MAX_ITEMS", "500") or "500")
+SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS = int(os.getenv("SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS", "900") or "900")
 wecom_session_lock = threading.Lock()
 wecom_sessions = {}
 WECOM_SESSION_TTL_SECONDS = int(os.getenv("WECOM_SESSION_TTL_SECONDS", "600") or "600")
@@ -671,8 +672,16 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
 
 
 def _subscription_job(job_id, sid, queue_missing):
+    started_at = time.time()
     with subscription_job_lock:
-        subscription_jobs[job_id].update({"status": "running", "message": "正在检测订阅"})
+        subscription_jobs[job_id].update(
+            {
+                "status": "running",
+                "message": "正在检测订阅",
+                "started_at": started_at,
+                "updated_at": started_at,
+            }
+        )
     try:
         result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription")
         message = "已加入下载队列" if result.get("queued") else "检测完成，无需补全" if queue_missing else "检测完成"
@@ -682,19 +691,44 @@ def _subscription_job(job_id, sid, queue_missing):
             f"{result.get('title') or sid} 缺失 {result.get('missing_count') or 0} 章",
             {"sid": sid, "queue_missing": queue_missing, "result": result},
         )
+        finished_at = time.time()
         with subscription_job_lock:
-            subscription_jobs[job_id].update({"status": "done", "message": message, "result": result, "finished_at": time.time()})
+            subscription_jobs[job_id].update(
+                {"status": "done", "message": message, "result": result, "finished_at": finished_at, "updated_at": finished_at}
+            )
     except Exception as exc:
         logging.exception("subscription job failed")
         append_background_event("subscription", "订阅检测失败", f"{sid}：{exc}", {"sid": sid, "error": str(exc)})
+        finished_at = time.time()
         with subscription_job_lock:
-            subscription_jobs[job_id].update({"status": "failed", "message": str(exc), "error": str(exc), "finished_at": time.time()})
+            subscription_jobs[job_id].update(
+                {"status": "failed", "message": str(exc), "error": str(exc), "finished_at": finished_at, "updated_at": finished_at}
+            )
 
 
 def cleanup_subscription_jobs(now=None):
     now = time.time() if now is None else float(now)
     terminal = {"done", "failed", "cancelled"}
     for job_id, job in list(subscription_jobs.items()):
+        if job.get("status") in {"queued", "running"}:
+            active_at = float(job.get("started_at") or job.get("updated_at") or job.get("created_at") or 0)
+            if active_at and now - active_at > SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS:
+                message = "订阅检测超时，请稍后重试"
+                job.update(
+                    {
+                        "status": "failed",
+                        "message": message,
+                        "error": message,
+                        "finished_at": now,
+                        "updated_at": now,
+                    }
+                )
+                append_background_event(
+                    "subscription",
+                    "订阅检测超时",
+                    f"{job.get('sid') or job_id} 检测超时",
+                    {"job_id": job_id, "sid": job.get("sid"), "timeout_seconds": SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS},
+                )
         if job.get("status") in terminal:
             finished_at = float(job.get("finished_at") or job.get("updated_at") or job.get("created_at") or 0)
             if finished_at and now - finished_at > SUBSCRIPTION_JOB_TTL_SECONDS:
@@ -732,6 +766,7 @@ def start_subscription_job(sid, queue_missing=False):
             "queue_missing": bool(queue_missing),
             "message": "已加入后台队列",
             "created_at": time.time(),
+            "updated_at": time.time(),
         }
     threading.Thread(target=_subscription_job, args=(job_id, sid, queue_missing), name=job_id, daemon=True).start()
     return dict(subscription_jobs[job_id])
