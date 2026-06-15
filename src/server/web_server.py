@@ -1442,8 +1442,6 @@ def api_set_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
-        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
-        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
     )
 
 
