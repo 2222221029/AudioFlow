@@ -1137,6 +1137,173 @@ export function ThemesPage() {
   return <ThemePicker />;
 }
 
+
+export function FilesPage({app}) {
+  const {files, fileCurrentPath, fileBaseDir, selectedFile, fileLoading, actions} = app;
+  const [editName, setEditName] = useState('');
+  const [showRename, setShowRename] = useState(false);
+
+  const fmtSize = (bytes) => {
+    if (!bytes) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let size = bytes;
+    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+    return size.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+  };
+
+  const fmtTime = (ts) => {
+    if (!ts) return '';
+    try {
+      return new Date(ts * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
+    } catch { return ''; }
+  };
+
+  const fileIcon = (item) => {
+    if (item.is_dir) return 'i-folder';
+    const ext = item.ext || '';
+    if (/\.(mp3|wav|flac|aac|ogg|m4a|wma)$/i.test(ext)) return 'i-music-file';
+    if (/\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(ext)) return 'i-image';
+    if (/\.(mp4|mkv|avi|mov|wmv)$/i.test(ext)) return 'i-video';
+    if (/\.(zip|rar|7z|tar|gz)$/i.test(ext)) return 'i-archive';
+    return 'i-file';
+  };
+
+  const handleDoubleClick = (item) => {
+    if (item.is_dir) {
+      actions.navigateFolder(item.path);
+    }
+  };
+
+  const handleRename = () => {
+    if (editName.trim()) {
+      actions.renameFileItem(selectedFile.path, editName.trim());
+      setShowRename(false);
+      setEditName('');
+    }
+  };
+
+  const startRename = () => {
+    if (selectedFile) {
+      setEditName(selectedFile.name);
+      setShowRename(true);
+    }
+  };
+
+  const breadcrumbs = fileCurrentPath ? fileCurrentPath.split('/').filter(Boolean) : [];
+  const breadcrumbPaths = [];
+  let acc = '';
+  for (const part of breadcrumbs) {
+    acc = acc ? acc + '/' + part : part;
+    breadcrumbPaths.push({name: part, path: acc});
+  }
+
+  const audioExtensions = /\.(mp3|wav|flac|aac|ogg|m4a|wma)$/i;
+
+  return (
+    <div className="files-layout">
+      <div className="files-list-panel glass glass-pad">
+        <div className="files-toolbar">
+          <div className="files-breadcrumb">
+            <button className="breadcrumb-item" onClick={() => actions.navigateFolder('')}>
+              <Icon id="i-hard-drive" /> 下载目录
+            </button>
+            {breadcrumbPaths.map((item) => (
+              <span key={item.path} className="breadcrumb-segment">
+                <Icon id="i-chevron-right" className="icon icon-sm" />
+                <button className="breadcrumb-item" onClick={() => actions.navigateFolder(item.path)}>{item.name}</button>
+              </span>
+            ))}
+          </div>
+          <button className="btn btn-ghost btn-sm" disabled={fileLoading} onClick={() => actions.loadFiles(fileCurrentPath)}>
+            <Icon id="i-refresh" className="icon icon-sm" />刷新
+          </button>
+        </div>
+        <div className="files-table-header">
+          <span className="ft-name">名称</span>
+          <span className="ft-size">大小</span>
+          <span className="ft-time">修改时间</span>
+        </div>
+        <div className="files-table-body">
+          {fileLoading ? (
+            <div className="empty"><span className="loading" /> 加载中...</div>
+          ) : !files.length ? (
+            <div className="empty"><Icon id="i-folder" /> 目录为空</div>
+          ) : (
+            files.map((item, index) => (
+              <div
+                key={item.path + index}
+                className={`files-row ${selectedFile?.path === item.path ? 'selected' : ''}`}
+                onClick={() => actions.selectFileItem(item)}
+                onDoubleClick={() => handleDoubleClick(item)}
+              >
+                <span className="ft-name">
+                  <Icon id={fileIcon(item)} className={`icon ${item.is_dir ? 'folder-icon' : 'file-icon'}`} />
+                  <span className="file-name-text" title={item.name}>{item.name}</span>
+                </span>
+                <span className="ft-size">{item.is_dir ? '—' : fmtSize(item.size)}</span>
+                <span className="ft-time">{fmtTime(item.mtime)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      <div className="files-detail-panel glass glass-pad">
+        {!selectedFile ? (
+          <div className="empty"><Icon id="i-file" />选择文件后<br />在此操作</div>
+        ) : (
+          <div className="file-detail-content">
+            <div className="file-detail-header">
+              <Icon id={fileIcon(selectedFile)} className="icon icon-lg file-detail-icon" />
+              <div className="file-detail-name" title={selectedFile.name}>{selectedFile.name}</div>
+            </div>
+            <div className="file-detail-meta">
+              <div className="fd-row"><span className="fd-label">类型</span><span>{selectedFile.is_dir ? '文件夹' : '文件'}</span></div>
+              {!selectedFile.is_dir && <div className="fd-row"><span className="fd-label">大小</span><span>{fmtSize(selectedFile.size)}</span></div>}
+              <div className="fd-row"><span className="fd-label">修改时间</span><span>{fmtTime(selectedFile.mtime)}</span></div>
+            </div>
+            <div className="file-detail-actions">
+              <h4>操作</h4>
+              <div className="fd-action-buttons">
+                {showRename ? (
+                  <div className="rename-inline">
+                    <input
+                      className="field-input"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleRename()}
+                      placeholder="输入新名称"
+                      autoFocus
+                    />
+                    <div className="rename-inline-actions">
+                      <button className="btn btn-primary btn-sm" onClick={handleRename}><Icon id="i-check" className="icon icon-sm" />确认</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { setShowRename(false); setEditName(''); }}><Icon id="i-close" className="icon icon-sm" />取消</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <button className="btn btn-ghost btn-sm" disabled={fileLoading} onClick={startRename}>
+                      <Icon id="i-edit" className="icon icon-sm" />重命名
+                    </button>
+                    <button className="btn btn-ghost btn-sm" disabled={fileLoading || selectedFile.is_dir} onClick={() => actions.scrapeFileItem(selectedFile.path)}>
+                      <Icon id="i-scan" className="icon icon-sm" />刮削
+                    </button>
+                    <button className="btn btn-primary btn-sm" disabled={fileLoading || selectedFile.is_dir} onClick={() => actions.aiRenameFileItem(selectedFile.path)}>
+                      <Icon id="i-sparkles" className="icon icon-sm" />AI 重命名
+                    </button>
+                  </>
+                )}
+              </div>
+              <div className="fd-hint">AI 重命名需先在设置中配置 DeepSeek API Key</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 function ThemePicker() {
   const [theme, setTheme] = useState(savedTheme());
   const choose = (value) => {

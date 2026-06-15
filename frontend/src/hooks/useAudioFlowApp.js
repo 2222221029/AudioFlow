@@ -154,6 +154,11 @@ export function useAudioFlowApp() {
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [player, setPlayer] = useState({show: false, title: '未在播放', sub: '', album: '', artist: '', cover: '', url: '', chapterId: '', playing: false});
+  const [files, setFiles] = useState([]);
+  const [fileCurrentPath, setFileCurrentPath] = useState('');
+  const [fileBaseDir, setFileBaseDir] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileLoading, setFileLoading] = useState(false);
   const [searchHistory, setSearchHistory] = useState(() => loadSearchHistory());
   const loginResolveRef = useRef(null);
   const audioRef = useRef(null);
@@ -591,6 +596,74 @@ export function useAudioFlowApp() {
     });
   }, [loadSubscriptions, runBusy, showToast]);
 
+  const loadFiles = useCallback(async (path = '') => {
+    setFileLoading(true);
+    try {
+      const params = path ? '?path=' + encodeURIComponent(path) : '';
+      const data = await api('/api/files' + params);
+      setFiles(data.items || []);
+      setFileCurrentPath(data.current_path || '');
+      setFileBaseDir(data.base_dir || '');
+      setSelectedFile(null);
+    } catch (error) {
+      showToast('加载文件列表失败: ' + error.message, 'err');
+    } finally {
+      setFileLoading(false);
+    }
+  }, []);
+
+  const navigateFolder = useCallback((path) => {
+    loadFiles(path);
+  }, [loadFiles]);
+
+  const selectFileItem = useCallback((file) => {
+    setSelectedFile(file);
+  }, []);
+
+  const renameFileItem = useCallback(async (filePath, newName) => {
+    try {
+      const data = await api('/api/files/rename', {
+        method: 'POST',
+        body: {path: filePath, new_name: newName},
+      });
+      showToast('重命名成功: ' + data.new_name, 'ok');
+      loadFiles(fileCurrentPath);
+      return data;
+    } catch (error) {
+      showToast('重命名失败: ' + error.message, 'err');
+      return null;
+    }
+  }, [fileCurrentPath, loadFiles, showToast]);
+
+  const scrapeFileItem = useCallback(async (filePath) => {
+    try {
+      const data = await api('/api/files/scrape', {
+        method: 'POST',
+        body: {path: filePath},
+      });
+      if (data.message) showToast(data.message, 'ok');
+      return data;
+    } catch (error) {
+      showToast('刮削失败: ' + error.message, 'err');
+      return null;
+    }
+  }, [showToast]);
+
+  const aiRenameFileItem = useCallback(async (filePath) => {
+    try {
+      const data = await api('/api/files/ai-rename', {
+        method: 'POST',
+        body: {path: filePath},
+      });
+      showToast('AI 重命名成功: ' + data.new_name, 'ok');
+      loadFiles(fileCurrentPath);
+      return data;
+    } catch (error) {
+      showToast('AI 重命名失败: ' + error.message, 'err');
+      return null;
+    }
+  }, [fileCurrentPath, loadFiles, showToast]);
+
   const rebuildSubscriptionIndex = useCallback(async () => {
     await runBusy('rebuildIndex', async () => {
       const data = await api('/api/subscriptions/index/rebuild', {method: 'POST'});
@@ -919,6 +992,11 @@ export function useAudioFlowApp() {
     setPlayer,
     audioRef,
     searchHistory,
+    files,
+    fileCurrentPath,
+    fileBaseDir,
+    selectedFile,
+    fileLoading,
     metrics: {activeDownloads, completedDownloads, failedDownloads, interruptedDownloads},
     actions: {
       showToast,
@@ -953,6 +1031,12 @@ export function useAudioFlowApp() {
       saveSubscriptionSettings,
       runSubscriptionsNow,
       runPersonalSubscriptionSyncNow,
+      loadFiles,
+      navigateFolder,
+      selectFileItem,
+      renameFileItem,
+      scrapeFileItem,
+      aiRenameFileItem,
       rebuildSubscriptionIndex,
       checkSubscription,
       cancelSubscription,
