@@ -46,7 +46,7 @@ export function applyTheme(value) {
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor);
 
   for (const favicon of document.querySelectorAll('link[rel="icon"]')) {
-    favicon.setAttribute('href', '/favicon.svg?v=20260615');
+    favicon.setAttribute('href', '/favicon.svg?v=20260615b');
     favicon.setAttribute('type', 'image/svg+xml');
   }
 }

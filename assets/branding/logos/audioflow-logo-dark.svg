@@ -1,19 +1,29 @@
-<svg width="1180" height="360" viewBox="0 0 1180 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="720" height="220" viewBox="0 0 720 220" role="img" aria-label="AudioFlow" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="mark" x1="84" y1="72" x2="294" y2="282" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#18c7df"/><stop offset=".48" stop-color="#2f7df6"/><stop offset="1" stop-color="#8b5cf6"/>
+    <linearGradient id="glassDark" x1="32" y1="28" x2="182" y2="188" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#182b4d"/>
+      <stop offset=".55" stop-color="#111a34"/>
+      <stop offset="1" stop-color="#24133e"/>
     </linearGradient>
-    <linearGradient id="page" x1="74" y1="98" x2="286" y2="272" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#eaf4ff"/>
+    <linearGradient id="ribbonDark" x1="55" y1="157" x2="168" y2="55" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#18c7e8"/>
+      <stop offset=".46" stop-color="#4f7cff"/>
+      <stop offset="1" stop-color="#a45bff"/>
     </linearGradient>
+    <filter id="softShadowDark" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#18c7e8" flood-opacity=".22"/>
+    </filter>
   </defs>
-  <rect x="54" y="54" width="252" height="252" rx="78" fill="#f8fcff" stroke="#a7d8ff" stroke-width="8"/>
-  <circle cx="180" cy="174" r="108" fill="#18c7df" opacity=".12"/>
-  <path d="M104 130 126 112h44l22 20v110c-16-14-36-20-60-20h-28V130Z" fill="url(#page)" stroke="#cae7ff" stroke-width="6"/>
-  <path d="M256 130 234 112h-44l-22 20v110c16-14 36-20 60-20h28V130Z" fill="url(#page)" stroke="#cae7ff" stroke-width="6"/>
-  <path d="M180 126v116" stroke="#8aa3bd" stroke-opacity=".48" stroke-width="7" stroke-linecap="round"/>
-  <path d="M112 190c20-30 41-30 62 0s42 30 63 0" stroke="url(#mark)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M124 222c17-15 34-15 52 0s36 15 54 0" stroke="url(#mark)" stroke-width="14" stroke-linecap="round" opacity=".76"/>
-  <path d="M176 130 238 166 176 202V130Z" fill="url(#mark)"/>  <text x="370" y="169" fill="#f8fbff" font-family="Microsoft YaHei UI, PingFang SC, sans-serif" font-size="88" font-weight="850">AudioFlow</text>
-  <text x="374" y="226" fill="#b8c3d8" font-family="Microsoft YaHei UI, PingFang SC, sans-serif" font-size="30" font-weight="520">多平台有声书下载与管理</text>
+  <rect width="720" height="220" rx="34" fill="#0c1130"/>
+  <g filter="url(#softShadowDark)">
+    <rect x="36" y="32" width="156" height="156" rx="45" fill="url(#glassDark)" stroke="#2dd4ff" stroke-width="4"/>
+    <circle cx="116" cy="105" r="66" fill="#18c7e8" opacity=".18"/>
+    <circle cx="132" cy="86" r="58" fill="#a45bff" opacity=".16"/>
+    <path d="M67 149c17-50 35-78 54-83 15-4 24 8 19 36" fill="none" stroke="url(#ribbonDark)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M140 102c-6 20 1 47 26 47 13 0 22-8 28-20" fill="none" stroke="url(#ribbonDark)" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M66 111c16-22 31-22 47 0s31 22 46 0 30-22 44 0" fill="none" stroke="url(#ribbonDark)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M169 58l5 12 13 5-13 5-5 12-5-12-13-5 13-5 5-12Z" fill="#8b6cff"/>
+  </g>
+  <text x="228" y="112" fill="#f8fbff" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="54" font-weight="800">AudioFlow</text>
+  <text x="231" y="152" fill="#aebbd0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="600">Multi-platform audiobook workflow</text>
 </svg>

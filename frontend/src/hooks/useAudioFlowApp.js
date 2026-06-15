@@ -220,7 +220,6 @@ export function useAudioFlowApp() {
   const completedDownloads = downloads.filter((task) => task.status === 'completed').length;
   const failedDownloads = downloads.filter((task) => ['failed', 'partial'].includes(task.status)).length;
   const interruptedDownloads = downloads.filter((task) => ['interrupted', 'stopped'].includes(task.status)).length;
-  const subscriptionMissing = subscriptions.length;
 
   const loadConfig = useCallback(async () => {
     const data = await api('/api/config');
@@ -920,7 +919,7 @@ export function useAudioFlowApp() {
     setPlayer,
     audioRef,
     searchHistory,
-    metrics: {activeDownloads, completedDownloads, failedDownloads, interruptedDownloads, subscriptionMissing},
+    metrics: {activeDownloads, completedDownloads, failedDownloads, interruptedDownloads},
     actions: {
       showToast,
       doSearch,

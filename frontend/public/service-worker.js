@@ -1,5 +1,5 @@
-const CACHE_NAME = "audioflow-pwa-v10";
-const RUNTIME_CACHE = "audioflow-runtime-v9";
+const CACHE_NAME = "audioflow-pwa-v11";
+const RUNTIME_CACHE = "audioflow-runtime-v10";
 const CORE_ASSETS = [
   "/",
   "/?source=pwa&v=m",
