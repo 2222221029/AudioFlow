@@ -35,7 +35,7 @@ function simulateTemplate(tpl,meta,fileName,idx){
     category:meta.category||'',series:meta.series||'',volume:meta.volume||'',
     chapter_index:String(i),chapter_index_2:String(i).padStart(2,'0'),
     chapter_index_3:String(i).padStart(3,'0'),chapter_index_4:String(i).padStart(4,'0'),
-    chapter_title:stem,chapter_full:String(i).padStart(3,'0')+'-'+stem,
+    chapter_title:(meta.chapter_titles||{})[fileName]||stem,chapter_full:String(i).padStart(3,'0')+'-'+((meta.chapter_titles||{})[fileName]||stem),
     name:stem,ext,date:new Date().toISOString().slice(0,10).replace(/-/g,'')};
   let r=tpl;
   for(const[k,v]of Object.entries(vars))r=r.replaceAll(`{${k}}`,v);
@@ -592,6 +592,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
   const[aiLoading,setAiLoading]=useState(false);
+  const[aiNormStats,setAiNormStats]=useState(null);
   const[scrapeOpen,setScrapeOpen]=useState(false);
   const[scrapeInput,setScrapeInput]=useState({api_source:'喜马拉雅',api_id:'',link_url:'',link_platform:'起点听书'});
 
@@ -622,12 +623,28 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
 
   async function doAiAnalyze(){
     if(!folderFiles.length)return;
-    setAiLoading(true);setError('');
+    setAiLoading(true);setError('');setAiNormStats(null);
     try{
       const r=await api('/api/file-manager/ai-analyze',{method:'POST',body:JSON.stringify({file_names:folderFiles.map(f=>f.name)})});
       if(!r.ok)throw new Error(r.error);
       const res=r.result;
-      setBookMeta(p=>({...p,book_title:res.book_title||p.book_title,author:res.author||p.author,narrator:res.narrator||p.narrator,category:res.category||p.category,series:res.series||p.series,volume:res.volume||p.volume}));
+      const chapter_titles={};
+      let adCount=0,normCount=0;
+      (res.items||[]).forEach(item=>{
+        if(!item.original)return;
+        if(item.is_ad){adCount++;return;}
+        if(item.chapter_title){chapter_titles[item.original]=item.chapter_title;normCount++;}
+      });
+      setBookMeta(p=>({...p,
+        book_title:res.book_title||p.book_title,
+        author:res.author||p.author,
+        narrator:res.narrator||p.narrator,
+        category:res.category||p.category,
+        series:res.series||p.series,
+        volume:res.volume||p.volume,
+        chapter_titles,
+      }));
+      setAiNormStats({normalized:normCount,ads:adCount});
     }catch(e){setError('AI 识别失败: '+e.message);}
     finally{setAiLoading(false);}
   }
@@ -715,8 +732,11 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             <div style={{fontWeight:600,fontSize:14}}>填写书籍元数据</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-ghost btn-sm" onClick={doAiAnalyze} disabled={aiLoading}>
-                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}AI 识别
+                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}{aiLoading?'AI 分析中…':'AI 规范章节名'}
               </button>
+              {aiNormStats&&<span style={{fontSize:11,color:'var(--success)',display:'flex',alignItems:'center',gap:3}}>
+                ✓ 已规范 {aiNormStats.normalized} 个{aiNormStats.ads>0&&`，广告 ${aiNormStats.ads} 个`}
+              </span>}
               <button className="btn btn-ghost btn-sm" onClick={()=>setScrapeOpen(!scrapeOpen)}>
                 <Icon id="i-search" className="icon icon-sm"/>从刮削获取
               </button>
@@ -807,7 +827,10 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
               <tbody>
                 {previews.map((p,i)=>(
                   <tr key={i} style={{borderTop:'1px solid var(--border)',background:p.conflict?'rgba(239,68,68,.05)':'transparent'}}>
-                    <td style={{padding:'5px 10px',color:'var(--text-mute)',wordBreak:'break-all'}}>{p.original_name}</td>
+                    <td style={{padding:'5px 10px',color:'var(--text-mute)',wordBreak:'break-all'}}>
+                      {p.original_name}
+                      {(()=>{const stem=p.original_name.replace(/\.[^.]+$/,'');const nt=(bookMeta.chapter_titles||{})[p.original_name];return nt&&nt!==stem?<span style={{marginLeft:5,fontSize:10,background:'rgba(99,102,241,.15)',color:'var(--primary)',padding:'1px 5px',borderRadius:99,whiteSpace:'nowrap'}}>AI规范</span>:null;})()}
+                    </td>
                     <td style={{padding:'5px 10px',color:p.conflict?'var(--danger)':'var(--primary)',wordBreak:'break-all'}}>{p.new_name}</td>
                     <td style={{padding:'5px 10px',whiteSpace:'nowrap'}}>
                       {p.conflict?<Tag c="danger">冲突</Tag>:p.original_name===p.new_name?<Tag c="mute">未变</Tag>:<Tag c="success">正常</Tag>}

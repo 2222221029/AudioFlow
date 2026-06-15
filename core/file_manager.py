@@ -508,12 +508,12 @@ def ai_analyze(file_names: list, config: dict) -> dict:
     base_url = config.get("ai_base_url", "https://api.deepseek.com").rstrip("/")
     model = config.get("ai_model", "deepseek-chat")
 
-    prompt = f"""你是一个有声书文件名分析助手。请分析以下音频文件名列表，识别书籍信息和章节信息。
+    prompt = f"""你是一个有声书文件名清理与规范化助手。请分析以下音频文件名列表，识别书籍信息，并对每个文件的章节标题进行规范化处理。
 
 文件名列表：
 {chr(10).join(f'{i+1}. {name}' for i, name in enumerate(file_names))}
 
-请以 JSON 格式返回分析结果，格式如下（不要有任何 markdown 代码块，只返回纯 JSON）：
+请以 JSON 格式返回结果（不要有任何 markdown 代码块，只返回纯 JSON）：
 {{
   "book_title": "书名",
   "author": "作者",
@@ -524,8 +524,8 @@ def ai_analyze(file_names: list, config: dict) -> dict:
   "confidence": 0.9,
   "items": [
     {{
-      "original": "原始文件名",
-      "chapter_title": "章节标题",
+      "original": "原始文件名（含扩展名，与输入完全一致）",
+      "chapter_title": "规范化后的纯章节标题（不含扩展名）",
       "chapter_index": 1,
       "is_ad": false,
       "is_abnormal": false
@@ -533,12 +533,16 @@ def ai_analyze(file_names: list, config: dict) -> dict:
   ]
 }}
 
-注意：
-- confidence 为 0-1 之间的置信度
-- is_ad 表示文件名中含有广告内容
-- is_abnormal 表示文件名格式异常（乱码等）
-- chapter_index 从 1 开始编号
-- 只做识别，不要直接决定最终文件名"""
+**章节标题规范化规则（非常重要）：**
+1. 删除广告内容：网址、QQ号、微信号、公众号、"听书""下载"等促销文字、录制方/上传方署名（如"【xxx出品】""@xxx"）
+2. 删除平台水印：如"喜马拉雅""懒人听书""番茄畅听"等平台名称附加内容
+3. 统一标点：将全角标点转为对应中文标点（保留正常的中文句号、逗号等），删除多余的括号、方括号修饰
+4. 规范章节序号：统一格式，如"第001章"→"第1章"，"第01回"→"第1回"，保留原有中文序数词格式
+5. 去除重复信息：如文件名已含书名，则章节标题不重复包含书名
+6. 保留核心信息：保留章节正文标题、回目名称等有意义内容
+7. 删除冗余后缀：如"（完结）""[全集]""_高清"等
+8. is_ad 为 true 表示该文件整体是广告/片头片尾，建议跳过重命名
+- original 必须与输入文件名完全一致（含扩展名），用于精确匹配"""
 
     def _do_request(post_fn, url, headers, payload):
         resp = post_fn(url, headers=headers, json=payload, timeout=30)
