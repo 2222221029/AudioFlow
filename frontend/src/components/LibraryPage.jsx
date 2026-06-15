@@ -251,9 +251,17 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
     }
     // 重置元数据输入区
     setApiId('');setLinkUrl('');setFetchedMeta(null);setCoverPreview(null);setFetchError('');
-    // 重新从服务器拉取默认 params，并覆盖 input_folder
+    // 重新从服务器拉取默认 params，仅保留技术配置，清空上次书籍内容字段
     api('/api/meta/config').then(r=>{
-      if(r.ok) setParams({...(r.params||{}),input_folder:selectedFolder});
+      if(r.ok) setParams({
+        ...(r.params||{}),
+        input_folder:selectedFolder,
+        title:'',subtitle:'',author:'',anchor:'',
+        year:'',category:'',finished:'',
+        series_name:'',series_number:'',
+        album_tags:[],team:'',
+        manual_desc:'',manual_cover_path:'',
+      });
     }).catch(()=>{});
     // 尝试读取 source.json
     api(`/api/meta/read-source?path=${encodeURIComponent(selectedFolder)}`).then(r=>{
