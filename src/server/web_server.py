@@ -4042,8 +4042,16 @@ def fm_rename_preview():
     book_meta = data.get('book_meta', {})
     if not folder_path or not template:
         return json_error("缺少参数", 400)
+    sort_by     = data.get('sort_by', 'name_asc')
+    start_index = int(data.get('start_index', 1))
+    index_step  = max(1, int(data.get('index_step', 1)))
+    find_regex  = data.get('find_regex', '')
+    replace_str = data.get('replace_str', '')
     try:
-        previews = _fm.preview_rename(folder_path, template, book_meta)
+        previews = _fm.preview_rename(folder_path, template, book_meta,
+                                      sort_by=sort_by, start_index=start_index,
+                                      index_step=index_step, find_regex=find_regex,
+                                      replace_str=replace_str)
         return json_ok(previews=previews)
     except Exception as e:
         return json_error(str(e), 500)

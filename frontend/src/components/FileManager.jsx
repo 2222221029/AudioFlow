@@ -301,6 +301,16 @@ function RenameTab({onGotoHistory}) {
   const [aiLoading, setAiLoading] = useState(false);
   const [scrapeMode, setScrapeMode] = useState('');
   const [scrapeInput, setScrapeInput] = useState({api_source: '', api_id: '', link_url: '', link_platform: '起点听书'});
+  // 高级选项
+  const [sortBy, setSortBy] = useState('name_asc');
+  const [startIndex, setStartIndex] = useState(1);
+  const [indexStep, setIndexStep] = useState(1);
+  const [findRegex, setFindRegex] = useState('');
+  const [replaceStr, setReplaceStr] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // 预览行内编辑
+  const [editingRow, setEditingRow] = useState(null);
+  const [editingValue, setEditingValue] = useState('');
 
   useEffect(() => {
     api('/api/file-manager/templates').then(r => {
@@ -391,10 +401,15 @@ function RenameTab({onGotoHistory}) {
     try {
       const r = await api('/api/file-manager/rename-preview', {
         method: 'POST',
-        body: JSON.stringify({folder_path: folderPath, template, book_meta: bookMeta}),
+        body: JSON.stringify({
+          folder_path: folderPath, template, book_meta: bookMeta,
+          sort_by: sortBy, start_index: startIndex, index_step: indexStep,
+          find_regex: findRegex, replace_str: replaceStr,
+        }),
       });
       if (!r.ok) throw new Error(r.error);
       setPreviews(r.previews);
+      setEditingRow(null);
       setStep(4);
     } catch (e) {
       setError(e.message);
@@ -577,6 +592,78 @@ function RenameTab({onGotoHistory}) {
             </div>
           )}
 
+          {/* 高级选项 */}
+          <div>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowAdvanced(p => !p)}
+              style={{fontSize: 12.5}}
+            >
+              {showAdvanced ? '▲' : '▼'} 高级选项（排序 / 序号 / 正则）
+            </button>
+
+            {showAdvanced && (
+              <div style={{marginTop: 10, display: 'flex', flexDirection: 'column', gap: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 8}}>
+                {/* 排序方式 */}
+                <div>
+                  <div style={{fontSize: 12, color: 'var(--text-mute)', marginBottom: 6}}>文件排序方式（决定章节序号分配顺序）</div>
+                  <div style={{display: 'flex', gap: 6, flexWrap: 'wrap'}}>
+                    {[
+                      ['name_asc',  '文件名 ↑'],
+                      ['name_desc', '文件名 ↓'],
+                      ['mtime_asc', '修改时间 ↑'],
+                      ['mtime_desc','修改时间 ↓'],
+                      ['size_asc',  '文件大小 ↑'],
+                      ['size_desc', '文件大小 ↓'],
+                    ].map(([v, l]) => (
+                      <button key={v} onClick={() => setSortBy(v)}
+                        style={{padding: '4px 10px', borderRadius: 5, border: '1px solid var(--border)', fontSize: 12,
+                          background: sortBy === v ? 'var(--primary)' : 'var(--bg-0)',
+                          color: sortBy === v ? '#fff' : 'var(--text)', cursor: 'pointer'}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 序号控制 */}
+                <div style={{display: 'flex', gap: 16, flexWrap: 'wrap'}}>
+                  <div>
+                    <div style={{fontSize: 12, color: 'var(--text-mute)', marginBottom: 4}}>起始序号</div>
+                    <input type="number" min={0} value={startIndex}
+                      onChange={e => setStartIndex(Math.max(0, parseInt(e.target.value) || 0))}
+                      style={{width: 80, padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-0)', color: 'var(--text)', fontSize: 13}} />
+                  </div>
+                  <div>
+                    <div style={{fontSize: 12, color: 'var(--text-mute)', marginBottom: 4}}>步进值</div>
+                    <input type="number" min={1} value={indexStep}
+                      onChange={e => setIndexStep(Math.max(1, parseInt(e.target.value) || 1))}
+                      style={{width: 80, padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-0)', color: 'var(--text)', fontSize: 13}} />
+                  </div>
+                </div>
+
+                {/* 正则查找替换 */}
+                <div>
+                  <div style={{fontSize: 12, color: 'var(--text-mute)', marginBottom: 6}}>正则查找替换（作用于模板输出后的文件名主体，可选）</div>
+                  <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+                    <div style={{flex: 1, minWidth: 160}}>
+                      <div style={{fontSize: 11, color: 'var(--text-mute)', marginBottom: 3}}>查找（正则）</div>
+                      <input value={findRegex} onChange={e => setFindRegex(e.target.value)}
+                        placeholder="如：\\s*（广告）\\s*"
+                        style={{width: '100%', padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-0)', color: 'var(--text)', fontSize: 12.5, fontFamily: 'monospace', boxSizing: 'border-box'}} />
+                    </div>
+                    <div style={{flex: 1, minWidth: 120}}>
+                      <div style={{fontSize: 11, color: 'var(--text-mute)', marginBottom: 3}}>替换为</div>
+                      <input value={replaceStr} onChange={e => setReplaceStr(e.target.value)}
+                        placeholder="留空=删除"
+                        style={{width: '100%', padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-0)', color: 'var(--text)', fontSize: 12.5, boxSizing: 'border-box'}} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{display: 'flex', gap: 8}}>
             <button className="btn btn-ghost" onClick={() => setStep(2)}>上一步</button>
             <button className="btn btn-primary" onClick={doPreview} disabled={loading || !template}>
@@ -589,7 +676,15 @@ function RenameTab({onGotoHistory}) {
       {/* 步骤4：预览确认 */}
       {step === 4 && (
         <div className="glass glass-pad" style={{display: 'flex', flexDirection: 'column', gap: 12}}>
-          <div style={{fontWeight: 600, fontSize: 14}}>预览确认</div>
+          <div style={{display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap'}}>
+            <span style={{fontWeight: 600, fontSize: 14}}>预览确认</span>
+            <span style={{fontSize: 12, color: 'var(--text-mute)'}}>
+              共 {previews.length} 个文件 · 排序: {sortBy} · 起始序号: {startIndex} · 步进: {indexStep}
+              {findRegex ? ` · 正则: /${findRegex}/ → "${replaceStr}"` : ''}
+            </span>
+            <span style={{flex: 1}} />
+            <span style={{fontSize: 12, color: 'var(--text-mute)'}}>点击新文件名可直接编辑</span>
+          </div>
 
           <div style={{overflowX: 'auto'}}>
             <table style={{width: '100%', borderCollapse: 'collapse', fontSize: 12.5}}>
@@ -601,20 +696,52 @@ function RenameTab({onGotoHistory}) {
                 </tr>
               </thead>
               <tbody>
-                {previews.map((p, i) => (
-                  <tr key={i} style={{borderTop: '1px solid var(--border)', background: p.conflict ? 'rgba(255,0,0,0.04)' : 'transparent'}}>
-                    <td style={{padding: '6px 10px', color: 'var(--text-mute)', wordBreak: 'break-all'}}>{p.original_name}</td>
-                    <td style={{padding: '6px 10px', color: p.conflict ? 'var(--danger)' : 'var(--primary)', wordBreak: 'break-all'}}>{p.new_name}</td>
-                    <td style={{padding: '6px 10px', whiteSpace: 'nowrap'}}>
-                      {p.conflict
-                        ? <span style={{color: 'var(--danger)', fontSize: 11}}>冲突</span>
-                        : p.original_name === p.new_name
-                        ? <span style={{color: 'var(--text-mute)', fontSize: 11}}>未变</span>
-                        : <span style={{color: 'var(--success)', fontSize: 11}}>正常</span>
-                      }
-                    </td>
-                  </tr>
-                ))}
+                {previews.map((p, i) => {
+                  const isEditing = editingRow === i;
+                  const folder = p.original_path.replace(/[\\/][^\\/]+$/, '');
+                  function commitEdit() {
+                    const v = editingValue.trim();
+                    if (v && v !== p.new_name) {
+                      const newPath = folder + '/' + v;
+                      const conflict = previews.some((q, j) => j !== i && q.new_name === v);
+                      setPreviews(prev => prev.map((q, j) => j === i
+                        ? {...q, new_name: v, new_path: newPath, conflict}
+                        : q));
+                    }
+                    setEditingRow(null);
+                  }
+                  return (
+                    <tr key={i} style={{borderTop: '1px solid var(--border)', background: p.conflict ? 'rgba(255,0,0,0.04)' : 'transparent'}}>
+                      <td style={{padding: '6px 10px', color: 'var(--text-mute)', wordBreak: 'break-all'}}>{p.original_name}</td>
+                      <td style={{padding: '4px 6px', wordBreak: 'break-all'}}>
+                        {isEditing ? (
+                          <input
+                            autoFocus
+                            value={editingValue}
+                            onChange={e => setEditingValue(e.target.value)}
+                            onBlur={commitEdit}
+                            onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingRow(null); }}
+                            style={{width: '100%', padding: '3px 6px', borderRadius: 4, border: '1px solid var(--primary)', background: 'var(--bg-0)', color: 'var(--text)', fontSize: 12.5, fontFamily: 'monospace', boxSizing: 'border-box'}}
+                          />
+                        ) : (
+                          <span
+                            title="点击编辑"
+                            onClick={() => { setEditingRow(i); setEditingValue(p.new_name); }}
+                            style={{color: p.conflict ? 'var(--danger)' : 'var(--primary)', cursor: 'text', display: 'block', padding: '2px 4px', borderRadius: 3, ':hover': {background: 'var(--bg-1)'}}}
+                          >{p.new_name}</span>
+                        )}
+                      </td>
+                      <td style={{padding: '6px 10px', whiteSpace: 'nowrap'}}>
+                        {p.conflict
+                          ? <span style={{color: 'var(--danger)', fontSize: 11}}>冲突</span>
+                          : p.original_name === p.new_name
+                          ? <span style={{color: 'var(--text-mute)', fontSize: 11}}>未变</span>
+                          : <span style={{color: 'var(--success)', fontSize: 11}}>正常</span>
+                        }
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

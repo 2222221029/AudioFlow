@@ -174,9 +174,10 @@ def scan_directory(root: str = None, quick: bool = False) -> dict:
 
 # ============ 模板引擎 ============
 
-def apply_template(template: str, book_meta: dict, file_info: dict, index: int) -> str:
+def apply_template(template: str, book_meta: dict, file_info: dict, index: int,
+                   start_index: int = 1, index_step: int = 1) -> str:
     """将模板字符串渲染为文件名（不含路径）"""
-    idx = index + 1  # 1-based
+    idx = start_index + index * index_step
 
     name_no_ext = Path(file_info.get("name", "")).stem
     ai_title = book_meta.get("chapter_titles", {}).get(file_info.get("name", ""))
@@ -244,16 +245,41 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int) 
 
 # ============ 重命名预览 ============
 
-def preview_rename(folder_path: str, template: str, book_meta: dict) -> list:
-    """返回预览列表"""
+def preview_rename(folder_path: str, template: str, book_meta: dict,
+                   sort_by: str = 'name_asc', start_index: int = 1,
+                   index_step: int = 1, find_regex: str = '',
+                   replace_str: str = '') -> list:
+    """返回预览列表
+
+    sort_by: name_asc | name_desc | mtime_asc | mtime_desc | size_asc | size_desc
+    """
     folder = Path(folder_path)
     if not folder.exists() or not folder.is_dir():
         raise ValueError(f"文件夹不存在: {folder_path}")
 
-    audio_files = sorted(
-        [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTS],
-        key=lambda x: x.name
-    )
+    raw_files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTS]
+
+    def _sort_key(f):
+        try:
+            st = f.stat()
+        except OSError:
+            return ('', 0, 0)
+        if sort_by in ('mtime_asc', 'mtime_desc'):
+            return st.st_mtime
+        if sort_by in ('size_asc', 'size_desc'):
+            return st.st_size
+        return f.name  # name_asc / name_desc default
+
+    reverse = sort_by.endswith('_desc')
+    audio_files = sorted(raw_files, key=_sort_key, reverse=reverse)
+
+    # compile regex once; ignore invalid patterns
+    _find_re = None
+    if find_regex:
+        try:
+            _find_re = re.compile(find_regex)
+        except re.error:
+            pass
 
     previews = []
     new_names_seen = {}
@@ -269,10 +295,24 @@ def preview_rename(folder_path: str, template: str, book_meta: dict) -> list:
             "name": f.name,
             "ext": f.suffix.lstrip('.').lower(),
             "size": size,
-            "duration": 0.0,  # 重命名不需要时长，跳过读取以支持大量文件
+            "duration": 0.0,
         }
 
-        new_name = apply_template(template, book_meta, file_info, idx)
+        new_name = apply_template(template, book_meta, file_info, idx,
+                                  start_index=start_index, index_step=index_step)
+
+        # apply regex find-replace (only on stem, preserve extension)
+        if _find_re and new_name:
+            dot_idx = new_name.rfind('.')
+            if dot_idx > 0:
+                stem_part = new_name[:dot_idx]
+                ext_part  = new_name[dot_idx:]
+                stem_part = _find_re.sub(replace_str, stem_part)
+                stem_part = re.sub(ILLEGAL_CHARS, '_', stem_part).strip('. ')
+                new_name  = stem_part + ext_part
+            else:
+                new_name = _find_re.sub(replace_str, new_name)
+
         new_path = str(folder / new_name)
 
         conflict = False
