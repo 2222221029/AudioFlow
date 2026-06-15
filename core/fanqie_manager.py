@@ -1319,20 +1319,9 @@ class FanqieManager:
             mod.download_chapter_audio(play, raw_out, {
                 "User-Agent": "com.xs.fm/608 (Linux; U; Android 9; zh_CN; 2210132C; Build/PQ3A.190605.07021633;tt-ok/3.12.13.17)",
             })
-            wants_m4a_output = (
-                out.suffix.lower() == ".m4a"
-                and not str(quality or "").upper().startswith("MP3")
-                and hasattr(mod, "_transcode_audio")
-                and hasattr(mod, "find_ffmpeg")
-            )
-            if wants_m4a_output:
-                ffmpeg = mod.find_ffmpeg()
-                if ffmpeg:
-                    mod._transcode_audio(raw_out, tmp_out, ffmpeg=ffmpeg, codec="m4a")
-                else:
-                    raw_out.replace(tmp_out)
-            else:
-                raw_out.replace(tmp_out)
+            # download_chapter_audio 内部的 _finalize_decrypted 已处理好格式（opus→AAC/MP3），
+            # 此处直接移动文件，不再重复转码（消除每章的第二次 CPU 密集编码）。
+            raw_out.replace(tmp_out)
             if raw_out.exists():
                 raw_out.unlink()
             if tmp_out.is_file() and tmp_out.stat().st_size > 1024:

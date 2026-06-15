@@ -160,6 +160,10 @@ class DownloadWorker(QThread):
                 lrts_workers = int(os.getenv("LRTS_DOWNLOAD_THREADS", "1") or "1")
                 max_workers = max(1, min(3, lrts_workers, total_chapters))
                 print(f"📚 懒人听书使用保守下载模式，并发数: {max_workers}（可用 LRTS_DOWNLOAD_THREADS=1-3 调整）")
+            if self.platform == '番茄畅听':
+                # 每章需要 ffmpeg 解密+转码，CPU 密集；限制并发避免打满 NAS CPU
+                max_workers = max(1, min(2, max_workers, total_chapters))
+                print(f"🍅 番茄畅听 CPU 密集模式，并发数限制为: {max_workers}")
             if self.platform in ('番茄听书', '七猫听书'):
                 print(f"📖 {self.platform} 并发下载，线程数: {max_workers}（与设置一致）")
             max_workers = max(1, min(64, max_workers, total_chapters))
