@@ -579,7 +579,9 @@ export function SubscriptionsPage({app}) {
         {!subscriptions.length ? <div className="empty"><Icon id="i-star" />暂无订阅<br />在专辑详情点击“订阅追更”</div> : subscriptions.map((sub) => {
           const album = sub.album || sub;
           const stats = sub.stats || {};
-          const jobBusy = Object.values(subscriptionJobs).some((job) => job.sid === sub.id && ['queued', 'running'].includes(job.status));
+          const activeJob = Object.values(subscriptionJobs).find((job) => job.sid === sub.id && ['queued', 'running'].includes(job.status));
+          const jobBusy = Boolean(activeJob);
+          const jobMessage = activeJob?.message || '检测中';
           const cover = coverOf(sub) || coverOf(album);
           const checkBusy = jobBusy || busy[`subscription:${sub.id}:check`];
           const completeBusy = jobBusy || busy[`subscription:${sub.id}:complete`];
@@ -597,7 +599,7 @@ export function SubscriptionsPage({app}) {
             <div className="sub-card" key={sub.id}>
               <div className="sub-cover-wrap">
                 <div className="sub-cover" style={cover ? {backgroundImage: `url("${cover}")`} : undefined}>{cover ? '' : <Icon id="i-music" />}</div>
-                {jobBusy && <span className="sub-live"><span className="loading" />检测中</span>}
+                {jobBusy && <span className="sub-live"><span className="loading" />{jobMessage}</span>}
               </div>
               <div className="sub-info">
                 <div className="sub-main">

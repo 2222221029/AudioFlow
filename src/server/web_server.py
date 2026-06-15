@@ -602,7 +602,15 @@ def subscription_scheduler_status():
     return status
 
 
-def _run_subscription_check(sid, queue_missing=False, source="subscription-check"):
+def _run_subscription_check(sid, queue_missing=False, source="subscription-check", progress=None):
+    def set_progress(message, **fields):
+        if callable(progress):
+            try:
+                progress(message, **fields)
+            except Exception:
+                logging.debug("subscription progress callback failed", exc_info=True)
+
+    set_progress("正在准备订阅检测")
     item = subscription_manager.get(sid)
     if not item:
         raise ValueError("订阅不存在")
@@ -612,6 +620,7 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     platform = album.get("platform") or item.get("platform")
     if not album_id or not platform:
         raise ValueError("订阅缺少专辑 ID 或平台")
+    set_progress("正在获取远端章节", platform=platform, album_id=album_id)
     if platform == "七猫听书":
         search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
         if album.get("book_id"):
@@ -631,8 +640,10 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(chapters or [], start=1)]
     if not chapters and item.get("chapters"):
         chapters = item.get("chapters") or []
+    set_progress("正在扫描本地文件", chapter_count=len(chapters))
     scan_cache = {}
     diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False)
+    set_progress("正在更新订阅结果", missing_count=len(diff.get("missing") or []))
     subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
     item = subscription_manager.get(sid) or item
     item["download_dir"] = active_download_dir()
@@ -640,6 +651,7 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     queued_task_id = ""
     missing = diff.get("missing") or []
     if queue_missing and missing:
+        set_progress("正在创建下载任务", missing_count=len(missing))
         if not voice:
             voices = get_album_voices(album)
             voice = voices[0] if voices else None
@@ -673,6 +685,14 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
 
 def _subscription_job(job_id, sid, queue_missing):
     started_at = time.time()
+    def update_progress(message, **fields):
+        payload = {"message": message, "updated_at": time.time()}
+        payload.update(fields)
+        with subscription_job_lock:
+            job = subscription_jobs.get(job_id)
+            if job:
+                job.update(payload)
+
     with subscription_job_lock:
         subscription_jobs[job_id].update(
             {
@@ -683,7 +703,7 @@ def _subscription_job(job_id, sid, queue_missing):
             }
         )
     try:
-        result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription")
+        result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription", progress=update_progress)
         message = "已加入下载队列" if result.get("queued") else "检测完成，无需补全" if queue_missing else "检测完成"
         append_background_event(
             "subscription",
