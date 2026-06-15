@@ -240,7 +240,16 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
   // 加载选项和配置
   useEffect(()=>{
     api('/api/meta/options').then(r=>r.ok&&setOptions(r.options)).catch(()=>{});
-    api('/api/meta/config').then(r=>r.ok&&setParams(r.params)).catch(()=>{});
+    api('/api/meta/config').then(r=>{
+      if(r.ok) setParams({
+        ...(r.params||{}),
+        title:'',subtitle:'',author:'',anchor:'',
+        year:'',category:'',finished:'',
+        series_name:'',series_number:'',
+        album_tags:[],team:'',
+        manual_desc:'',manual_cover_path:'',
+      });
+    }).catch(()=>{});
   },[]);
 
   // selectedFolder 变化时：重新加载默认 params、重置元数据输入、读取 source.json
