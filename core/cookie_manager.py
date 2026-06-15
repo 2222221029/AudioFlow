@@ -374,16 +374,15 @@ class CookieManager:
         self.save()
 
     def get_download_threads(self):
-        """获取并发下载线程数，默认3个"""
+        """获取并发下载线程数，默认4个（NAS 友好）"""
         try:
             threads = self.get_cookie('download_threads')
             if threads:
                 thread_count = int(threads)
-                # 允许高并发下载，实际上限由设置页和下载器共同保护。
                 return max(1, min(64, thread_count))
-            return 16
+            return 4
         except Exception:
-            return 16
+            return 4
             
     # 添加主题设置相关方法
     def get_theme_setting(self, key, default=None):

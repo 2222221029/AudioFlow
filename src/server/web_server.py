@@ -4135,7 +4135,7 @@ def main():
     try:
         from waitress import serve
         print("📡 使用 waitress 生产服务器")
-        serve(app, host=host, port=port, threads=8)
+        serve(app, host=host, port=port, threads=4)
     except ImportError:
         print("📡 waitress 未安装，使用 Flask 内置服务器")
         app.run(host=host, port=port, debug=debug, threaded=True)

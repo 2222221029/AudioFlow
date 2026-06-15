@@ -1069,14 +1069,14 @@ export function SettingsPage({app}) {
   const {config, logs, events, actions, setModal, closeModal, busy, diagnostics} = app;
   const [downloadDir, setDownloadDir] = useState('');
   const [quality, setQuality] = useState('M4A 96K');
-  const [downloadThreads, setDownloadThreads] = useState(16);
+  const [downloadThreads, setDownloadThreads] = useState(4);
   const [splitChaptersEnabled, setSplitChaptersEnabled] = useState(false);
   const [chaptersPerFolder, setChaptersPerFolder] = useState(200);
   const [filenamePrefixFormat, setFilenamePrefixFormat] = useState('0001-');
   useEffect(() => {
     setDownloadDir(config.download_dir || '');
     setQuality(config.quality || 'M4A 96K');
-    setDownloadThreads(config.download_threads || 16);
+    setDownloadThreads(config.download_threads || 4);
     setSplitChaptersEnabled(!!config.split_chapters_enabled);
     setChaptersPerFolder(config.chapters_per_folder || 200);
     setFilenamePrefixFormat(config.filename_prefix_format || '0001-');
