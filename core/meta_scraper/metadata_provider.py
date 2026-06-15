@@ -75,20 +75,65 @@ def resolve_category_id(category_text: str) -> str:
     return ""
 
 
+def _extract_ximalaya_tags(info: dict[str, Any]) -> list[str]:
+    """从 albumPageMainInfo 提取喜马拉雅专辑标签"""
+    tags: list[str] = []
+
+    # albumTags 是最常见的 tag 字段，值为 [{tagId:..., tagName:...}] 或 [str]
+    for field in ("albumTags", "labelList", "tagList", "tags"):
+        raw = info.get(field)
+        if not raw:
+            continue
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    name = (item.get("tagName") or item.get("name") or item.get("label") or "").strip()
+                elif isinstance(item, str):
+                    name = item.strip()
+                else:
+                    name = ""
+                if name and name not in tags:
+                    tags.append(name)
+        elif isinstance(raw, str):
+            for t in re.split(r"[,，、\s]+", raw):
+                t = t.strip()
+                if t and t not in tags:
+                    tags.append(t)
+        if tags:
+            break
+
+    # 分类名也作为 tag 补充
+    for field in ("mainCategory", "subCategory", "categoryName", "classify"):
+        name = (info.get(field) or "").strip()
+        if name and name not in tags:
+            tags.append(name)
+
+    return tags
+
+
 def normalize_ximalaya_payload(raw: dict[str, Any]) -> dict[str, Any]:
     info = raw.get("albumPageMainInfo", raw or {})
     anchor = first_value(info, "anchorName", "nickname")
     if not anchor and isinstance(raw.get("anchorInfo"), dict):
         anchor = first_value(raw["anchorInfo"], "anchorName", "nickname")
+    # 作者：优先从 albumPageMainInfo 取，再从顶层 authorInfo 取
+    author = first_value(info, "author", "authorName")
+    if not author and isinstance(raw.get("authorInfo"), dict):
+        author = first_value(raw["authorInfo"], "authorName", "name", "nickname")
     return {
         "title": first_value(info, "albumTitle", "title", "name"),
         "subtitle": first_value(info, "customTitle", "subtitle", "shortIntro"),
-        "author": "",
+        "author": author,
         "announcer": anchor,
         "artist": anchor,
         "desc": first_value(info, "detailRichIntro", "intro"),
         "cover": first_value(info, "cover", "coverUrlLarge", "coverUrlMiddle"),
         "releaseDate": extract_year(first_value(info, "createDate", "updateDate", "createdAt", "createAt")),
+        # 透传 tag 相关字段，让 normalize_metadata → collect_tags 能读到
+        "albumTags": info.get("albumTags") or [],
+        "labelList": info.get("labelList") or [],
+        "tags": _extract_ximalaya_tags(info),
+        "category": first_value(info, "mainCategory", "categoryName", "classify"),
     }
 
 
