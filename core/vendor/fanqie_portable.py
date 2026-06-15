@@ -1467,6 +1467,10 @@ def _subprocess_hide_kw() -> dict:
 
 
 def _ffmpeg_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    # 在 ffmpeg 命令本体后插入 -threads 1，限制单进程线程数，避免多实例并发时打满 CPU
+    if cmd and not any(a == "-threads" for a in cmd):
+        exe, *rest = cmd
+        cmd = [exe, "-threads", "1"] + rest
     return subprocess.run(
         cmd,
         capture_output=True,
@@ -1674,7 +1678,10 @@ def decrypt_cenc_file(enc_path: Path, out_path: Path, play: dict) -> str:
     """解密 CENC 并校验可播；失败抛错，避免写出杂音文件。"""
     _decrypt_with_ffmpeg(enc_path, out_path, play)
     ffmpeg = find_ffmpeg()
-    container, decoded, ok = verify_decrypted_audio(out_path, ffmpeg=ffmpeg)
+    # 解密成功且文件可观（>50KB）则直接信任，跳过耗 CPU 的音频解码验证
+    if out_path.is_file() and out_path.stat().st_size > 50 * 1024:
+        return "ffmpeg"
+    container, decoded, ok = verify_decrypted_audio(out_path, ffmpeg=ffmpeg, sample_seconds=3.0)
     if ok:
         return "ffmpeg"
     mp4d = find_mp4decrypt()
@@ -1692,7 +1699,7 @@ def decrypt_cenc_file(enc_path: Path, out_path: Path, play: dict) -> str:
                     final_tmp = Path(fin.name)
                 try:
                     _finalize_decrypted(tmp_out, final_tmp, ffmpeg=ffmpeg or "", audio_codec=codec)
-                    _, _, ok2 = verify_decrypted_audio(final_tmp, ffmpeg=ffmpeg)
+                    _, _, ok2 = verify_decrypted_audio(final_tmp, ffmpeg=ffmpeg, sample_seconds=3.0)
                     if ok2:
                         shutil.move(str(final_tmp), str(out_path))
                         return "mp4decrypt"

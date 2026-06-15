@@ -150,8 +150,6 @@ class DownloadWorker(QThread):
 
             max_workers = self.cookie_manager.get_download_threads()
             total_chapters = len(self.chapters)
-            if total_chapters >= 16:
-                max_workers = max(max_workers, 16)
             if self.platform == '喜马拉雅':
                 xmly_threads = os.getenv("XMLY_DOWNLOAD_THREADS")
                 if xmly_threads:
