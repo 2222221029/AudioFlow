@@ -766,7 +766,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             <div style={{fontWeight:600,fontSize:14}}>填写书籍元数据</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-ghost btn-sm" onClick={doAiAnalyze} disabled={aiLoading}>
-                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}{aiLoading?'AI 分析中…':'AI 规范章节名'}
+                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}{aiLoading?`AI 分析中… (每批80个，共${Math.ceil(folderFiles.length/80)}批)`:'AI 规范章节名'}
               </button>
               {aiNormStats&&<span style={{fontSize:11,color:'var(--success)',display:'flex',alignItems:'center',gap:3}}>
                 ✓ 已规范 {aiNormStats.normalized} 个{aiNormStats.ads>0&&`，广告 ${aiNormStats.ads} 个`}

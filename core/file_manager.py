@@ -518,18 +518,34 @@ def save_fm_config(cfg: dict) -> dict:
 
 # ============ AI 分析 ============
 
-def ai_analyze(file_names: list, config: dict) -> dict:
-    """调用 DeepSeek 分析文件名列表"""
-    if not config.get("ai_enabled"):
-        raise ValueError("AI 分析未启用，请在配置设置中启用")
-    api_key = config.get("ai_api_key", "")
-    if not api_key:
-        raise ValueError("未配置 AI API Key")
+_AI_RULES = """**章节标题规范化规则（非常重要）：**
+1. 删除广告内容：网址、QQ号、微信号、公众号、"听书""下载"等促销文字、录制方/上传方署名（如"【xxx出品】""@xxx"）
+2. 删除平台水印：如"喜马拉雅""懒人听书""番茄畅听"等平台名称附加内容
+3. 统一标点：将全角标点转为对应中文标点（保留正常的中文句号、逗号等），删除多余的括号、方括号修饰
+4. **剥离章节序号**：chapter_title 只保留正文标题，去掉开头的独立数字序号（含"集/章/回/话/期"等单位词）。例："1离家"→"离家"，"003集 酣睡"→"酣睡"，"第5章破晓"→"破晓"。**注意：保留标题中已有括号的分段标记，如"（一）""（二）"，但括号前不允许有空格**。例："玄门炼真 （一）"→"玄门炼真（一）"（序号由模板变量单独控制，不要留在标题里）
+5. **同名章节分段括号化**：检测连续下载序号中底名相同的文件组（底名 = 去掉结尾的数字/中文数字后的标题）。满足以下条件时，将整组按下载序号顺序统一重新编号为（1）（2）（3）…：
+   - 条件A：去掉结尾数字后底名完全相同，且下载序号连续
+   - 条件B：**组内允许有无数字后缀的文件**——即"醋意十足"也属于"醋意十足"这个底名组，视为第一集
+   - 编号规则：按下载序号从小到大，统一用阿拉伯数字括号（1）（2）（3）…（忽略原来的后缀数字，全部重新顺序编号）
+   - 例1：0021-醋意十足一、0022-醋意十足二 →"醋意十足（1）""醋意十足（2）"
+   - 例2：0022-醋意十足、0023-醋意十足1、0024-醋意十足2（序号连续，底名均为"醋意十足"）→"醋意十足（1）""醋意十足（2）""醋意十足（3）"
+   - 若序号不连续则不处理，按规则4正常剥离序号
+6. 去除重复信息：如文件名已含书名，则章节标题不重复包含书名
+7. 保留核心信息：保留章节正文标题、回目名称等有意义内容，保留【篇章名】等分卷标记
+8. 删除冗余后缀：如"（完结）""[全集]""_高清"等
+9. is_ad 为 true 表示该文件整体是广告/片头片尾，建议跳过重命名
+- original 必须与输入文件名完全一致（含扩展名），用于精确匹配"""
 
-    base_url = config.get("ai_base_url", "https://api.deepseek.com").rstrip("/")
-    model = config.get("ai_model", "deepseek-chat")
+_AI_BATCH_SIZE = 80   # 每批最多文件数，避免 prompt 过长超时
+_AI_TIMEOUT    = 90   # 单批超时秒数
 
-    prompt = f"""你是一个有声书文件名清理与规范化助手。请分析以下音频文件名列表，识别书籍信息，并对每个文件的章节标题进行规范化处理。
+
+def _make_prompt(file_names: list, is_first_batch: bool) -> str:
+    header = """你是一个有声书文件名清理与规范化助手。请分析以下音频文件名列表，识别书籍信息，并对每个文件的章节标题进行规范化处理。"""
+    if not is_first_batch:
+        header = """你是一个有声书文件名清理与规范化助手。以下是同一本书后续批次的文件名，请继续规范化章节标题（书名/作者等字段返回空字符串即可）。"""
+
+    return f"""{header}
 
 文件名列表：
 {chr(10).join(f'{i+1}. {name}' for i, name in enumerate(file_names))}
@@ -554,52 +570,54 @@ def ai_analyze(file_names: list, config: dict) -> dict:
   ]
 }}
 
-**章节标题规范化规则（非常重要）：**
-1. 删除广告内容：网址、QQ号、微信号、公众号、"听书""下载"等促销文字、录制方/上传方署名（如"【xxx出品】""@xxx"）
-2. 删除平台水印：如"喜马拉雅""懒人听书""番茄畅听"等平台名称附加内容
-3. 统一标点：将全角标点转为对应中文标点（保留正常的中文句号、逗号等），删除多余的括号、方括号修饰
-4. **剥离章节序号**：chapter_title 只保留正文标题，去掉开头的独立数字序号（含"集/章/回/话/期"等单位词）。例："1离家"→"离家"，"003集 酣睡"→"酣睡"，"第5章破晓"→"破晓"。**注意：保留标题中已有括号的分段标记，如"（一）""（二）"，但括号前不允许有空格**。例："玄门炼真 （一）"→"玄门炼真（一）"（序号由模板变量单独控制，不要留在标题里）
-5. **同名章节分段括号化**：检测连续下载序号中底名相同的文件组（底名 = 去掉结尾的数字/中文数字后的标题）。满足以下条件时，将整组按下载序号顺序统一重新编号为（1）（2）（3）…：
-   - 条件A：去掉结尾数字后底名完全相同，且下载序号连续
-   - 条件B：**组内允许有无数字后缀的文件**——即"醋意十足"也属于"醋意十足"这个底名组，视为第一集
-   - 编号规则：按下载序号从小到大，统一用阿拉伯数字括号（1）（2）（3）…（忽略原来的后缀数字，全部重新顺序编号）
-   - 例1：0021-醋意十足一、0022-醋意十足二 →"醋意十足（1）""醋意十足（2）"
-   - 例2：0022-醋意十足、0023-醋意十足1、0024-醋意十足2（序号连续，底名均为"醋意十足"）→"醋意十足（1）""醋意十足（2）""醋意十足（3）"
-   - 若序号不连续则不处理，按规则4正常剥离序号
-6. 去除重复信息：如文件名已含书名，则章节标题不重复包含书名
-7. 保留核心信息：保留章节正文标题、回目名称等有意义内容，保留【篇章名】等分卷标记
-8. 删除冗余后缀：如"（完结）""[全集]""_高清"等
-9. is_ad 为 true 表示该文件整体是广告/片头片尾，建议跳过重命名
-- original 必须与输入文件名完全一致（含扩展名），用于精确匹配"""
+{_AI_RULES}"""
 
-    def _do_request(post_fn, url, headers, payload):
-        resp = post_fn(url, headers=headers, json=payload, timeout=30)
+
+def ai_analyze(file_names: list, config: dict) -> dict:
+    """调用 AI 分批分析文件名列表，每批 {_AI_BATCH_SIZE} 个"""
+    if not config.get("ai_enabled"):
+        raise ValueError("AI 分析未启用，请在配置设置中启用")
+    api_key = config.get("ai_api_key", "")
+    if not api_key:
+        raise ValueError("未配置 AI API Key")
+
+    base_url = config.get("ai_base_url", "https://api.deepseek.com").rstrip("/")
+    model    = config.get("ai_model", "deepseek-chat")
+    endpoint = f"{base_url}/v1/chat/completions"
+    headers  = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    def _do_request(post_fn, prompt):
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+        resp = post_fn(endpoint, headers=headers, json=payload, timeout=_AI_TIMEOUT)
         resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
         if content.startswith("```"):
             content = re.sub(r'^```\w*\n?', '', content)
             content = re.sub(r'\n?```$', '', content)
         return json.loads(content)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
-    }
-    endpoint = f"{base_url}/v1/chat/completions"
-
     try:
         import httpx
-        return _do_request(httpx.post, endpoint, headers, payload)
+        _post = httpx.post
     except ImportError:
-        import requests as req_lib
-        return _do_request(req_lib.post, endpoint, headers, payload)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"AI 返回内容无法解析为 JSON: {e}")
-    except Exception as e:
-        raise RuntimeError(f"AI 请求失败: {e}")
+        import requests as _req
+        _post = _req.post
+
+    # 分批处理
+    merged_items = []
+    book_meta = {}
+    batches = [file_names[i:i+_AI_BATCH_SIZE] for i in range(0, len(file_names), _AI_BATCH_SIZE)]
+
+    for batch_idx, batch in enumerate(batches):
+        try:
+            prompt = _make_prompt(batch, is_first_batch=(batch_idx == 0))
+            result = _do_request(_post, prompt)
+            if batch_idx == 0:
+                book_meta = {k: result.get(k, "") for k in ("book_title","author","narrator","category","series","volume","confidence")}
+            merged_items.extend(result.get("items", []))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"AI 返回内容无法解析为 JSON（第{batch_idx+1}批）: {e}")
+        except Exception as e:
+            raise RuntimeError(f"AI 请求失败（第{batch_idx+1}批，共{len(batches)}批）: {e}")
+
+    return {**book_meta, "items": merged_items}
