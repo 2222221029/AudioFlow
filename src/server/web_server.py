@@ -4000,6 +4000,24 @@ def fm_ai_analyze():
     except Exception as e:
         return json_error(str(e), 500)
 
+@app.route('/api/file-manager/ai-analyze-batch', methods=['POST'])
+def fm_ai_analyze_batch():
+    """单批接口，由前端控制批次循环以显示实时进度"""
+    if not current_user(): return json_error("未登录", 401)
+    data = request.get_json() or {}
+    file_names    = data.get('file_names', [])
+    is_first      = data.get('is_first_batch', True)
+    if not file_names:
+        return json_error("请提供文件名列表", 400)
+    cfg = _fm.load_fm_config()
+    try:
+        result = _fm.ai_analyze_single_batch(file_names, cfg, is_first_batch=is_first)
+        return json_ok(result=result)
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(str(e), 500)
+
 @app.route('/api/file-manager/rename-preview', methods=['POST'])
 def fm_rename_preview():
     if not current_user(): return json_error("未登录", 401)

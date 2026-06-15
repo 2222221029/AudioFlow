@@ -27,7 +27,15 @@ function fmtSize(bytes){
   return bytes+' B';
 }
 
-function simulateTemplate(tpl,meta,fileName,idx){
+function applyAdRules(title,rules){
+  const defaults=[/www\.\S+\.\S+/gi,/https?:\/\/\S+/gi,/[QqＱＱ]{1,2}[:：]?\d{5,}/gi,/微信[:：]?\s*\S+/gi,/公众号[:：]?\s*\S+/gi,/\(.*?听书.*?\)/gi,/【.*?听书.*?】/gi,/【.*?下载.*?】/gi];
+  let s=title;
+  for(const p of defaults)s=s.replace(p,'');
+  for(const r of(rules||[])){try{s=s.replace(new RegExp(r,'gi'),'');}catch(e){}}
+  return s.replace(/\s+/g,' ').trim();
+}
+
+function simulateTemplate(tpl,meta,fileName,idx,adRules){
   const stem=fileName.replace(/\.[^.]+$/,'');
   const ext=(fileName.match(/\.([^.]+)$/)||['',''])[1].toLowerCase();
   const i=idx+1;
@@ -39,7 +47,7 @@ function simulateTemplate(tpl,meta,fileName,idx){
     const bt=(meta.book_title||'').trim();
     if(bt) s=s.replace(new RegExp('^\\d+[-\\s]+'+bt.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[-\\s]*'),'').trim();
     s=s.replace(/^\d+[集章回话期]?\s*/,'').trim();
-    chapterTitle=s||stem;
+    chapterTitle=applyAdRules(s||stem, adRules);
   }
   chapterTitle=chapterTitle.replace(/\s+（/g,'（');
   const prefixMatch=stem.match(/^(\d+)/);
@@ -222,19 +230,26 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
     api('/api/meta/config').then(r=>r.ok&&setParams(r.params)).catch(()=>{});
   },[]);
 
-  // selectedFolder 变化时：同步到 params，并自动读取 source.json
+  // selectedFolder 变化时：重新加载默认 params、重置元数据输入、读取 source.json
   useEffect(()=>{
-    if(!selectedFolder)return;
-    if(params) setParams(p=>({...p,input_folder:selectedFolder}));
+    if(!selectedFolder){
+      setApiId('');setLinkUrl('');setFetchedMeta(null);setCoverPreview(null);
+      return;
+    }
+    // 重置元数据输入区
+    setApiId('');setLinkUrl('');setFetchedMeta(null);setCoverPreview(null);setFetchError('');
+    // 重新从服务器拉取默认 params，并覆盖 input_folder
+    api('/api/meta/config').then(r=>{
+      if(r.ok) setParams({...(r.params||{}),input_folder:selectedFolder});
+    }).catch(()=>{});
+    // 尝试读取 source.json
     api(`/api/meta/read-source?path=${encodeURIComponent(selectedFolder)}`).then(r=>{
       if(!r.ok)return;
       const s=r.source||{};
-      // 填入平台与ID
       const src=s.api_source||s.platform||'';
-      const id=s.album_id||s.id||'';
+      const id=String(s.album_id||s.id||'');
       if(src) setApiSource(src);
-      if(id){ setMetaTab('id'); setApiId(id); }
-      // 如果有封面URL直接更新预览
+      if(id){setMetaTab('id');setApiId(id);}
       if(s.cover) _saveCoverPreview({cover_url:s.cover});
     }).catch(()=>{});
   },[selectedFolder]);
@@ -617,6 +632,8 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[error,setError]=useState('');
   const[aiLoading,setAiLoading]=useState(false);
   const[aiNormStats,setAiNormStats]=useState(null);
+  const[aiProgress,setAiProgress]=useState(null); // {cur,total,samples:[]}
+  const[fmConfig,setFmConfig]=useState({custom_ad_rules:[]});
   const[scrapeOpen,setScrapeOpen]=useState(false);
   const[scrapeInput,setScrapeInput]=useState({api_source:'喜马拉雅',api_id:'',link_url:'',link_platform:'起点听书'});
 
@@ -632,6 +649,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
 
   useEffect(()=>{
     api('/api/file-manager/templates').then(r=>r.ok&&setTemplates(r.templates)).catch(()=>{});
+    api('/api/file-manager/config').then(r=>r.ok&&setFmConfig(r.config||{})).catch(()=>{});
   },[]);
 
   async function loadFolderFiles(path){
@@ -650,30 +668,46 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
 
   async function doAiAnalyze(){
     if(!folderFiles.length)return;
-    setAiLoading(true);setError('');setAiNormStats(null);
+    const names=folderFiles.map(f=>f.name);
+    const BATCH=80;
+    const batches=[];
+    for(let i=0;i<names.length;i+=BATCH)batches.push(names.slice(i,i+BATCH));
+    const total=batches.length;
+    setAiLoading(true);setError('');setAiNormStats(null);setAiProgress({cur:0,total,samples:[]});
+    const chapter_titles={};
+    let adCount=0,normCount=0;
+    let firstMeta={};
     try{
-      const r=await api('/api/file-manager/ai-analyze',{method:'POST',body:JSON.stringify({file_names:folderFiles.map(f=>f.name)})});
-      if(!r.ok)throw new Error(r.error);
-      const res=r.result;
-      const chapter_titles={};
-      let adCount=0,normCount=0;
-      (res.items||[]).forEach(item=>{
-        if(!item.original)return;
-        if(item.is_ad){adCount++;return;}
-        if(item.chapter_title){chapter_titles[item.original]=item.chapter_title;normCount++;}
-      });
+      for(let i=0;i<batches.length;i++){
+        const r=await api('/api/file-manager/ai-analyze-batch',{method:'POST',
+          body:JSON.stringify({file_names:batches[i],is_first_batch:i===0})});
+        if(!r.ok)throw new Error(r.error);
+        const res=r.result||{};
+        if(i===0)firstMeta=res;
+        const samples=[];
+        (res.items||[]).forEach(item=>{
+          if(!item.original)return;
+          if(item.is_ad){adCount++;return;}
+          if(item.chapter_title){
+            chapter_titles[item.original]=item.chapter_title;
+            normCount++;
+            if(samples.length<3)samples.push({from:item.original,to:item.chapter_title});
+          }
+        });
+        setAiProgress(p=>({cur:i+1,total,samples}));
+      }
       setBookMeta(p=>({...p,
-        book_title:res.book_title||p.book_title,
-        author:res.author||p.author,
-        narrator:res.narrator||p.narrator,
-        category:res.category||p.category,
-        series:res.series||p.series,
-        volume:res.volume||p.volume,
+        book_title:firstMeta.book_title||p.book_title,
+        author:firstMeta.author||p.author,
+        narrator:firstMeta.narrator||p.narrator,
+        category:firstMeta.category||p.category,
+        series:firstMeta.series||p.series,
+        volume:firstMeta.volume||p.volume,
         chapter_titles,
       }));
       setAiNormStats({normalized:normCount,ads:adCount});
     }catch(e){setError('AI 识别失败: '+e.message);}
-    finally{setAiLoading(false);}
+    finally{setAiLoading(false);setAiProgress(null);}
   }
 
   async function doScrape(){
@@ -718,7 +752,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
     finally{setLoading(false);}
   }
 
-  const livePreview=folderFiles.slice(0,3).map((f,i)=>simulateTemplate(template,bookMeta,f.name,i));
+  const livePreview=folderFiles.slice(0,3).map((f,i)=>simulateTemplate(template,bookMeta,f.name,i,fmConfig.custom_ad_rules));
 
   if(!selectedFolder){
     return(
@@ -766,11 +800,28 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
             <div style={{fontWeight:600,fontSize:14}}>填写书籍元数据</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-ghost btn-sm" onClick={doAiAnalyze} disabled={aiLoading}>
-                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}{aiLoading?`AI 分析中… (每批80个，共${Math.ceil(folderFiles.length/80)}批)`:'AI 规范章节名'}
+                {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}{aiLoading?`处理中 ${aiProgress?aiProgress.cur:0}/${aiProgress?aiProgress.total:Math.ceil(folderFiles.length/80)} 批`:'AI 规范章节名'}
               </button>
-              {aiNormStats&&<span style={{fontSize:11,color:'var(--success)',display:'flex',alignItems:'center',gap:3}}>
+              {aiNormStats&&!aiLoading&&<span style={{fontSize:11,color:'var(--success)'}}>
                 ✓ 已规范 {aiNormStats.normalized} 个{aiNormStats.ads>0&&`，广告 ${aiNormStats.ads} 个`}
               </span>}
+              {aiProgress&&aiLoading&&(
+                <div style={{fontSize:11,color:'var(--text-mute)',display:'flex',flexDirection:'column',gap:3,marginLeft:4}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <div style={{width:100,height:4,background:'var(--bg-1)',borderRadius:2,overflow:'hidden'}}>
+                      <div style={{width:`${aiProgress.total?Math.round(aiProgress.cur/aiProgress.total*100):0}%`,height:'100%',background:'var(--primary)',transition:'width .3s'}}/>
+                    </div>
+                    <span>{aiProgress.total?Math.round(aiProgress.cur/aiProgress.total*100):0}%</span>
+                  </div>
+                  {aiProgress.samples.map((s,i)=>(
+                    <div key={i} style={{fontSize:10.5,color:'var(--text-faint)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:340}}>
+                      <span style={{color:'var(--text-mute)'}}>{s.from.replace(/\.[^.]+$/,'')}</span>
+                      <span style={{margin:'0 4px',color:'var(--primary)'}}>→</span>
+                      <span style={{color:'var(--success)'}}>{s.to}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <button className="btn btn-ghost btn-sm" onClick={()=>setScrapeOpen(!scrapeOpen)}>
                 <Icon id="i-search" className="icon icon-sm"/>从刮削获取
               </button>

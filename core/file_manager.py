@@ -573,51 +573,53 @@ def _make_prompt(file_names: list, is_first_batch: bool) -> str:
 {_AI_RULES}"""
 
 
-def ai_analyze(file_names: list, config: dict) -> dict:
-    """调用 AI 分批分析文件名列表，每批 {_AI_BATCH_SIZE} 个"""
+def _get_post_fn():
+    try:
+        import httpx
+        return httpx.post
+    except ImportError:
+        import requests as _req
+        return _req.post
+
+
+def _ai_call(post_fn, endpoint: str, headers: dict, model: str, prompt: str) -> dict:
+    payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
+    resp = post_fn(endpoint, headers=headers, json=payload, timeout=_AI_TIMEOUT)
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"].strip()
+    if content.startswith("```"):
+        content = re.sub(r'^```\w*\n?', '', content)
+        content = re.sub(r'\n?```$', '', content)
+    return json.loads(content)
+
+
+def ai_analyze_single_batch(file_names: list, config: dict, is_first_batch: bool = True) -> dict:
+    """调用 AI 处理单批文件名（由前端控制批次循环，以便显示进度）"""
     if not config.get("ai_enabled"):
         raise ValueError("AI 分析未启用，请在配置设置中启用")
     api_key = config.get("ai_api_key", "")
     if not api_key:
         raise ValueError("未配置 AI API Key")
-
     base_url = config.get("ai_base_url", "https://api.deepseek.com").rstrip("/")
     model    = config.get("ai_model", "deepseek-chat")
     endpoint = f"{base_url}/v1/chat/completions"
     headers  = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-    def _do_request(post_fn, prompt):
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
-        resp = post_fn(endpoint, headers=headers, json=payload, timeout=_AI_TIMEOUT)
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-        if content.startswith("```"):
-            content = re.sub(r'^```\w*\n?', '', content)
-            content = re.sub(r'\n?```$', '', content)
-        return json.loads(content)
-
     try:
-        import httpx
-        _post = httpx.post
-    except ImportError:
-        import requests as _req
-        _post = _req.post
+        result = _ai_call(_get_post_fn(), endpoint, headers, model, _make_prompt(file_names, is_first_batch))
+        return result
+    except json.JSONDecodeError as e:
+        raise ValueError(f"AI 返回内容无法解析为 JSON: {e}")
+    except Exception as e:
+        raise RuntimeError(f"AI 请求失败: {e}")
 
-    # 分批处理
-    merged_items = []
-    book_meta = {}
+
+def ai_analyze(file_names: list, config: dict) -> dict:
+    """调用 AI 分批分析文件名（后端自动分批，兼容旧调用）"""
+    merged_items, book_meta = [], {}
     batches = [file_names[i:i+_AI_BATCH_SIZE] for i in range(0, len(file_names), _AI_BATCH_SIZE)]
-
     for batch_idx, batch in enumerate(batches):
-        try:
-            prompt = _make_prompt(batch, is_first_batch=(batch_idx == 0))
-            result = _do_request(_post, prompt)
-            if batch_idx == 0:
-                book_meta = {k: result.get(k, "") for k in ("book_title","author","narrator","category","series","volume","confidence")}
-            merged_items.extend(result.get("items", []))
-        except json.JSONDecodeError as e:
-            raise ValueError(f"AI 返回内容无法解析为 JSON（第{batch_idx+1}批）: {e}")
-        except Exception as e:
-            raise RuntimeError(f"AI 请求失败（第{batch_idx+1}批，共{len(batches)}批）: {e}")
-
+        result = ai_analyze_single_batch(batch, config, is_first_batch=(batch_idx == 0))
+        if batch_idx == 0:
+            book_meta = {k: result.get(k, "") for k in ("book_title","author","narrator","category","series","volume","confidence")}
+        merged_items.extend(result.get("items", []))
     return {**book_meta, "items": merged_items}
