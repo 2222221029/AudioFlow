@@ -1399,8 +1399,6 @@ def api_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
-        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
-        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
     )
 
 
@@ -1433,8 +1431,6 @@ def api_set_config():
         allowed = {"0001-", "001-", "01-", "1-", "0001.", "001.", "01.", "1.", "none"}
         cookie_manager.set_cookie("filename_prefix_format", fmt if fmt in allowed else "0001-")
     return json_ok(
-        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
-        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
         download_dir=str(active_download_dir()),
         download_threads=cookie_manager.get_download_threads(),
         quality=subscription_manager.settings().get("quality", "M4A 96K"),
@@ -1442,44 +1438,6 @@ def api_set_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
-    )
-
-
-
-def _mask_api_key(key):
-    s = str(key or "").strip()
-    if len(s) <= 8:
-        return "*" * len(s) if s else ""
-    return s[:4] + "*" * (len(s) - 8) + s[-4:]
-
-
-@app.get("/api/config/ai")
-def api_ai_config():
-    return json_ok(
-        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
-        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
-        ai_model=cookie_manager.get_cookie("ai_model") or "deepseek-chat",
-        ai_base_url=cookie_manager.get_cookie("ai_base_url") or "https://api.deepseek.com",
-    )
-
-
-@app.post("/api/config/ai")
-def api_save_ai_config():
-    payload = request.get_json(silent=True) or {}
-    if "ai_api_key" in payload:
-        key = str(payload.get("ai_api_key") or "").strip()
-        if key:
-            cookie_manager.set_cookie("ai_api_key", key)
-        else:
-            cookie_manager.set_cookie("ai_api_key", "")
-    if "ai_model" in payload:
-        cookie_manager.set_cookie("ai_model", str(payload.get("ai_model") or "deepseek-chat").strip())
-    if "ai_base_url" in payload:
-        cookie_manager.set_cookie("ai_base_url", str(payload.get("ai_base_url") or "https://api.deepseek.com").strip())
-    return json_ok(
-        saved=True,
-        ai_enabled=bool(cookie_manager.get_cookie("ai_api_key")),
-        ai_api_key_masked=_mask_api_key(str(cookie_manager.get_cookie("ai_api_key") or "")),
     )
 
 
@@ -1754,179 +1712,6 @@ def api_wecom_callback(service_id):
     except Exception as exc:
         logging.exception("wecom callback failed: %s", service_id)
         return Response(str(exc), status=200, mimetype="text/plain")
-
-
-
-@app.get("/api/files")
-def api_list_files():
-    base_str = request.args.get("path", "").strip()
-    try:
-        base = Path(active_download_dir())
-        if base_str:
-            base = _safe_child_path(base, base_str)
-        if not base.exists():
-            return json_error("目录不存在", 404)
-        if not base.is_dir():
-            return json_error("路径不是目录", 400)
-        items = []
-        for entry in sorted(base.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
-            try:
-                stat = entry.stat()
-            except OSError:
-                continue
-            items.append({
-                "name": entry.name,
-                "path": str(entry.relative_to(active_download_dir())).replace("\\", "/"),
-                "full_path": str(entry),
-                "is_dir": entry.is_dir(),
-                "size": stat.st_size if entry.is_file() else 0,
-                "mtime": stat.st_mtime,
-                "ext": entry.suffix.lower() if entry.is_file() else "",
-            })
-        return json_ok(
-            items=items,
-            current_path=str(Path(base_str).as_posix()) if base_str else "",
-            parent_path=str(Path(base_str).parent.as_posix()) if base_str else "",
-            base_dir=str(active_download_dir()),
-        )
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-    except Exception as exc:
-        logging.exception("list files failed")
-        return json_error(str(exc), 500)
-
-
-@app.post("/api/files/rename")
-def api_rename_file():
-    payload = request.get_json(silent=True) or {}
-    file_path = str(payload.get("path") or "").strip()
-    new_name = str(payload.get("new_name") or "").strip()
-    if not file_path or not new_name:
-        return json_error("缺少 path 或 new_name 参数")
-    if "/" in new_name or "\\" in new_name:
-        return json_error("新名称不能包含路径分隔符")
-    try:
-        base = active_download_dir()
-        src = _safe_child_path(base, file_path)
-        if not src.exists():
-            return json_error("文件或目录不存在", 404)
-        dst = src.parent / new_name
-        if dst.exists():
-            return json_error("目标名称已存在", 409)
-        src.rename(dst)
-        rel_path = str(dst.relative_to(base)).replace("\\", "/")
-        return json_ok(
-            renamed=True,
-            old_name=src.name,
-            new_name=dst.name,
-            path=rel_path,
-            is_dir=dst.is_dir(),
-        )
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-    except OSError as exc:
-        return json_error(f"重命名失败: {exc}", 500)
-    except Exception as exc:
-        logging.exception("rename failed")
-        return json_error(str(exc), 500)
-
-
-@app.post("/api/files/scrape")
-def api_scrape_file():
-    payload = request.get_json(silent=True) or {}
-    file_path = str(payload.get("path") or "").strip()
-    if not file_path:
-        return json_error("缺少 path 参数")
-    try:
-        base = active_download_dir()
-        src = _safe_child_path(base, file_path)
-        if not src.exists():
-            return json_error("文件或目录不存在", 404)
-        return json_ok(
-            name=src.name,
-            path=file_path,
-            is_dir=src.is_dir(),
-            size=src.stat().st_size if src.is_file() else 0,
-            message="刮削功能暂未实现，将在后续版本集成 AI",
-        )
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-    except Exception as exc:
-        return json_error(str(exc), 500)
-
-
-@app.post("/api/files/ai-rename")
-def api_ai_rename():
-    payload = request.get_json(silent=True) or {}
-    file_path = str(payload.get("path") or "").strip()
-    if not file_path:
-        return json_error("缺少 path 参数")
-    api_key = str(cookie_manager.get_cookie("ai_api_key") or "").strip()
-    if not api_key:
-        return json_error("请先在系统设置中配置 AI API Key", 400)
-    try:
-        base = active_download_dir()
-        src = _safe_child_path(base, file_path)
-        if not src.exists():
-            return json_error("文件或目录不存在", 404)
-        name_stem = src.stem
-        ext = src.suffix
-        model = cookie_manager.get_cookie("ai_model") or "deepseek-chat"
-        base_url = cookie_manager.get_cookie("ai_base_url") or "https://api.deepseek.com"
-        prompt = (
-            "你是一个音频文件重命名助手。请根据以下文件名分析其内容，生成一个更规范、可读性更强的文件名。"
-            f"文件名：{name_stem}\n"
-            "要求：\n"
-            "1. 保留原文件中的序号信息\n"
-            "2. 如果是音频章节，提取专辑名、章节号、章节标题\n"
-            "3. 使用中文命名，去除乱码或无关字符\n"
-            "4. 只返回新文件名（不带路径和扩展名），不要任何解释"
-        )
-        resp = requests.post(
-            f"{base_url.rstrip('/')}/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 128,
-            },
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            return json_error(f"AI 请求失败: {resp.status_code} {resp.text[:200]}", 502)
-        result = resp.json()
-        new_stem = (result.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-        if not new_stem:
-            return json_error("AI 返回内容为空", 502)
-        new_name = new_stem + ext
-        if new_name == src.name:
-            new_name = new_stem + "_renamed" + ext
-        dst = src.parent / new_name
-        if dst.exists():
-            import uuid
-            new_name = new_stem + f"_{uuid.uuid4().hex[:4]}" + ext
-            dst = src.parent / new_name
-        src.rename(dst)
-        rel_path = str(dst.relative_to(base)).replace("\\", "/")
-        return json_ok(
-            renamed=True,
-            old_name=src.name,
-            new_name=dst.name,
-            path=rel_path,
-        )
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-    except requests.RequestException as exc:
-        return json_error(f"AI 请求失败: {exc}", 502)
-    except OSError as exc:
-        return json_error(f"重命名失败: {exc}", 500)
-    except Exception as exc:
-        logging.exception("ai rename failed")
-        return json_error(str(exc), 500)
 
 
 def _path_status(path):

@@ -1,0 +1,90 @@
+<svg width="400" height="400" viewBox="0 0 680 680" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>AudioFlow icon</title>
+  <desc>3D headphone icon in a circular badge, purple-to-teal, adapts to light and dark themes</desc>
+  <style>
+    .pg{fill:#080614}
+    .bd{fill:#0d0820}
+    .br{fill:none;stroke:#6d28d9;stroke-width:2}
+    .ir{fill:none;stroke:#261050;stroke-width:1}
+    .bsh{fill:none;stroke:#2d1b69;stroke-width:22;stroke-linecap:round}
+    .bmn{fill:none;stroke:#7c3aed;stroke-width:15;stroke-linecap:round}
+    .bhi{fill:none;stroke:#a78bfa;stroke-width:5;stroke-linecap:round}
+    .sl{fill:#3b1d8f}
+    .pa{fill:#100826}
+    .cs{fill:#1e1b4b}
+    .cf{fill:#4338ca}
+    .cr{fill:none;stroke:#6366f1;stroke-width:2}
+    .sk1{fill:#1e3a8a}
+    .sk2{fill:#075985}
+    .sk3{fill:#0891b2}
+    .sk4{fill:#22d3ee}
+    .sh{fill:#cffafe}
+    @media(prefers-color-scheme:light){
+      .pg{fill:#f5f3ff}
+      .bd{fill:#fdfbff}
+      .br{fill:none;stroke:#7c3aed;stroke-width:2}
+      .ir{fill:none;stroke:#e9d5ff;stroke-width:1}
+      .bsh{fill:none;stroke:#e9d5ff;stroke-width:22;stroke-linecap:round}
+      .bmn{fill:none;stroke:#7c3aed;stroke-width:15;stroke-linecap:round}
+      .bhi{fill:none;stroke:#f3e8ff;stroke-width:5;stroke-linecap:round}
+      .sl{fill:#ddd6fe}
+      .pa{fill:#ede9fe}
+      .cs{fill:#c4b5fd}
+      .cf{fill:#6d28d9}
+      .cr{fill:none;stroke:#a78bfa;stroke-width:2}
+      .sk1{fill:#3730a3}
+      .sk2{fill:#0369a1}
+      .sk3{fill:#0891b2}
+      .sk4{fill:#06b6d4}
+      .sh{fill:#e0f2fe}
+    }
+  </style>
+  <defs>
+    <clipPath id="b"><circle cx="340" cy="340" r="222"/></clipPath>
+  </defs>
+
+  <rect width="680" height="680" class="pg"/>
+  <circle cx="340" cy="340" r="222" class="bd"/>
+  <g clip-path="url(#b)">
+    <circle cx="340" cy="340" r="194" class="ir"/>
+    <circle cx="340" cy="340" r="160" class="ir"/>
+  </g>
+  <circle cx="340" cy="340" r="222" class="br"/>
+
+  <g clip-path="url(#b)">
+    <!-- Headband: three-layer stroke for 3D tube -->
+    <path d="M 214,322 C 214,180 466,180 466,322" class="bsh"/>
+    <path d="M 214,322 C 214,180 466,180 466,322" class="bmn"/>
+    <path d="M 217,318 C 217,188 463,188 463,318" class="bhi"/>
+
+    <!-- Sliders -->
+    <rect x="206" y="314" width="16" height="42" class="sl" rx="4"/>
+    <rect x="458" y="314" width="16" height="42" class="sl" rx="4"/>
+    <rect x="206" y="314" width="4" height="42" rx="2" fill="#c4b5fd" opacity="0.35"/>
+    <rect x="470" y="314" width="4" height="42" rx="2" fill="#c4b5fd" opacity="0.35"/>
+
+    <!-- Ear cushions -->
+    <ellipse cx="214" cy="384" rx="72" ry="68" class="pa"/>
+    <ellipse cx="466" cy="384" rx="72" ry="68" class="pa"/>
+
+    <!-- Left earcup -->
+    <circle cx="225" cy="375" r="58" class="cs"/>
+    <circle cx="214" cy="384" r="58" class="cf"/>
+    <circle cx="214" cy="384" r="58" class="cr"/>
+    <circle cx="214" cy="384" r="40" class="sk1"/>
+    <circle cx="214" cy="384" r="26" class="sk2"/>
+    <circle cx="214" cy="384" r="15" class="sk3"/>
+    <circle cx="214" cy="384" r="7"  class="sk4"/>
+    <circle cx="209" cy="379" r="4"  class="sh"/>
+
+    <!-- Right earcup -->
+    <circle cx="477" cy="375" r="58" class="cs"/>
+    <circle cx="466" cy="384" r="58" class="cf"/>
+    <circle cx="466" cy="384" r="58" class="cr"/>
+    <circle cx="466" cy="384" r="40" class="sk1"/>
+    <circle cx="466" cy="384" r="26" class="sk2"/>
+    <circle cx="466" cy="384" r="15" class="sk3"/>
+    <circle cx="466" cy="384" r="7"  class="sk4"/>
+    <circle cx="461" cy="379" r="4"  class="sh"/>
+  </g>
+</svg>
