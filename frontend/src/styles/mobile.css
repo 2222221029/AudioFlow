@@ -1033,6 +1033,31 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .native-search button:disabled{
   opacity:.72;
 }
+.native-topbar .chip-row{
+  width:100%;
+  margin:8px 0 0;
+  padding:0;
+  gap:10px;
+  scroll-padding-left:0;
+}
+.native-topbar .chip{
+  min-height:42px;
+  height:42px;
+  padding:0 18px;
+  border-radius:999px;
+  font-size:14px;
+  font-weight:800;
+  box-shadow:0 8px 18px -16px color-mix(in srgb,var(--aurora-a) 54%,transparent);
+}
+.native-topbar .chip.active{
+  box-shadow:0 12px 24px -18px color-mix(in srgb,var(--aurora-a) 76%,transparent);
+}
+.native-topbar .platform-chip .platform-logo{
+  width:20px;
+  height:20px;
+  flex-basis:20px;
+  border-radius:7px;
+}
 .native-view{
   display:block;
   padding:14px 14px calc(var(--tab-h) + var(--safe-bottom) + 28px);

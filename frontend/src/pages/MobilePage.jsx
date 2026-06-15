@@ -36,8 +36,8 @@ const VIEW_META = {
   cookies: {title: 'Cookie', subtitle: '平台登录态管理', icon: 'i-cookie', parent: 'more'},
   personal: {title: '个人中心', subtitle: '历史、收藏与书架', icon: 'i-user'},
   notifications: {title: '通知', subtitle: '下载、订阅与系统推送', icon: 'i-bell', parent: 'more'},
-  themes: {title: '主题', subtitle: '桌面端与移动端共用外观', icon: 'i-palette', parent: 'more'},
-  settings: {title: '设置', subtitle: '目录、音质、主题与日志', icon: 'i-settings', parent: 'more'},
+  themes: {title: '主题', subtitle: '界面主题与外观', icon: 'i-palette', parent: 'more'},
+  settings: {title: '设置', subtitle: '目录、音质与日志', icon: 'i-settings', parent: 'more'},
   more: {title: '更多', subtitle: '账号、设置与系统工具', icon: 'i-more'},
 };
 
@@ -124,7 +124,6 @@ function DiscoverView({app, switchView, searchAndShowResults}) {
         <button onClick={() => switchView('downloads')}><Icon id="i-download" /><span>任务</span></button>
         <button onClick={() => switchView('subscriptions')}><Icon id="i-bookmark" /><span>追更</span></button>
         <button onClick={() => switchView('notifications')}><Icon id="i-bell" /><span>通知</span></button>
-        <button onClick={() => switchView('themes')}><Icon id="i-palette" /><span>主题</span></button>
       </div>
 
       {searchHistory.length > 0 && (
@@ -161,8 +160,8 @@ function MoreView({app, installable, switchView}) {
   const cards = [
     {id: 'cookies', icon: 'i-cookie', title: 'Cookie 管理', sub: '扫码、浏览器抓取、手动粘贴'},
     {id: 'notifications', icon: 'i-bell', title: '通知系统', sub: '下载、订阅与外部推送'},
-    {id: 'themes', icon: 'i-palette', title: '主题外观', sub: '桌面端与移动端共用主题'},
-    {id: 'settings', icon: 'i-settings', title: '系统设置', sub: '目录、音质、主题、日志'},
+    {id: 'themes', icon: 'i-palette', title: '主题外观', sub: '界面主题与配色'},
+    {id: 'settings', icon: 'i-settings', title: '系统设置', sub: '目录、音质、日志'},
     {id: 'downloads', icon: 'i-download', title: '下载管理', sub: `${metrics.activeDownloads} 个活跃任务`},
     {id: 'subscriptions', icon: 'i-bookmark', title: '订阅管理', sub: `${subscriptions.length} 个订阅专辑`},
   ];
