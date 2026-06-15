@@ -361,10 +361,16 @@ def is_chapter_file_complete(album, chapter, index, download_dir, local_files=No
                     names.add(f"{title}{ext}".lower())
             if names & local_index.get("names", set()):
                 return True
-            if local_index.get("has_album_scope") and order in local_index.get("orders", {}):
-                return True
             norm_stems = local_index.get("norm_stems", set())
             if any(title and title in norm_stems for title in norm_titles):
+                return True
+            # 序号匹配需要同时满足：目录归属确认 + 至少有一个章节标题能在本地索引中找到对应。
+            # 这样可避免同名不同平台专辑（本地文件来自其他平台）误判为已下载。
+            index_has_title_match = bool(norm_titles and norm_stems and any(
+                any(t and (t in s or (len(t) >= 4 and s and t[:4] in s)) for t in norm_titles)
+                for s in norm_stems
+            ))
+            if local_index.get("has_album_scope") and order in local_index.get("orders", {}) and index_has_title_match:
                 return True
             return False
         for path in possible_chapter_files(album, chapter, index, download_dir, local_files=local_files):
@@ -819,13 +825,17 @@ class SubscriptionManager:
                 file_missing_count += 1
             if state and state.get("status") not in ("downloaded", "skipped") and not local_ok:
                 partial_count += 1
-            if is_new or not local_ok or state.get("status") in ("failed", "partial", "missing") or (state_restricted and not restricted_now):
+            # local_ok=True 是最高优先级：文件确实存在时绝不重复下载，
+            # 无论 is_new 还是历史 state 如何（避免跨检测周期的重复下载）。
+            if not local_ok:
                 item = dict(chapter)
                 item["_subscription_key"] = key
                 item["_missing_reason"] = "restricted_released" if state_restricted and not restricted_now else "new" if is_new else "missing_or_incomplete"
                 missing.append(item)
         file_count = 0 if skip_local else local_index.get("file_count", 0)
-        if not saved_keys and file_count > len(matched_keys):
+        # 「按数量推断」只在有标题级别的实际匹配（matched_keys 非空）时才生效，
+        # 防止跨平台同名专辑（本地文件来自另一平台）让系统误以为已全部下载。
+        if not saved_keys and file_count > len(matched_keys) and matched_keys:
             known_local_count = min(len(remote_chapters or []), file_count)
             assumed_keys = set()
             now = utc_now_iso()
