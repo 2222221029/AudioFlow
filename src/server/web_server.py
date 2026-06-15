@@ -2707,6 +2707,20 @@ def _sanitize_download_folder_name(name):
     return text[:200] or "未知专辑"
 
 
+def _album_download_folder(album, options=None):
+    album = normalize_album(album)
+    options = dict(options or {})
+    root = Path(resolve_download_dir(options.get("download_dir")))
+    title = album.get("title") or ""
+    if not title:
+        return None
+    parts = [root]
+    if cookie_manager.get_cookie("organize_by_platform_enabled") == "true":
+        parts.append(_sanitize_download_folder_name(album.get("platform") or "未知平台"))
+    parts.append(_sanitize_download_folder_name(title))
+    return Path(*parts)
+
+
 def _album_source_id(album):
     for key in ("id", "album_id", "book_id", "contentId", "content_id"):
         value = (album or {}).get(key)
@@ -2739,12 +2753,9 @@ def _album_source_payload(album, options=None, task_id=""):
 
 def _write_album_source_file(album, options=None, task_id=""):
     try:
-        album = normalize_album(album)
-        title = album.get("title") or ""
-        if not title:
+        folder = _album_download_folder(album, options)
+        if not folder:
             return
-        root = Path(resolve_download_dir((options or {}).get("download_dir")))
-        folder = root / _sanitize_download_folder_name(title)
         folder.mkdir(parents=True, exist_ok=True)
         payload = _album_source_payload(album, options, task_id)
         (folder / SOURCE_INFO_FILE).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

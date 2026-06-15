@@ -220,7 +220,7 @@ export function useAudioFlowApp() {
   const completedDownloads = downloads.filter((task) => task.status === 'completed').length;
   const failedDownloads = downloads.filter((task) => ['failed', 'partial'].includes(task.status)).length;
   const interruptedDownloads = downloads.filter((task) => ['interrupted', 'stopped'].includes(task.status)).length;
-  const subscriptionMissing = subscriptions.reduce((sum, item) => sum + Number((item.stats || {}).missing || item.last_diff?.missing_count || 0), 0);
+  const subscriptionMissing = subscriptions.length;
 
   const loadConfig = useCallback(async () => {
     const data = await api('/api/config');
