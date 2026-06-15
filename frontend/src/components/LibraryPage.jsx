@@ -7,8 +7,8 @@ import {Icon} from './Icons.jsx';
 
 const TABS = [
   ['scan',      'i-folder',   '书库扫描'],
+  ['rename',    'i-edit',     '章节重命名'],
   ['scrape',    'i-tag',      '刮削写标签'],
-  ['rename',    'i-edit',     '智能重命名'],
   ['templates', 'i-file',     '模板管理'],
   ['history',   'i-clock',    '历史回滚'],
   ['settings',  'i-settings', '系统设置'],
@@ -169,9 +169,9 @@ export function LibraryPage(){
 
       {/* 内容区 */}
       <div style={{flex:1,overflow:'auto',padding:'16px'}}>
-        {tab==='scan'      && <ScanTab selectedFolder={folder} onSelectFolder={f=>{setFolder(f);setTab('scrape');}} onBrowse={openBrowser}/>}
+        {tab==='scan'      && <ScanTab selectedFolder={folder} onSelectFolder={f=>{setFolder(f);setTab('rename');}} onBrowse={openBrowser}/>}
+        {tab==='rename'    && <RenameTab selectedFolder={folder} onBrowse={()=>openBrowser(folder)} onFolderChange={setFolder} onGotoHistory={()=>setTab('history')} onGotoScrape={()=>setTab('scrape')}/>}
         {tab==='scrape'    && <ScrapeTab selectedFolder={folder} onBrowse={()=>openBrowser(folder)} onFolderChange={setFolder}/>}
-        {tab==='rename'    && <RenameTab selectedFolder={folder} onBrowse={()=>openBrowser(folder)} onFolderChange={setFolder} onGotoHistory={()=>setTab('history')}/>}
         {tab==='templates' && <TemplatesTab/>}
         {tab==='history'   && <HistoryTab/>}
         {tab==='settings'  && <SettingsTab/>}
@@ -330,10 +330,21 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
     api('/api/meta/config').then(r=>r.ok&&setParams(r.params)).catch(()=>{});
   },[]);
 
-  // selectedFolder 变化时同步到 params
+  // selectedFolder 变化时：同步到 params，并自动读取 source.json
   useEffect(()=>{
-    if(selectedFolder&&params)
-      setParams(p=>({...p,input_folder:selectedFolder}));
+    if(!selectedFolder)return;
+    if(params) setParams(p=>({...p,input_folder:selectedFolder}));
+    api(`/api/meta/read-source?path=${encodeURIComponent(selectedFolder)}`).then(r=>{
+      if(!r.ok)return;
+      const s=r.source||{};
+      // 填入平台与ID
+      const src=s.api_source||s.platform||'';
+      const id=s.album_id||s.id||'';
+      if(src) setApiSource(src);
+      if(id){ setMetaTab('id'); setApiId(id); }
+      // 如果有封面URL直接更新预览
+      if(s.cover) _saveCoverPreview({cover_url:s.cover});
+    }).catch(()=>{});
   },[selectedFolder]);
 
   // SSE 或轮询获取状态
@@ -694,9 +705,9 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
   );
 }
 
-// ─── Tab 3：智能重命名 ─────────────────────────────────────────────────────────
+// ─── Tab 2：章节重命名 ────────────────────────────────────────────────────────
 
-function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory}){
+function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoScrape}){
   const[step,setStep]=useState(1);
   const[folderPath,setFolderPath]=useState(selectedFolder||'');
   const[folderFiles,setFolderFiles]=useState([]);
@@ -767,13 +778,15 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory}){
     finally{setLoading(false);}
   }
 
+  const[applyResult,setApplyResult]=useState(null);
+
   async function doApply(){
-    setLoading(true);setError('');
+    setLoading(true);setError('');setApplyResult(null);
     try{
       const r=await api('/api/file-manager/rename-apply',{method:'POST',body:JSON.stringify({previews,note})});
       if(!r.ok)throw new Error(r.error);
-      alert(`重命名完成：成功 ${r.success} 个，失败 ${r.failed} 个`);
-      onGotoHistory();
+      setApplyResult({success:r.success,failed:r.failed});
+      onFolderChange(folderPath);
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
   }
@@ -935,12 +948,30 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory}){
             <label style={S.label}>操作备注（可选）</label>
             <input value={note} onChange={e=>setNote(e.target.value)} placeholder="记录此次操作目的..." style={S.input}/>
           </div>
-          <div style={{display:'flex',gap:8}}>
-            <button className="btn btn-ghost" onClick={()=>setStep(3)}>上一步</button>
-            <button className="btn btn-primary" onClick={doApply} disabled={loading}>
-              {loading?<span className="loading"/>:<Icon id="i-check" className="icon icon-sm"/>}执行重命名
-            </button>
-          </div>
+          {applyResult?(
+            <div style={{background:'rgba(16,185,129,.08)',border:'1px solid var(--success)',borderRadius:8,padding:'14px 16px'}}>
+              <div style={{fontWeight:600,color:'var(--success)',fontSize:14,marginBottom:8}}>
+                ✓ 重命名完成 — 成功 {applyResult.success} 个{applyResult.failed>0&&`，失败 ${applyResult.failed} 个`}
+              </div>
+              <div style={{fontSize:12.5,color:'var(--text-mute)',marginBottom:12}}>
+                章节文件已规范化，现在可以进行元数据刮削写标签操作。
+              </div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <button className="btn btn-primary" onClick={onGotoScrape}>
+                  <Icon id="i-tag" className="icon icon-sm"/>前往刮削写标签
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={onGotoHistory}>查看历史记录</button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>{setStep(1);setApplyResult(null);}}>重新操作</button>
+              </div>
+            </div>
+          ):(
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-ghost" onClick={()=>setStep(3)}>上一步</button>
+              <button className="btn btn-primary" onClick={doApply} disabled={loading}>
+                {loading?<span className="loading"/>:<Icon id="i-check" className="icon icon-sm"/>}执行重命名
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

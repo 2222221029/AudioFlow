@@ -3846,6 +3846,24 @@ def meta_browse():
     result = meta_files.browse(path)
     return jsonify(ok=True, browser=result)
 
+@app.route('/api/meta/read-source', methods=['GET'])
+def meta_read_source():
+    if not current_user():
+        return json_error("未登录", 401)
+    path = request.args.get('path', '').strip()
+    if not path:
+        return jsonify(ok=False, error='未提供路径')
+    folder = meta_files.safe_path(path)
+    src_file = folder / SOURCE_INFO_FILE
+    if not src_file.exists():
+        return jsonify(ok=False, error='未找到 source.json')
+    try:
+        data = json.loads(src_file.read_text(encoding='utf-8'))
+        return jsonify(ok=True, source=data)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e))
+
+
 @app.route('/api/meta/cover', methods=['GET'])
 def meta_cover():
     if not current_user():
