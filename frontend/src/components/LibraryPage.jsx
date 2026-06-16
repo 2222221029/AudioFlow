@@ -244,9 +244,9 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
       if(r.ok) setParams({
         ...(r.params||{}),
         title:'',subtitle:'',author:'',anchor:'',
-        year:'',category:'',finished:'',
+        platform:'',year:'',category:'',finished:'',
         series_name:'',series_number:'',
-        album_tags:[],team:'',
+        album_tags:[],team:'RL',
         manual_desc:'',manual_cover_path:'',
       });
     }).catch(()=>{});
@@ -515,22 +515,25 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
               </div>
               {/* 字段网格 */}
               <div style={{flex:1,display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:10}}>
-                {[['title','专辑标题'],['subtitle','副标题'],['author','原著作者'],['anchor','演播艺术家']].map(([k,l])=>(
-                  <div key={k}><label style={S.label}>{l}</label><input style={S.input} value={params[k]||''} onChange={e=>setParam(k,e.target.value)}/></div>
+                {[['title','专辑标题',true],['subtitle','副标题',false],['author','原著作者',true],['anchor','演播艺术家',true]].map(([k,l,req])=>(
+                  <div key={k}><label style={S.label}>{l}{req&&<span style={{color:'var(--danger)',marginLeft:2}}>*</span>}</label><input style={S.input} value={params[k]||''} onChange={e=>setParam(k,e.target.value)}/></div>
                 ))}
-                <div><label style={S.label}>发布平台</label>
-                  <select style={S.select} value={params.platform} onChange={e=>setParam('platform',e.target.value)}>
+                <div><label style={S.label}>发布平台<span style={{color:'var(--danger)',marginLeft:2}}>*</span></label>
+                  <select style={S.select} value={params.platform||''} onChange={e=>setParam('platform',e.target.value)}>
+                    <option value="">请选择平台</option>
                     {(options.platforms||[]).map(p=><option key={p}>{p}</option>)}
                   </select>
                 </div>
-                <div><label style={S.label}>发布年份</label><input style={S.input} value={params.year||''} onChange={e=>setParam('year',e.target.value)}/></div>
-                <div><label style={S.label}>专辑分类</label>
-                  <select style={S.select} value={params.category} onChange={e=>setParam('category',e.target.value)}>
+                <div><label style={S.label}>发布年份<span style={{color:'var(--danger)',marginLeft:2}}>*</span></label><input style={S.input} value={params.year||''} placeholder="如：2024" onChange={e=>setParam('year',e.target.value)}/></div>
+                <div><label style={S.label}>专辑分类<span style={{color:'var(--danger)',marginLeft:2}}>*</span></label>
+                  <select style={S.select} value={params.category||''} onChange={e=>setParam('category',e.target.value)}>
+                    <option value="">请选择分类</option>
                     {(options.categories||[]).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
-                <div><label style={S.label}>完结状态</label>
-                  <select style={S.select} value={params.finished} onChange={e=>setParam('finished',e.target.value)}>
+                <div><label style={S.label}>完结状态<span style={{color:'var(--danger)',marginLeft:2}}>*</span></label>
+                  <select style={S.select} value={params.finished||''} onChange={e=>setParam('finished',e.target.value)}>
+                    <option value="">请选择状态</option>
                     {(options.finished||[]).map(f=><option key={f}>{f}</option>)}
                   </select>
                 </div>
@@ -541,7 +544,7 @@ function ScrapeTab({selectedFolder,onBrowse,onFolderChange}){
           <div className="glass" style={{padding:14}}>
             <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>扩展信息</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}}>
-              <div><label style={S.label}>系列名称</label><input style={S.input} value={params.series_name||''} placeholder="例：斗罗大陆" onChange={e=>setParam('series_name',e.target.value)}/></div>
+              <div><label style={S.label}>系列名称</label><input style={S.input} value={params.series_name||''} placeholder="例：剑来" onChange={e=>setParam('series_name',e.target.value)}/></div>
               <div><label style={S.label}>系列序号</label><input style={S.input} value={params.series_number||''} placeholder="例：1（多部用逗号分隔）" onChange={e=>setParam('series_number',e.target.value)}/></div>
               <div style={{gridColumn:'1/-1'}}>
                 <label style={S.label}>专辑标签（按 Enter 或逗号添加）</label>
