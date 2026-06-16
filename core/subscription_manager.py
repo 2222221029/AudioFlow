@@ -268,22 +268,18 @@ def indexed_album_audio_files(index_files, album):
     result = []
     seen = set()
     has_album_scope = False
+    skipped_by_platform = []  # 标题/ID 命中但被平台过滤跳过的文件（用于 fail-safe 回退）
     for item in index_files or []:
         path_text = str((item or {}).get("path") or "")
         if not path_text:
-            continue
-        # 跨平台同名专辑：路径含其他平台目录段时排除
-        if platform_conflicts(path_platform_norm(path_text, is_file=True), album_plat):
             continue
         norm_parent = str((item or {}).get("norm_parent") or "")
         norm_path = normalize_match_text(path_text)
         matched = False
         if any(norm_parent == t or norm_parent in t or t in norm_parent or t in norm_path for t in norm_titles):
             matched = True
-            has_album_scope = True
         elif any(value and value in path_text for value in id_values):
             matched = True
-            has_album_scope = True
         if not matched:
             continue
         try:
@@ -294,8 +290,23 @@ def indexed_album_audio_files(index_files, album):
             resolved = path
         if resolved in seen:
             continue
+        # 跨平台同名专辑：路径含其他平台目录段且与本专辑平台不符时先跳过，但记录备用
+        if platform_conflicts(path_platform_norm(path_text, is_file=True), album_plat):
+            skipped_by_platform.append((resolved, path))
+            continue
         seen.add(resolved)
         result.append(path)
+        has_album_scope = True
+    # fail-safe：平台过滤后无任何匹配，但存在被平台过滤跳过的同名文件，
+    # 多为 album.platform 与下载目录平台段名不一致（如英文/变体/缺失）导致的误排除。
+    # 此时回退采用这些文件，优先保证「本地已下载文件被识别、不重复创建下载任务」。
+    if not result and skipped_by_platform:
+        for resolved, path in skipped_by_platform:
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            result.append(path)
+        has_album_scope = True
     return result, has_album_scope
 
 
@@ -590,21 +601,25 @@ class SubscriptionManager:
         id_values = album_id_values(album)
         album_plat = album_platform_norm(album)
         count = 0
+        skipped = 0  # 标题/ID 命中但被平台过滤跳过的数量（用于 fail-safe）
         for item in files:
             norm_parent = item.get("norm_parent") or ""
             path_text = str(item.get("path") or "")
-            # 跨平台同名专辑：路径含其他平台目录段时排除
-            if platform_conflicts(path_platform_norm(path_text, is_file=True), album_plat):
-                continue
             norm_path = normalize_match_text(path_text)
-            if any(
+            title_id_match = any(
                 norm_parent == t or norm_parent in t or t in norm_parent or t in norm_path
                 for t in norm_titles
-            ):
-                count += 1
+            ) or any(value and value in path_text for value in id_values)
+            if not title_id_match:
                 continue
-            if any(value and value in path_text for value in id_values):
-                count += 1
+            # 跨平台同名专辑：路径含其他平台目录段且与本专辑平台不符时先跳过
+            if platform_conflicts(path_platform_norm(path_text, is_file=True), album_plat):
+                skipped += 1
+                continue
+            count += 1
+        # fail-safe：平台过滤后为 0 但有同名文件被过滤 → 多为平台名不一致误排除，回退计入
+        if count == 0 and skipped:
+            count = skipped
         return count
 
     def indexed_album_files(self, album, download_dir, max_age=3600):
