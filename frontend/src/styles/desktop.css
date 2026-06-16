@@ -30,11 +30,23 @@
   --ease-out:cubic-bezier(.16,1,.3,1);
 }
 
-/* ===== 全局无障碍与质感（零功能影响）===== */
-:where(button,a,input,select,textarea,[role="button"],[tabindex]):focus-visible{
+/* ===== 全局无障碍与交互态（零功能影响）===== */
+/* 按钮/链接：键盘焦点 outline */
+:where(button,a,[role="button"],[tabindex]):focus-visible{
   outline:2px solid var(--primary);
   outline-offset:2px;
   border-radius:var(--radius-sm);
+}
+/* 输入控件：统一过渡 + 焦点高亮边框与柔和 ring（补齐此前缺失的焦点反馈）*/
+input,select,textarea{
+  transition:border-color var(--dur-fast) var(--ease-standard),
+             box-shadow var(--dur-fast) var(--ease-standard);
+}
+input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+select:focus-visible,textarea:focus-visible{
+  outline:none;
+  border-color:var(--border-hi);
+  box-shadow:0 0 0 3px var(--border-hi);
 }
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{
