@@ -2943,6 +2943,28 @@ def _safe_account_label(value, *, allow_long=False):
     return text
 
 
+_xmly_account_cache = {}  # hash(cookie) -> (timestamp, info)
+_XMLY_ACCOUNT_TTL = 3600
+
+
+def _xmly_account_info(cookie):
+    """用 Cookie 调喜马拉雅官方 getCurrentUser 接口获取昵称/VIP（带 1 小时缓存，避免每次刷新都请求）。"""
+    if not cookie:
+        return {}
+    key = hash(str(cookie))
+    now = time.time()
+    cached = _xmly_account_cache.get(key)
+    if cached and now - cached[0] < _XMLY_ACCOUNT_TTL:
+        return cached[1]
+    info = {}
+    try:
+        info = search_manager.ximalaya_manager.get_account_info(cookie) or {}
+    except Exception:
+        logging.debug("xmly account info fetch failed", exc_info=True)
+    _xmly_account_cache[key] = (now, info)
+    return info
+
+
 def _cookie_account_display(platform, cookie):
     if not cookie:
         return {"account_name": "", "account_id": ""}
@@ -2974,7 +2996,18 @@ def _cookie_account_display(platform, cookie):
         token = pairs.get("_token") or ""
         if token and "&" in token:
             account_id = account_id or token.split("&", 1)[0]
-        name = _safe_account_label(name) or (_safe_account_label(account_id) if account_id else "")
+        # 用官方接口补充真实昵称与 VIP 状态（cookie 里没有这些信息）
+        acc = _xmly_account_info(cookie)
+        if acc.get("nickname"):
+            name = acc["nickname"]
+        else:
+            name = _safe_account_label(name) or (_safe_account_label(account_id) if account_id else "")
+        return {
+            "account_name": name,
+            "account_id": _safe_account_label(account_id, allow_long=True),
+            "is_vip": bool(acc.get("is_vip")),
+            "vip_label": acc.get("vip_label", ""),
+        }
     elif platform == "netease":
         name = _safe_account_label(name)
     else:

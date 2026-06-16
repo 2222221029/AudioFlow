@@ -654,6 +654,13 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           <PlatformLogo value={platform.key} name={platform.name} />
           <span className="cookie-platform-title">{platform.name}</span>
           {!noCookie && ok && info.account_name && <span className="cookie-account" title={info.account_id ? `${info.account_name} (${info.account_id})` : info.account_name}>{info.account_name}</span>}
+          {!noCookie && ok && info.vip_label && !['普通用户', '未登录', ''].includes(info.vip_label) && (
+            <span title="喜马拉雅会员状态" style={{
+              fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, marginLeft: 4, whiteSpace: 'nowrap',
+              background: String(info.vip_label).includes('白金') ? 'linear-gradient(135deg,#d4d4d8,#a1a1aa)' : 'linear-gradient(135deg,#fbbf24,#d97706)',
+              color: '#fff',
+            }}>{info.vip_label}</span>
+          )}
         </span>
         <span className={`cookie-status ${ok || noCookie ? 'cookie-yes' : 'cookie-no'}`}>{noCookie ? '免登录' : ok ? '已设置' : '未设置'}</span>
       </div>

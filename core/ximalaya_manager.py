@@ -1720,3 +1720,55 @@ class XimalayaManager:
         if self.user_id:
             params['u'] = self.user_id
         return params
+
+    def get_account_info(self, cookie_string: str = None) -> dict:
+        """用 Cookie 调喜马拉雅官方接口获取账号昵称与 VIP 状态。
+
+        使用 web 端 getCurrentUser 接口（与浏览器登录态完全一致，喜马拉雅官方公开接口），
+        无需逆向任何第三方软件。返回:
+        {logged_in, nickname, uid, is_vip, vip_label}
+        """
+        cookie = cookie_string if cookie_string is not None else self.cookie_string
+        info = {"logged_in": False, "nickname": "", "uid": "", "is_vip": False, "vip_label": "未登录"}
+        if not cookie:
+            return info
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                              '(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                'Referer': 'https://www.ximalaya.com/',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Cookie': cookie if isinstance(cookie, str) else str(cookie),
+            }
+            resp = self.session.get(
+                'https://www.ximalaya.com/revision/main/getCurrentUser',
+                headers=headers, timeout=10,
+            )
+            if resp.status_code != 200:
+                return info
+            data = resp.json()
+            d = data.get('data') if isinstance(data, dict) else None
+            if not (isinstance(data, dict) and data.get('ret') == 200 and isinstance(d, dict)):
+                return info
+            info['logged_in'] = True
+            info['uid'] = str(d.get('uid') or d.get('userId') or '')
+            info['nickname'] = str(d.get('nickname') or d.get('nickName') or d.get('userName') or '').strip()
+            # VIP 判定：isVip 为基础会员；并尽量识别白金/超级会员等更高等级
+            is_vip = bool(d.get('isVip') or d.get('vip') or d.get('isVipUser'))
+            info['is_vip'] = is_vip
+            vip_text = " ".join(
+                str(d.get(k) or "") for k in
+                ('vipResourceType', 'vipType', 'vipGrade', 'vipName', 'memberType', 'gradeName')
+            )
+            if is_vip:
+                if '白金' in vip_text or 'platinum' in vip_text.lower() or str(d.get('vipResourceType') or '') == '2':
+                    info['vip_label'] = '白金VIP'
+                else:
+                    info['vip_label'] = 'VIP会员'
+            else:
+                info['vip_label'] = '普通用户'
+            print(f"👤 喜马拉雅账号: {info['nickname']} ({info['vip_label']})")
+        except Exception as e:
+            print(f"⚠️ 获取喜马拉雅账号信息失败: {e}")
+        return info
