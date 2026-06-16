@@ -924,6 +924,21 @@ class SubscriptionManager:
             if assumed_keys:
                 missing = [chapter for chapter in missing if chapter_key(chapter) not in assumed_keys]
                 file_missing_count = max(0, len(remote_chapters or []) - known_local_count)
+        # 文件数兜底：本地实际音频文件数已 >= 远端章节总数，说明文件其实都在
+        # （常见于重命名/刮削后文件名与远端章节标题对不上，导致逐章匹配漏判大量章节）。
+        # 此时不再报缺失，避免每次「补全缺失」都创建一个文件已存在、被全部跳过的无效下载任务。
+        remote_total_count = len(remote_chapters or [])
+        if not skip_local and remote_total_count > 0 and file_count >= remote_total_count and missing:
+            now = utc_now_iso()
+            for chapter in remote_chapters or []:
+                if not isinstance(chapter, dict):
+                    continue
+                k = chapter_key(chapter)
+                # 不覆盖「已确认受限」状态；其余按本地已存在标记为已下载
+                if (downloaded.get(k) or {}).get("status") != "restricted":
+                    downloaded[k] = {"status": "downloaded", "updated_at": now, "source": "local-count-full"}
+            missing = []
+            file_missing_count = 0
         return {
             "missing": self.dedupe_chapters(missing),
             "new_count": new_count,
