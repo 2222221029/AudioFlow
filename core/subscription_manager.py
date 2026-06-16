@@ -849,6 +849,11 @@ class SubscriptionManager:
             state = downloaded.get(key, {})
             restricted_now = is_restricted_chapter(chapter)
             state_restricted = state.get("status") == "restricted"
+            # 只有「实际下载失败并确认受限」(confirmed=True，由 mark_download_results 写入)
+            # 才算真正受限。仅凭元数据字段(isFree/isAuthorized/isVip 等)判定的受限并不可靠：
+            # 能否下载取决于用户 cookie 的会员/已购权限，元数据无法反映。
+            # 因此元数据疑似受限的章节仍会进入待下载列表去实际尝试（与手动全选下载一致）。
+            confirmed_restricted = bool(state_restricted and state.get("confirmed"))
             state_ok = state.get("status") in ("downloaded", "skipped")
             local_ok = False if skip_local else is_chapter_file_complete(
                 album,
@@ -862,14 +867,18 @@ class SubscriptionManager:
                 local_ok = True
             if local_ok:
                 matched_keys.add(key)
-            if restricted_now and not local_ok:
+                # 本地已存在 → 清除可能残留的受限标记
+                if state_restricted:
+                    downloaded.pop(key, None)
+                    state = {}
+            # 已确认受限且本次元数据仍受限 → 跳过，避免对真 VIP 章节无限重试
+            if confirmed_restricted and restricted_now and not local_ok:
                 restricted_count += 1
-                downloaded[key] = {
-                    "status": "restricted",
-                    "updated_at": now,
-                    "reason": "会员/白金专属章节，等待后续解锁",
-                }
                 continue
+            # 未经下载确认的旧受限标记（多为元数据误判）→ 清除，让其重新尝试下载
+            if state_restricted and not confirmed_restricted:
+                downloaded.pop(key, None)
+                state = {}
             if is_new:
                 new_count += 1
             if not local_ok:
@@ -956,6 +965,9 @@ class SubscriptionManager:
                 "updated_at": now,
                 "error": chapter.get("_error", "") if isinstance(chapter, dict) else "",
                 "reason": "会员/白金专属章节，等待后续解锁" if restricted else "",
+                # confirmed=True 表示这是实际下载失败确认的受限（区别于订阅检测时仅凭元数据的预判）。
+                # diff_chapters 只跳过 confirmed 的受限章节，避免对真 VIP 无限重试。
+                "confirmed": bool(restricted),
             }
         item["updated_at"] = now
         self.save()
