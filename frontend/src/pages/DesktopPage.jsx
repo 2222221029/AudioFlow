@@ -56,7 +56,7 @@ export default function DesktopPage() {
   return (
     <>
       <IconSprite />
-      <div className="app">
+      <div className={page === 'search' ? 'app' : 'app no-topbar'}>
         <aside className="sidebar">
           <div className="brand">
             <div className="brand-logo"><AppLogo /></div>
@@ -81,14 +81,16 @@ export default function DesktopPage() {
           </div>
         </aside>
 
-        <header className="topbar">
-          <div className="search-wrap">
-            <span className="search-icon"><Icon id="i-search" /></span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && actions.doSearch()} className="search-input" placeholder="搜书名、主播、专辑 ID 或分享链接，回车搜索" />
-          </div>
-          <PlatformSelect platform={platform} setPlatform={setPlatform} />
-          <button className="btn btn-primary" disabled={busy.search} onClick={actions.doSearch}>{busy.search ? <span className="loading" /> : <Icon id="i-search" className="icon icon-sm" />}搜索</button>
-        </header>
+        {page === 'search' && (
+          <header className="topbar">
+            <div className="search-wrap">
+              <span className="search-icon"><Icon id="i-search" /></span>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && actions.doSearch()} className="search-input" placeholder="搜书名、主播、专辑 ID 或分享链接，回车搜索" />
+            </div>
+            <PlatformSelect platform={platform} setPlatform={setPlatform} />
+            <button className="btn btn-primary" disabled={busy.search} onClick={actions.doSearch}>{busy.search ? <span className="loading" /> : <Icon id="i-search" className="icon icon-sm" />}搜索</button>
+          </header>
+        )}
 
         <main className="main">
           {page === 'search' && <SearchPage app={app} />}

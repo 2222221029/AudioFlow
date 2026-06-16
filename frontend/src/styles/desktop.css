@@ -14,6 +14,8 @@
   --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px;
   /* 圆角阶梯 */
   --radius-sm:10px; --radius-md:12px; --radius-lg:16px; --radius-xl:20px;
+  /* 主色柔光（随主题，供高亮底/选中态等使用）*/
+  --primary-soft:color-mix(in srgb, var(--primary) 16%, transparent);
   /* 字号阶梯 */
   --fs-display:30px; --fs-h1:22px; --fs-h2:18px; --fs-h3:15px;
   --fs-body:13.5px; --fs-caption:12px; --fs-micro:11px;
@@ -298,6 +300,8 @@ button{font-family:inherit;background:transparent;color:inherit;border:0}
   border:1px solid var(--border);border-radius:22px;padding:0 22px;display:flex;align-items:center;gap:14px;transition:background .3s ease,border-color .3s ease;
   position:relative;z-index:120}
 .main{grid-area:main;background:transparent;overflow:auto;padding:2px 4px}
+/* 非搜索页隐藏顶部搜索栏：栅格收为单行，内容区占满顶部空间 */
+.app.no-topbar{grid-template-rows:1fr;grid-template-areas:"side main"}
 
 /* 品牌 */
 .brand{display:flex;align-items:center;gap:11px;padding:10px 8px;border-radius:14px;
