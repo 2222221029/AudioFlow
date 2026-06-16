@@ -296,70 +296,56 @@ class CookieManager:
             del self.requesting_cookies[platform]
         
     def get_download_dir(self):
-        """获取下载目录"""
-        # 确保下载目录存在
+        """获取下载目录。
+
+        重要：旧版本在目录暂不可写时会回退到 Path.home()/'audioflow'（容器内即 /app/audioflow）
+        或临时目录，并改写、持久化 self.download_dir。但这些目录不是 Docker 挂载卷，
+        容器重启即丢失数据，且一次偶发的写测试失败（NAS 挂载延迟/瞬时权限）会永久污染配置。
+
+        现行为：
+        - 自动修正历史污染：若 self.download_dir 指向 home/temp 下的 audioflow，强制回到
+          环境变量指定的挂载下载目录（DOWNLOAD_DIR，默认 /app/downloads）。
+        - 自定义目录暂不可写时，本次降级到挂载下载目录（持久卷），不再写非挂载卷，
+          且不持久化覆盖用户配置——目录恢复后自动用回。
+        """
+        import tempfile
+        polluted = {
+            str(Path.home() / 'audioflow'),
+            str(Path(tempfile.gettempdir()) / 'audioflow'),
+        }
+        if self.download_dir in polluted:
+            self.download_dir = str(download_dir())
+            self.download_dir_custom = False
         if not self.download_dir_custom:
             self.download_dir = str(download_dir())
-        download_path = Path(self.download_dir)
-        try:
-            download_path.mkdir(parents=True, exist_ok=True)
-            # 检查目录是否真的可写
-            test_file = download_path / ".test_write_permission"
-            test_file.touch()
-            test_file.unlink()
-        except PermissionError:
-            if not self.download_dir_custom:
-                return self.download_dir
-            # 如果权限不足，尝试使用用户主目录
+
+        def _usable(p):
             try:
-                user_dir = Path.home() / 'audioflow'
-                user_dir.mkdir(parents=True, exist_ok=True)
-                # 检查目录是否可写
-                test_file = user_dir / ".test_write_permission"
+                path = Path(p)
+                path.mkdir(parents=True, exist_ok=True)
+                test_file = path / ".test_write_permission"
                 test_file.touch()
                 test_file.unlink()
-                self.download_dir = str(user_dir)
-                print(f"⚠️ 无权限访问原下载目录，已切换到用户主目录: {self.download_dir}")
-            except Exception as e:
-                # 如果用户主目录也不可用，使用临时目录
-                import tempfile
-                temp_dir = Path(tempfile.gettempdir()) / 'audioflow'
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                self.download_dir = str(temp_dir)
-                print(f"⚠️ 无法创建用户目录，已切换到临时目录: {self.download_dir}")
-        except FileNotFoundError:
-            if not self.download_dir_custom:
-                return self.download_dir
-            # 如果路径不存在，尝试使用用户主目录
-            try:
-                user_dir = Path.home() / 'audioflow'
-                user_dir.mkdir(parents=True, exist_ok=True)
-                self.download_dir = str(user_dir)
-                print(f"⚠️ 原下载路径不存在，已切换到用户主目录: {self.download_dir}")
-            except Exception as e:
-                # 如果用户主目录也不可用，使用临时目录
-                import tempfile
-                temp_dir = Path(tempfile.gettempdir()) / 'audioflow'
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                self.download_dir = str(temp_dir)
-                print(f"⚠️ 无法创建用户目录，已切换到临时目录: {self.download_dir}")
-        except Exception as e:
-            if not self.download_dir_custom:
-                return self.download_dir
-            # 处理其他异常
-            try:
-                user_dir = Path.home() / 'audioflow'
-                user_dir.mkdir(parents=True, exist_ok=True)
-                self.download_dir = str(user_dir)
-                print(f"⚠️ 下载目录创建失败({str(e)})，已切换到用户主目录: {self.download_dir}")
+                return True
             except Exception:
-                # 最后的备用方案
-                import tempfile
-                temp_dir = Path(tempfile.gettempdir()) / 'audioflow'
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                self.download_dir = str(temp_dir)
-                print(f"⚠️ 所有目录创建都失败，已切换到临时目录: {self.download_dir}")
-        return self.download_dir
+                return False
+
+        target = self.download_dir
+        if _usable(target):
+            return target
+        # 降级到环境变量指定的挂载下载目录（持久卷，避免数据丢失），仅本次生效、不持久化
+        env_dir = str(download_dir())
+        if env_dir != target and _usable(env_dir):
+            print(f"⚠️ 下载目录 {target} 暂不可写，本次降级到挂载下载目录: {env_dir}")
+            return env_dir
+        # 兜底临时目录（仅本次，不持久化）
+        temp_dir = str(Path(tempfile.gettempdir()) / 'audioflow')
+        try:
+            Path(temp_dir).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        print(f"⚠️ 下载目录与挂载目录均不可写，本次临时使用: {temp_dir}")
+        return temp_dir
         
     def set_download_dir(self, value):
         """设置下载目录"""
