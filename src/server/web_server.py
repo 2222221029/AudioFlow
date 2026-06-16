@@ -3667,13 +3667,20 @@ def _load_qidian_personal(feature):
             account = api.get_qidian_user_account()
             if not account:
                 raise RuntimeError("起点账号校验失败，请在个人中心重新扫码或粘贴 Cookie")
+            # 对齐已验证可用的书架请求方式：用纯浏览器 headers + pageSize=50。
+            # 此前用 APP 专用 headers(qidian_headers 含 Platform/AppId/YwKey) + pageSize=100，
+            # 被起点网关判为「参数错误」。
             resp = api.qidian_session.get(
                 "https://wxapp.qidian.com/api/bookShelf/list",
-                params={"page": 1, "pageSize": 100},
+                params={"page": 1, "pageSize": 50},
                 headers={
-                    **(api.qidian_headers or {}),
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
                     "Accept": "application/json, text/plain, */*",
-                    "Referer": "https://my.qidian.com/",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-site",
                 },
                 cookies=api.qidian_cookies or None,
                 timeout=15,
