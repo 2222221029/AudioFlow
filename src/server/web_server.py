@@ -649,6 +649,15 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(chapters or [], start=1)]
     if not chapters and item.get("chapters"):
         chapters = item.get("chapters") or []
+    # 与历史已知章节合并取并集：避免单次章节 API 抖动（如喜马拉雅 new_api 被风控）导致
+    # 章节列表回退、漏掉曾经检测到的章节，从而订阅永远补不全那几集。
+    saved_chapters = item.get("chapters") or []
+    if saved_chapters and chapters:
+        existing_keys = {chapter_key(ch) for ch in chapters if isinstance(ch, dict)}
+        appended = [ch for ch in saved_chapters if isinstance(ch, dict) and chapter_key(ch) not in existing_keys]
+        if appended:
+            chapters = chapters + appended
+            set_progress("合并历史章节", merged_extra=len(appended))
     set_progress("正在扫描本地文件", chapter_count=len(chapters))
     scan_cache = {}
     diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False)

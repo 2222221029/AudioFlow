@@ -704,13 +704,32 @@ class XimalayaManager:
     def _pick_best_chapter_list(self, api_results: Dict[str, List[Dict]]) -> List[Dict]:
         if not api_results:
             return []
-        best_api = max(api_results.keys(), key=lambda k: len(api_results[k]))
-        best_chapters = api_results[best_api]
-        print(f"✅ 选择 {best_api} 的结果（{len(best_chapters)} 个章节）")
+        # 合并各 API 的章节并按 track_id 去重取并集（而非只取单一最多的一份）。
+        # 原因：new_api 偶发被风控（WFP 校验失败）时只剩 old_api，会漏掉只在 new_api 的章节
+        # （如专辑最新几集），导致订阅永远补不全。取并集让多个 API 互补，最大化完整性。
+        apis_by_size = sorted(api_results.keys(), key=lambda k: len(api_results[k]), reverse=True)
+        merged = []
+        seen = set()
+        for api_name in apis_by_size:
+            for ch in api_results[api_name]:
+                key = str(
+                    ch.get('id') or ch.get('track_id') or ch.get('trackId')
+                    or ch.get('order_num') or ch.get('title') or ''
+                ).strip()
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                merged.append(ch)
+        base_api = apis_by_size[0]
+        base_len = len(api_results[base_api])
+        if len(merged) > base_len:
+            print(f"✅ 合并章节并集：基准 {base_api}={base_len} → 多 API 互补去重后 {len(merged)} 个")
+        else:
+            print(f"✅ 选择 {base_api} 的结果（{len(merged)} 个章节）")
         for api_name, chapters in api_results.items():
-            status = "✅ 已选择" if api_name == best_api else "❌ 未选择"
-            print(f"   {status} {api_name}: {len(chapters)} 个章节")
-        return best_chapters
+            print(f"   📊 {api_name}: {len(chapters)} 个章节")
+        return merged
 
     def get_album_chapters(self, album_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
         """获取专辑章节列表 - 多 API 取章节数最多的一份
