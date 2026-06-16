@@ -51,6 +51,17 @@ class DownloadWorker(QThread):
         # CookieManager 只创建一次，所有线程共享读取（CookieManager 只做文件读取，线程安全）
         from core.cookie_manager import CookieManager
         self.cookie_manager = CookieManager()
+        # 详细逐章日志开关：默认关闭，避免批量补全（每专辑上千集）刷出成千上万条日志。
+        # 需排查时用环境变量 AUDIOFLOW_DOWNLOAD_VERBOSE=1 或 cookie download_verbose_log 开启。
+        self._verbose = (
+            os.getenv("AUDIOFLOW_DOWNLOAD_VERBOSE", "").lower() in ("1", "true", "yes", "on")
+            or str(self.cookie_manager.get_cookie("download_verbose_log") or "").lower() in ("1", "true", "yes", "on")
+        )
+
+    def _dbg(self, msg):
+        """仅在 verbose 模式打印的逐章调试日志（默认静默以免刷屏）。"""
+        if self._verbose:
+            print(msg)
 
     def _setting_enabled(self, key, default=False):
         value = self.cookie_manager.get_cookie(key)
@@ -268,8 +279,10 @@ class DownloadWorker(QThread):
                     if current_time - last_update_time >= 0.2 or completed_count == len(self.chapters):
                         self.progress_updated.emit(self.task_id, completed_count, len(self.chapters))
                         last_update_time = current_time
-                        print(f"📊 下载进度: {completed_count}/{len(self.chapters)} "
-                              f"({int(completed_count / len(self.chapters) * 100)}%)")
+                        # 进度日志每 20 章（或最后一章）打印一次，避免上千集时刷屏
+                        if completed_count % 20 == 0 or completed_count == len(self.chapters):
+                            print(f"📊 下载进度: {completed_count}/{len(self.chapters)} "
+                                  f"({int(completed_count / len(self.chapters) * 100)}%)")
 
             print(f"🎉 下载任务完成: 成功 {self.success_count} 个，失败 {self.failed_count} 个")
             self.download_completed.emit(
@@ -531,7 +544,7 @@ class DownloadWorker(QThread):
                 print(f"   🔄 移除chapter-前缀后的章节ID: {chapter_id}")
 
             chapter_title = chapter.get('title', f'章节{chapter_index}')
-            print(f"   📝 UI显示标题: {chapter_title}")
+            self._dbg(f"   📝 UI显示标题: {chapter_title}")
 
             safe_chapter_title = self._sanitize_filename(chapter_title)
             safe_album_title = self._sanitize_filename(self.album_title)
@@ -543,16 +556,12 @@ class DownloadWorker(QThread):
 
             order_num_value = chapter.get('ui_display_index') or chapter.get('order_num')
 
-            print(f"   🔍 章节数据调试:")
-            print(f"      order_num: {order_num_value} (类型: {type(order_num_value)})")
-            print(f"      chapter_index: {chapter_index}")
-            print(f"      章节标题: {chapter_title}")
-            print(f"      递增命名启用: {increment_naming_enabled}")
-            print(f"      固定命名启用: {fixed_naming_enabled}")
+            self._dbg(f"   🔍 调试: order_num={order_num_value} chapter_index={chapter_index} "
+                      f"递增命名={increment_naming_enabled} 固定命名={fixed_naming_enabled}")
 
             if order_num_value is not None and order_num_value > 0:
                 actual_order = order_num_value
-                print(f"   ✅ 使用order_num（UI序号）: {actual_order}")
+                self._dbg(f"   ✅ 使用order_num（UI序号）: {actual_order}")
             else:
                 import re
                 patterns = [
@@ -566,14 +575,14 @@ class DownloadWorker(QThread):
                     match = re.search(pattern, chapter_title)
                     if match:
                         actual_order = int(match.group(1))
-                        print(f"   ✅ 从标题提取章节号: {actual_order} (使用模式: {pattern})")
+                        self._dbg(f"   ✅ 从标题提取章节号: {actual_order} (使用模式: {pattern})")
                         break
                 if actual_order is None:
                     actual_order = chapter_index
-                    print(f"   ⚠️ 无法提取序号，使用下载队列序号: {actual_order}")
+                    self._dbg(f"   ⚠️ 无法提取序号，使用下载队列序号: {actual_order}")
 
             filename_prefix = self._format_filename_prefix(actual_order)
-            print(f"   🎯 最终文件名前缀: {filename_prefix}")
+            self._dbg(f"   🎯 最终文件名前缀: {filename_prefix}")
 
             # ---- 文件扩展名 ----
             fanqie_audio_info = None
@@ -613,7 +622,7 @@ class DownloadWorker(QThread):
             # ---- 文件路径（支持分章节保存）----
             chapter_order = actual_order
             split_enabled = cookie_manager.get_cookie('split_chapters_enabled') == 'true'
-            print(f"   📁 分章节保存启用: {split_enabled}")
+            self._dbg(f"   📁 分章节保存启用: {split_enabled}")
 
             if split_enabled and chapter_order > 0:
                 chapters_per_folder = self._chapters_per_folder()
@@ -623,16 +632,17 @@ class DownloadWorker(QThread):
                 chapter_range_dir = os.path.join(self._album_base_dir(safe_album_title), folder_name)
                 Path(chapter_range_dir).mkdir(parents=True, exist_ok=True)
                 file_path = os.path.join(chapter_range_dir, filename)
-                print(f"   📂 分章节保存到: {safe_album_title}/{folder_name}/{filename}")
-                print(f"   📍 容器内完整路径: {file_path}")
+                self._dbg(f"   📂 分章节保存到: {safe_album_title}/{folder_name}/{filename}")
+                self._dbg(f"   📍 完整路径: {file_path}")
             else:
                 album_folder = self._album_base_dir(safe_album_title)
                 Path(album_folder).mkdir(parents=True, exist_ok=True)
                 file_path = os.path.join(album_folder, filename)
-                print(f"   📂 保存到: {safe_album_title}/{filename}")
-                print(f"   📍 容器内完整路径: {file_path}")
+                self._dbg(f"   📂 保存到: {safe_album_title}/{filename}")
+                self._dbg(f"   📍 完整路径: {file_path}")
 
-            print(f"📖 章节: {chapter_title}")
+            # 每章保留这一条标识日志（序号+标题），其余逐章细节走 _dbg（默认静默）
+            print(f"📖 [{actual_order}] {chapter_title}")
 
             # ---- 文件已存在检查 ----
             if os.path.exists(file_path):
@@ -647,7 +657,7 @@ class DownloadWorker(QThread):
                 else:
                     print(f"🔄 文件损坏，重新下载")
             else:
-                print(f"📥 开始下载文件")
+                self._dbg(f"📥 开始下载文件")
 
             # ---- 番茄听书 / 七猫听书 直接走各自 download_chapter ----
             if self.platform == '番茄听书':
@@ -909,7 +919,7 @@ class DownloadWorker(QThread):
                 return False
 
             if success:
-                print(f"✅ 下载成功: {chapter_title}")
+                self._dbg(f"✅ 下载成功: {chapter_title}")
                 return True
             else:
                 print(f"❌ 下载失败: {chapter_title}")
