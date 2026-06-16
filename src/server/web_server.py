@@ -2256,10 +2256,25 @@ def api_download_resume(task_id):
     if not task:
         return json_error("任务不存在", 404)
     worker = live_worker(task_id)
-    if not worker:
-        return json_error("任务未在运行，无法继续", 409)
-    resume_worker(worker)
-    return json_ok(task=set_task(task_id, status="running"))
+    if worker:
+        resume_worker(worker)
+        return json_ok(task=set_task(task_id, status="running"))
+    # 无 worker（服务重启等导致的僵尸任务）：重建下载任务续下章节
+    # （download_worker 会跳过本地已存在的文件，不会重复下载已完成章节）
+    chapters = task.get("failed_chapters") or task.get("chapters") or []
+    if not chapters:
+        return json_error("任务无可下载章节，无法恢复", 409)
+    album = task.get("album") or {"title": task.get("title"), "platform": (task.get("task_info") or {}).get("platform")}
+    options = task.get("options") or {}
+    if not options and task.get("task_info"):
+        info = task.get("task_info") or {}
+        options = {"download_dir": info.get("download_dir"), "quality": info.get("quality"), "voice": info.get("voice_config")}
+    if options.get("voice"):
+        options["voice"] = resolve_voice_for_album(album, options.get("voice"))
+    set_task(task_id, status="stopped", finished_at=time.time())
+    new_task_id = f"resume-{uuid.uuid4().hex[:12]}"
+    new_task = start_download_task(new_task_id, album, chapters, options, source=f"resume:{task_id}")
+    return json_ok(task_id=new_task_id, task=new_task, resumed=True)
 
 
 @app.post("/api/downloads/<task_id>/stop")
@@ -2271,7 +2286,8 @@ def api_download_stop(task_id):
     if worker:
         stop_worker(worker)
         return json_ok(task=set_task(task_id, status="stopping"))
-    if task.get("status") in ("queued", "running", "paused"):
+    # 无 worker：含 stopping 在内的僵尸任务（如服务重启后 worker 丢失）直接落到 stopped
+    if task.get("status") in ("queued", "running", "paused", "stopping"):
         return json_ok(task=set_task(task_id, status="stopped", finished_at=time.time()))
     return json_ok(task=task)
 
@@ -2303,7 +2319,8 @@ def api_download_delete(task_id):
     task = task_snapshot(task_id)
     if not task:
         return json_error("任务不存在", 404)
-    if live_worker(task_id) or task.get("status") in ("running", "queued", "paused", "stopping"):
+    # 仅当确有 worker 在运行时才拒绝删除；无 worker 的 running/stopping 等为僵尸任务，允许删除
+    if live_worker(task_id):
         return json_error("运行中的任务不能删除，请先停止", 409)
     with task_lock:
         tasks.pop(task_id, None)
@@ -2316,12 +2333,12 @@ def api_download_cleanup():
     payload = request.get_json(silent=True) or {}
     statuses = payload.get("statuses") or ["completed", "failed", "partial", "interrupted", "stopped"]
     statuses = {str(item).strip() for item in statuses if str(item).strip()}
-    protected = {"queued", "running", "paused", "stopping"}
     deleted = []
     with task_lock:
         for tid, task in list(tasks.items()):
             status = str(task.get("status") or "")
-            if status in protected or tid in task_workers:
+            # 仅保护确有 worker 在运行的任务；无 worker 的任务即使状态为 running/stopping 也可清理
+            if tid in task_workers:
                 continue
             if status in statuses:
                 tasks.pop(tid, None)

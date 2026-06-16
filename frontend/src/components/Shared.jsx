@@ -478,10 +478,10 @@ function TaskCard({task, actions, busy, onDelete}) {
   const status = task.status || 'queued';
   const failedCount = Number(task.failed ?? task.failed_chapters?.length ?? 0) || 0;
   const canPause = status === 'running';
-  const canResume = status === 'paused';
-  const canStop = ['queued', 'running', 'paused'].includes(status);
+  const canResume = ['paused', 'stopping'].includes(status);
+  const canStop = ['queued', 'running', 'paused', 'stopping'].includes(status);
   const canRetry = (task.failed_chapters && task.failed_chapters.length) || ['failed', 'partial', 'interrupted', 'stopped'].includes(status);
-  const canDelete = !['queued', 'running', 'paused', 'stopping'].includes(status);
+  const canDelete = !['queued', 'running', 'paused'].includes(status);
   const busyPrefix = `download:${task.id}:`;
   return (
     <div className="task-card">
