@@ -24,7 +24,9 @@ def load_config() -> ProcessParams:
     if not PROCESS_CONFIG_PATH.exists():
         return save_config(normalize_params({}))
     with PROCESS_CONFIG_PATH.open("r", encoding="utf-8-sig") as f:
-        return normalize_params(json.load(f))
+        data = json.load(f)
+    data.pop("input_folder", None)
+    return normalize_params(data)
 
 
 def save_config(params: ProcessParams | dict[str, Any]) -> ProcessParams:
