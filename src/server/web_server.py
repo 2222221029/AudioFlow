@@ -3613,21 +3613,26 @@ def _normalize_lrts_personal_record(item):
 
 
 def _load_lrts_personal_from_app(client, feature):
-    from core.lrts_manager import READ_HOST
+    # usercenter 用户接口走 API_HOST(dapi.mting.info)，与登录(ClientLogon)一致；
+    # 此前误用 READ_HOST(dapis.mting.info，搜索/详情接口)导致全部 404「请求参数错误」。
+    # bookclient 书架接口仍在 READ_HOST。两个 host 都试一次以最大化命中。
+    from core.lrts_manager import READ_HOST, API_HOST
     endpoint_groups = {
         "history": [
+            (API_HOST, "/yyting/usercenter/getRecentList.action", {"pageNum": 1, "pageSize": 100}),
             (READ_HOST, "/yyting/usercenter/getRecentList.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getListenHistory.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getListenRecord.action", {"pageNum": 1, "pageSize": 100}),
+            (API_HOST, "/yyting/usercenter/getListenHistory.action", {"pageNum": 1, "pageSize": 100}),
+            (API_HOST, "/yyting/usercenter/getListenRecord.action", {"pageNum": 1, "pageSize": 100}),
         ],
         "favorites": [
+            (API_HOST, "/yyting/usercenter/getCollectList.action", {"pageNum": 1, "pageSize": 100}),
             (READ_HOST, "/yyting/usercenter/getCollectList.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getMyCollect.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getFavoriteList.action", {"pageNum": 1, "pageSize": 100}),
+            (API_HOST, "/yyting/usercenter/getMyCollect.action", {"pageNum": 1, "pageSize": 100}),
+            (API_HOST, "/yyting/usercenter/getFavoriteList.action", {"pageNum": 1, "pageSize": 100}),
         ],
         "programs": [
-            (READ_HOST, "/yyting/usercenter/getUserBookList.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getUserAblumnList.action", {"pageNum": 1, "pageSize": 100}),
+            (API_HOST, "/yyting/usercenter/getUserBookList.action", {"pageNum": 1, "pageSize": 100}),
+            (API_HOST, "/yyting/usercenter/getUserAblumnList.action", {"pageNum": 1, "pageSize": 100}),
             (READ_HOST, "/yyting/bookclient/ClientGetBookShelf.action", {"pageNum": 1, "pageSize": 100}),
         ],
     }
@@ -3636,7 +3641,7 @@ def _load_lrts_personal_from_app(client, feature):
     for host, path, params in endpoint_groups.get(feature, []):
         try:
             data = client.get(host, path, params)
-            print(f"[personal-lrts] {path}: status={data.get('status')} msg={data.get('msg', '')}")
+            print(f"[personal-lrts] {host}{path}: status={data.get('status')} msg={data.get('msg', '')}")
         except Exception as exc:
             print(f"[personal-lrts] {path} failed: {exc}")
             continue
