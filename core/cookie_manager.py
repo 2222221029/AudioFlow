@@ -298,15 +298,11 @@ class CookieManager:
     def get_download_dir(self):
         """获取下载目录。
 
-        重要：旧版本在目录暂不可写时会回退到 Path.home()/'audioflow'（容器内即 /app/audioflow）
-        或临时目录，并改写、持久化 self.download_dir。但这些目录不是 Docker 挂载卷，
-        容器重启即丢失数据，且一次偶发的写测试失败（NAS 挂载延迟/瞬时权限）会永久污染配置。
-
-        现行为：
-        - 自动修正历史污染：若 self.download_dir 指向 home/temp 下的 audioflow，强制回到
-          环境变量指定的挂载下载目录（DOWNLOAD_DIR，默认 /app/downloads）。
-        - 自定义目录暂不可写时，本次降级到挂载下载目录（持久卷），不再写非挂载卷，
-          且不持久化覆盖用户配置——目录恢复后自动用回。
+        - 自动修正历史污染：若 self.download_dir 指向 home/temp 下的 audioflow（非挂载卷、
+          重启丢数据），强制回到环境变量指定的挂载下载目录（DOWNLOAD_DIR，默认 /app/downloads）。
+        - 不再做"写测试 + 不可写则降级 /tmp"：容器启动初期挂载卷常尚未就绪，写测试会误判
+          不可写，导致全部下载降级到 /tmp（重启丢数据）并疯狂刷屏。改为仅创建目录后返回
+          配置目录；目录真正不可写时由下载环节明确报错，便于用户修正宿主目录权限。
         """
         import tempfile
         polluted = {
@@ -318,34 +314,11 @@ class CookieManager:
             self.download_dir_custom = False
         if not self.download_dir_custom:
             self.download_dir = str(download_dir())
-
-        def _usable(p):
-            try:
-                path = Path(p)
-                path.mkdir(parents=True, exist_ok=True)
-                test_file = path / ".test_write_permission"
-                test_file.touch()
-                test_file.unlink()
-                return True
-            except Exception:
-                return False
-
-        target = self.download_dir
-        if _usable(target):
-            return target
-        # 降级到环境变量指定的挂载下载目录（持久卷，避免数据丢失），仅本次生效、不持久化
-        env_dir = str(download_dir())
-        if env_dir != target and _usable(env_dir):
-            print(f"⚠️ 下载目录 {target} 暂不可写，本次降级到挂载下载目录: {env_dir}")
-            return env_dir
-        # 兜底临时目录（仅本次，不持久化）
-        temp_dir = str(Path(tempfile.gettempdir()) / 'audioflow')
         try:
-            Path(temp_dir).mkdir(parents=True, exist_ok=True)
+            Path(self.download_dir).mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
-        print(f"⚠️ 下载目录与挂载目录均不可写，本次临时使用: {temp_dir}")
-        return temp_dir
+        return self.download_dir
         
     def set_download_dir(self, value):
         """设置下载目录"""

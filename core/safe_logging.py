@@ -38,9 +38,15 @@ def _mask_url(value):
 
 class RedactingFilter(logging.Filter):
     def filter(self, record):
-        record.msg = redact(record.msg)
-        if record.args:
-            record.args = tuple(redact(arg) for arg in record.args)
+        # 先用原始 msg/args 合并出最终消息（此时 %d 等格式符与原始参数类型匹配，不会出错），
+        # 再对最终字符串整体脱敏，并清空 args 避免下游 handler 二次格式化。
+        # 这样既不破坏整数格式化（waitress/httpx 的 "%d %s"），也不会因脱敏改动 msg 模板占位符。
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(getattr(record, "msg", ""))
+        record.msg = redact(message)
+        record.args = None
         return True
 
 
