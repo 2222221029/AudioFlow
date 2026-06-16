@@ -59,6 +59,45 @@ def album_id_values(album):
     return list(dict.fromkeys(values))
 
 
+# 已知平台名（与前端 platforms.js 一致）。开启「按平台分目录」后，下载路径为
+# {download_dir}/{平台}/{专辑}/，平台名作为一级目录段。用于区分不同平台的同名专辑。
+KNOWN_PLATFORMS = (
+    "喜马拉雅", "懒人听书", "起点听书", "蜻蜓FM", "番茄畅听", "番茄听书",
+    "七猫听书", "云听FM", "酷我听书", "网易云听书", "荔枝FM", "未知平台",
+)
+_PLATFORM_NORMS = {normalize_match_text(p) for p in KNOWN_PLATFORMS if normalize_match_text(p)}
+
+
+def album_platform_norm(album):
+    if not isinstance(album, dict):
+        return ""
+    value = album.get("platform") or album.get("source") or ""
+    return normalize_match_text(value)
+
+
+def path_platform_norm(path, is_file=True):
+    """从路径目录段中识别平台名（organize_by_platform 结构）。返回规范化平台名或 ""。
+
+    is_file=True 时排除最后一段（文件名本身），避免文件名里恰好出现平台名造成误判。
+    """
+    try:
+        parts = list(Path(path).parts)
+    except Exception:
+        return ""
+    if is_file and parts:
+        parts = parts[:-1]
+    for part in parts:
+        norm = normalize_match_text(part)
+        if norm in _PLATFORM_NORMS:
+            return norm
+    return ""
+
+
+def platform_conflicts(path_plat, album_plat):
+    """路径平台段存在且与专辑平台不一致 → True（用于排除跨平台同名专辑的本地文件）。"""
+    return bool(path_plat and album_plat and path_plat != album_plat)
+
+
 def album_dir_candidates(album, download_dir, dir_cache=None):
     root = Path(download_dir)
     if not root.exists():
@@ -88,9 +127,13 @@ def album_dir_candidates(album, download_dir, dir_cache=None):
         if dir_cache is not None:
             dir_cache[str(root)] = dirs
 
+    album_plat = album_platform_norm(album)
     for path in dirs:
         norm_name = normalize_match_text(path.name)
         if not norm_name:
+            continue
+        # 路径含其他平台目录段时跳过，避免把别的平台的同名专辑误判为本地已有
+        if platform_conflicts(path_platform_norm(path, is_file=False), album_plat):
             continue
         if any(norm_name == t or norm_name in t or t in norm_name for t in norm_titles):
             candidates.append(path)
@@ -221,12 +264,16 @@ def indexed_album_audio_files(index_files, album):
     title_values = album_title_values(album)
     norm_titles = [normalize_match_text(v) for v in title_values if normalize_match_text(v)]
     id_values = album_id_values(album)
+    album_plat = album_platform_norm(album)
     result = []
     seen = set()
     has_album_scope = False
     for item in index_files or []:
         path_text = str((item or {}).get("path") or "")
         if not path_text:
+            continue
+        # 跨平台同名专辑：路径含其他平台目录段时排除
+        if platform_conflicts(path_platform_norm(path_text, is_file=True), album_plat):
             continue
         norm_parent = str((item or {}).get("norm_parent") or "")
         norm_path = normalize_match_text(path_text)
@@ -541,10 +588,14 @@ class SubscriptionManager:
         title_values = album_title_values(album)
         norm_titles = [normalize_match_text(v) for v in title_values if normalize_match_text(v)]
         id_values = album_id_values(album)
+        album_plat = album_platform_norm(album)
         count = 0
         for item in files:
             norm_parent = item.get("norm_parent") or ""
             path_text = str(item.get("path") or "")
+            # 跨平台同名专辑：路径含其他平台目录段时排除
+            if platform_conflicts(path_platform_norm(path_text, is_file=True), album_plat):
+                continue
             norm_path = normalize_match_text(path_text)
             if any(
                 norm_parent == t or norm_parent in t or t in norm_parent or t in norm_path

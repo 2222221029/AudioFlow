@@ -901,7 +901,13 @@ def normalize_cover_url(url, platform=""):
     if not url:
         return ""
     if url.startswith("//"):
-        return "https:" + url
+        url = "https:" + url
+    # 酷我图片：搜索结果返回 http://imgN.sycdn.kuwo.cn（无有效 https 证书 + 混合内容被浏览器拦截）。
+    # 改写到有有效 https 证书的 imgN.kuwo.cn 主机（同路径可访问），并强制升级为 https。
+    if "kuwo.cn" in url:
+        url = url.replace("sycdn.kuwo.cn", "kuwo.cn")
+        if url.startswith("http://"):
+            url = "https://" + url[len("http://"):]
     if url.startswith("http://") or url.startswith("https://"):
         return url
     if platform == "喜马拉雅":

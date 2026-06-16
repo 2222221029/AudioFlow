@@ -42,10 +42,23 @@ export function chapterTitle(chapter) {
   return chapter?.title || chapter?.name || chapter?.chapter_title || '未知章节';
 }
 
+// 酷我搜索结果封面是 http://imgN.sycdn.kuwo.cn（无有效 https 证书 + 混合内容被拦截），
+// 改写到有有效 https 证书的 imgN.kuwo.cn 主机并强制 https。订阅里历史存储的旧封面也在此兜底修正。
+function normalizeCoverUrl(url) {
+  let u = String(url || '').trim();
+  if (!u) return '';
+  if (u.startsWith('//')) u = 'https:' + u;
+  if (u.includes('kuwo.cn')) {
+    u = u.replace('sycdn.kuwo.cn', 'kuwo.cn');
+    if (u.startsWith('http://')) u = 'https://' + u.slice(7);
+  }
+  return u;
+}
+
 export function coverOf(item) {
   const data = item || {};
   const album = data.album || {};
-  return (
+  return normalizeCoverUrl(
     data.cover ||
     album.cover ||
     data.cover_url ||
@@ -78,7 +91,7 @@ export function coverOf(item) {
     album.albumPic ||
     data.thumb_url ||
     album.thumb_url ||
-    ''
+    '',
   );
 }
 
