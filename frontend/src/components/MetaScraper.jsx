@@ -506,7 +506,7 @@ function ParamsPage({options, params, setParam, paramsBusy, paramsMsg, running, 
     <div style={{display: 'flex', flexDirection: 'column', gap: 12}}>
       {/* Folder selector */}
       <div className="glass" style={{padding: 14}}>
-        <FieldLabel>音频目录</FieldLabel>
+        <FieldLabel required>音频目录</FieldLabel>
         <div style={{display: 'flex', gap: 8}}>
           <input style={inputStyle} value={params.input_folder} onChange={e => setParam('input_folder', e.target.value)} placeholder="/path/to/audiobook/" />
           <button className="btn btn-ghost btn-sm" onClick={openBrowser}><Icon id="i-folder" className="icon icon-sm" />浏览</button>
@@ -517,26 +517,29 @@ function ParamsPage({options, params, setParam, paramsBusy, paramsMsg, running, 
       <div className="glass" style={{padding: 14}}>
         <div style={{fontWeight: 700, fontSize: 13, marginBottom: 10}}>基本信息</div>
         <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10}}>
-          <FormField label="专辑标题" value={params.title} onChange={v => setParam('title', v)} />
-          <FormField label="副标题" value={params.subtitle} onChange={v => setParam('subtitle', v)} />
-          <FormField label="原著作者" value={params.author} onChange={v => setParam('author', v)} />
-          <FormField label="演播艺术家" value={params.anchor} onChange={v => setParam('anchor', v)} />
+          <FormField required label="专辑标题" value={params.title} onChange={v => setParam('title', v)} />
+          <FormField label="副标题" value={params.subtitle} onChange={v => setParam('subtitle', v)} placeholder="可选" />
+          <FormField required label="原著作者" value={params.author} onChange={v => setParam('author', v)} />
+          <FormField required label="演播艺术家" value={params.anchor} onChange={v => setParam('anchor', v)} />
           <div>
-            <FieldLabel>发布平台</FieldLabel>
+            <FieldLabel required>发布平台</FieldLabel>
             <select style={selectStyle} value={params.platform} onChange={e => setParam('platform', e.target.value)}>
+              <option value="">请选择平台</option>
               {(options.platforms || []).map(p => <option key={p}>{p}</option>)}
             </select>
           </div>
-          <FormField label="发布年份" value={params.year} onChange={v => setParam('year', v)} />
+          <FormField required label="发布年份" value={params.year} onChange={v => setParam('year', v)} placeholder="如：2024" />
           <div>
-            <FieldLabel>专辑分类</FieldLabel>
+            <FieldLabel required>专辑分类</FieldLabel>
             <select style={selectStyle} value={params.category} onChange={e => setParam('category', e.target.value)}>
+              <option value="">请选择分类</option>
               {(options.categories || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           <div>
-            <FieldLabel>完结状态</FieldLabel>
+            <FieldLabel required>完结状态</FieldLabel>
             <select style={selectStyle} value={params.finished} onChange={e => setParam('finished', e.target.value)}>
+              <option value="">请选择状态</option>
               {(options.finished || []).map(f => <option key={f}>{f}</option>)}
             </select>
           </div>
@@ -566,8 +569,8 @@ function ParamsPage({options, params, setParam, paramsBusy, paramsMsg, running, 
       <div className="glass" style={{padding: 14}}>
         <div style={{fontWeight: 700, fontSize: 13, marginBottom: 10}}>系列 & 标签</div>
         <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10}}>
-          <FormField label="系列名称" value={params.series_name} onChange={v => setParam('series_name', v)} />
-          <FormField label="系列编号" value={params.series_number} onChange={v => setParam('series_number', v)} />
+          <FormField label="系列名称" value={params.series_name} onChange={v => setParam('series_name', v)} placeholder="可选，如：剑来" />
+          <FormField label="系列编号" value={params.series_number} onChange={v => setParam('series_number', v)} placeholder="可选，如：1" />
           <FormField label="团队标识" value={params.team} onChange={v => setParam('team', v)} />
           <FormField label="封面路径" value={params.manual_cover_path} onChange={v => setParam('manual_cover_path', v)} placeholder="可选，本地封面路径" />
         </div>
@@ -766,14 +769,19 @@ function FileBrowserModal({data, onNav, onSelect, onClose}) {
 }
 
 // ─── Tiny helpers ─────────────────────────────────────────────────────────────
-function FieldLabel({children}) {
-  return <div style={{fontSize: 11, color: 'var(--text-mute)', marginBottom: 4, fontWeight: 600}}>{children}</div>;
+function FieldLabel({children, required}) {
+  return (
+    <div style={{fontSize: 11, color: 'var(--text-mute)', marginBottom: 4, fontWeight: 600}}>
+      {children}
+      {required && <span style={{color: 'var(--danger)', marginLeft: 2}}>*</span>}
+    </div>
+  );
 }
 
-function FormField({label, value, onChange, placeholder}) {
+function FormField({label, value, onChange, placeholder, required}) {
   return (
     <div>
-      <FieldLabel>{label}</FieldLabel>
+      <FieldLabel required={required}>{label}</FieldLabel>
       <input style={inputStyle} value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
     </div>
   );

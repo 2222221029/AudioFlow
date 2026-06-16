@@ -19,12 +19,12 @@ class ProcessParams(BaseModel):
     subtitle: str = ""
     author: str = ""
     anchor: str = ""
-    category: str = "401"
-    platform: str = "喜马拉雅"
-    year: str = "2024"
+    category: str = ""
+    platform: str = ""
+    year: str = ""
     target_format: str = "原格式保留"
     bitrate: str = "自动检测"
-    finished: str = "完结"
+    finished: str = ""
     check_codec: bool = True
     rename_ext: bool = True
     debug: bool = True
