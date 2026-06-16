@@ -847,6 +847,7 @@ class SubscriptionManager:
             key = chapter_key(chapter)
             is_new = key not in saved_keys
             state = downloaded.get(key, {})
+            had_state_record = bool(state.get("status"))
             restricted_now = is_restricted_chapter(chapter)
             state_restricted = state.get("status") == "restricted"
             # 只有「实际下载失败并确认受限」(confirmed=True，由 mark_download_results 写入)
@@ -871,14 +872,14 @@ class SubscriptionManager:
                 if state_restricted:
                     downloaded.pop(key, None)
                     state = {}
-            # 已确认受限且本次元数据仍受限 → 跳过，避免对真 VIP 章节无限重试
-            if confirmed_restricted and restricted_now and not local_ok:
+            # 受限章节：仅在「首次遇到」(无任何下载记录) 时尝试下载一次，
+            # 用于解决元数据误判受限（会员/已购实际可下）导致永不下载的问题；
+            # 一旦已确认受限(confirmed) 或此前已有任意下载记录(had_state_record)，即跳过，
+            # 避免每次检测都对真 VIP/会员章节反复创建下载任务（修复 v0.62 的副作用）。
+            # 元数据已解锁(restricted_now=False) 的章节不受此限制，走正常缺失补全。
+            if restricted_now and not local_ok and (confirmed_restricted or had_state_record):
                 restricted_count += 1
                 continue
-            # 未经下载确认的旧受限标记（多为元数据误判）→ 清除，让其重新尝试下载
-            if state_restricted and not confirmed_restricted:
-                downloaded.pop(key, None)
-                state = {}
             if is_new:
                 new_count += 1
             if not local_ok:
