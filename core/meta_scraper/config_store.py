@@ -31,8 +31,10 @@ def save_config(params: ProcessParams | dict[str, Any]) -> ProcessParams:
     ensure_runtime_dirs()
     normalized = params if isinstance(params, ProcessParams) else normalize_params(params)
     PROCESS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = normalized.model_dump()
+    data.pop("input_folder", None)
     with PROCESS_CONFIG_PATH.open("w", encoding="utf-8") as f:
-        json.dump(normalized.model_dump(), f, ensure_ascii=False, indent=2, default=str)
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
     return normalized
 
 
