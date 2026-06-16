@@ -36,10 +36,13 @@ function applyAdRules(title,rules){
   return s.replace(/\s+/g,' ').trim();
 }
 
-function simulateTemplate(tpl,meta,fileName,idx,adRules){
+function simulateTemplate(tpl,meta,fileName,idx,adRules,opts){
+  const o=opts||{};
+  const start=o.startIndex??1,step=o.indexStep??1,pad=o.padWidth??0;
   const stem=fileName.replace(/\.[^.]+$/,'');
   const ext=(fileName.match(/\.([^.]+)$/)||['',''])[1].toLowerCase();
-  const i=idx+1;
+  const i=start+idx*step;
+  const zf=(w)=>String(i).padStart(pad>0?pad:w,'0');
   const aiTitle=(meta.chapter_titles||{})[fileName];
   let chapterTitle=aiTitle||stem;
   if(!aiTitle){
@@ -58,9 +61,9 @@ function simulateTemplate(tpl,meta,fileName,idx,adRules){
   const vars={book_title:meta.book_title||'',author:meta.author||'',narrator:meta.narrator||'',
     category:meta.category||'',series:meta.series||'',volume:meta.volume||'',
     original_prefix:originalPrefix,series_block:seriesBlock,
-    chapter_index:String(i),chapter_index_2:String(i).padStart(2,'0'),
-    chapter_index_3:String(i).padStart(3,'0'),chapter_index_4:String(i).padStart(4,'0'),
-    chapter_title:chapterTitle,chapter_full:String(i).padStart(3,'0')+'-'+chapterTitle,
+    chapter_index:pad>0?zf(0):String(i),chapter_index_2:zf(2),
+    chapter_index_3:zf(3),chapter_index_4:zf(4),
+    chapter_title:chapterTitle,chapter_full:zf(3)+'-'+chapterTitle,
     name:stem,ext,date:new Date().toISOString().slice(0,10).replace(/-/g,'')};
   let r=tpl;
   for(const[k,v]of Object.entries(vars))r=r.replaceAll(`{${k}}`,v);
@@ -671,6 +674,14 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   const[fmConfig,setFmConfig]=useState({custom_ad_rules:[]});
   const[scrapeOpen,setScrapeOpen]=useState(false);
   const[scrapeInput,setScrapeInput]=useState({api_source:'喜马拉雅',api_id:'',link_url:'',link_platform:'起点听书'});
+  // 专业重命名高级选项
+  const[sortBy,setSortBy]=useState('name_asc');
+  const[startIndex,setStartIndex]=useState(1);
+  const[indexStep,setIndexStep]=useState(1);
+  const[padWidth,setPadWidth]=useState(0);
+  const[findRegex,setFindRegex]=useState('');
+  const[replaceStr,setReplaceStr]=useState('');
+  const[showAdv,setShowAdv]=useState(false);
 
   function startEdit(i,name){setEditIdx(i);setEditVal(name);}
   function commitEdit(i){if(editVal.trim())setOverrides(o=>({...o,[i]:editVal.trim()}));setEditIdx(null);}
@@ -718,17 +729,17 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
     }catch(e){}
   }
 
-  async function doAiDeepClean(){
-    // AI 深度清理：只处理本地提取置信度低的文件，节省 token
+  async function doAiDeepClean(fullMode=true){
+    // fullMode=true：AI 一键全量主导，识别全部文件（书名/作者/章节标题、剔广告、同名分集括号化）
+    // fullMode=false：仅清理本地提取不佳的少数文件，省 token
     const allNames=folderFiles.map(f=>f.name);
-    // 找出需要 AI 清理的文件：本地未提取到标题、或含广告特征的
     const currentTitles=bookMeta.chapter_titles||{};
     const AD_SUSPECT=/QQ|qq|微信|公众号|http|www\.|听书|下载/;
-    const targetNames=allNames.filter(n=>{
+    const targetNames=fullMode?allNames:allNames.filter(n=>{
       const t=currentTitles[n]||'';
       return !t||t===n.replace(/\.[^.]+$/,'')||AD_SUSPECT.test(t);
     });
-    if(!targetNames.length){setError('所有章节标题已提取完整，无需 AI 清理');return;}
+    if(!targetNames.length){setError(fullMode?'当前文件夹没有可识别的音频文件':'所有章节标题已提取完整，无需 AI 清理');return;}
     const BATCH=80;
     const batches=[];
     for(let i=0;i<targetNames.length;i+=BATCH)batches.push(targetNames.slice(i,i+BATCH));
@@ -787,9 +798,12 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
   async function doPreview(){
     setLoading(true);setError('');
     try{
-      const r=await api('/api/file-manager/rename-preview',{method:'POST',body:JSON.stringify({folder_path:selectedFolder,template,book_meta:bookMeta})});
+      const r=await api('/api/file-manager/rename-preview',{method:'POST',body:JSON.stringify({
+        folder_path:selectedFolder,template,book_meta:bookMeta,
+        sort_by:sortBy,start_index:startIndex,index_step:indexStep,pad_width:padWidth,
+        find_regex:findRegex,replace_str:replaceStr})});
       if(!r.ok)throw new Error(r.error);
-      setPreviews(r.previews);setStep(4);
+      setPreviews(r.previews);setOverrides({});setEditIdx(null);setStep(4);
     }catch(e){setError(e.message);}
     finally{setLoading(false);}
   }
@@ -814,7 +828,7 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
     finally{setLoading(false);}
   }
 
-  const livePreview=folderFiles.slice(0,3).map((f,i)=>simulateTemplate(template,bookMeta,f.name,i,fmConfig.custom_ad_rules));
+  const livePreview=folderFiles.slice(0,3).map((f,i)=>simulateTemplate(template,bookMeta,f.name,i,fmConfig.custom_ad_rules,{startIndex,indexStep,padWidth}));
 
   if(!selectedFolder){
     return(
@@ -883,11 +897,17 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
                   {localStats.needsAi>0&&<span style={{opacity:.7}}> · {localStats.needsAi}个待清理</span>}
                 </span>
               )}
-              <button className="btn btn-ghost btn-sm" onClick={doAiDeepClean} disabled={aiLoading}
-                title={localStats&&localStats.needsAi>0?`对 ${localStats.needsAi} 个疑似广告/空标题文件调用 AI 清理`:'对含广告特征章节调用 AI 清理'}>
+              <button className="btn btn-primary btn-sm" onClick={()=>doAiDeepClean(true)} disabled={aiLoading}
+                title="AI 一键识别全部文件：自动提取书名/作者/章节标题，剔除广告，同名章节自动分集括号化">
                 {aiLoading?<span className="loading"/>:<Icon id="i-bolt" className="icon icon-sm"/>}
-                {aiLoading?`AI 清理中 ${aiProgress?aiProgress.cur:0}/${aiProgress?aiProgress.total:1} 批`:'AI 深度清理'}
+                {aiLoading?`AI 识别中 ${aiProgress?aiProgress.cur:0}/${aiProgress?aiProgress.total:1} 批`:'AI 一键识别全部'}
               </button>
+              {localStats&&localStats.needsAi>0&&!aiLoading&&(
+                <button className="btn btn-ghost btn-sm" onClick={()=>doAiDeepClean(false)} disabled={aiLoading}
+                  title={`仅对 ${localStats.needsAi} 个疑似广告/空标题文件调用 AI，节省额度`}>
+                  仅清理疑似 {localStats.needsAi}
+                </button>
+              )}
               {aiNormStats&&!aiLoading&&<span style={{fontSize:11,color:'var(--success)'}}>
                 ✓ 清理 {aiNormStats.normalized}/{aiNormStats.total}{aiNormStats.ads>0&&`，跳过广告 ${aiNormStats.ads}`}
               </span>}
@@ -986,6 +1006,46 @@ function RenameTab({selectedFolder,onBrowse,onFolderChange,onGotoHistory,onGotoS
               ))}
             </div>
           )}
+          {/* 高级选项：专业重命名 */}
+          <div style={{border:'1px solid var(--border)',borderRadius:9,overflow:'hidden'}}>
+            <button onClick={()=>setShowAdv(v=>!v)}
+              style={{width:'100%',display:'flex',alignItems:'center',gap:8,padding:'9px 12px',background:'var(--panel-hi)',border:'none',cursor:'pointer',color:'var(--text)',fontSize:12.5,fontWeight:600}}>
+              <Icon id="i-settings" className="icon icon-sm" style={{color:'var(--primary)'}}/>
+              高级选项（排序 / 序号 / 位数 / 正则）
+              <span style={{marginLeft:'auto',fontSize:11,color:'var(--text-faint)'}}>{showAdv?'收起 ▲':'展开 ▼'}</span>
+            </button>
+            {showAdv&&(
+              <div style={{padding:12,display:'flex',flexDirection:'column',gap:12,borderTop:'1px solid var(--border)'}}>
+                <div>
+                  <label style={S.label}>文件排序（决定章节序号分配顺序）</label>
+                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                    {[['name_asc','文件名 ↑'],['name_desc','文件名 ↓'],['mtime_asc','修改时间 ↑'],['mtime_desc','修改时间 ↓'],['size_asc','大小 ↑'],['size_desc','大小 ↓']].map(([v,l])=>(
+                      <button key={v} onClick={()=>setSortBy(v)}
+                        style={{padding:'4px 10px',borderRadius:6,border:'1px solid var(--border)',fontSize:12,cursor:'pointer',
+                          background:sortBy===v?'var(--primary)':'var(--panel-hi)',color:sortBy===v?'#fff':'var(--text)'}}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:14,flexWrap:'wrap'}}>
+                  <div><label style={S.label}>起始序号</label>
+                    <input type="number" min={0} value={startIndex} onChange={e=>setStartIndex(Math.max(0,parseInt(e.target.value)||0))} style={{...S.input,width:90}}/></div>
+                  <div><label style={S.label}>步进</label>
+                    <input type="number" min={1} value={indexStep} onChange={e=>setIndexStep(Math.max(1,parseInt(e.target.value)||1))} style={{...S.input,width:90}}/></div>
+                  <div><label style={S.label}>补零位数（0=默认 2/3/4）</label>
+                    <input type="number" min={0} max={8} value={padWidth} onChange={e=>setPadWidth(Math.max(0,Math.min(8,parseInt(e.target.value)||0)))} style={{...S.input,width:140}}/></div>
+                </div>
+                <div>
+                  <label style={S.label}>正则查找替换（作用于生成后的文件名主体，可选）</label>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    <input value={findRegex} onChange={e=>setFindRegex(e.target.value)} placeholder="查找（正则），如 \s*【.*?】\s*"
+                      style={{...S.input,flex:1,minWidth:160,fontFamily:'monospace'}}/>
+                    <input value={replaceStr} onChange={e=>setReplaceStr(e.target.value)} placeholder="替换为（留空=删除）"
+                      style={{...S.input,flex:1,minWidth:120}}/>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-ghost" onClick={()=>setStep(2)}>上一步</button>
             <button className="btn btn-primary" onClick={doPreview} disabled={loading||!template}>

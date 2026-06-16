@@ -175,8 +175,12 @@ def scan_directory(root: str = None, quick: bool = False) -> dict:
 # ============ 模板引擎 ============
 
 def apply_template(template: str, book_meta: dict, file_info: dict, index: int,
-                   start_index: int = 1, index_step: int = 1) -> str:
-    """将模板字符串渲染为文件名（不含路径）"""
+                   start_index: int = 1, index_step: int = 1, pad_width: int = 0) -> str:
+    """将模板字符串渲染为文件名（不含路径）
+
+    pad_width>0 时统一覆盖所有 {chapter_index*} 变量的补零位数；=0 时各变量保持
+    原有位数（chapter_index 不补零，_2/_3/_4 分别 2/3/4 位）。
+    """
     idx = start_index + index * index_step
 
     name_no_ext = Path(file_info.get("name", "")).stem
@@ -211,12 +215,12 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int,
         "volume": book_meta.get("volume", ""),
         "original_prefix": original_prefix,
         "series_block": series_block,
-        "chapter_index": str(idx),
-        "chapter_index_2": str(idx).zfill(2),
-        "chapter_index_3": str(idx).zfill(3),
-        "chapter_index_4": str(idx).zfill(4),
+        "chapter_index": str(idx).zfill(pad_width) if pad_width and pad_width > 0 else str(idx),
+        "chapter_index_2": str(idx).zfill(pad_width if pad_width and pad_width > 0 else 2),
+        "chapter_index_3": str(idx).zfill(pad_width if pad_width and pad_width > 0 else 3),
+        "chapter_index_4": str(idx).zfill(pad_width if pad_width and pad_width > 0 else 4),
         "chapter_title": chapter_title,
-        "chapter_full": f"{str(idx).zfill(3)}-{chapter_title}",
+        "chapter_full": f"{str(idx).zfill(pad_width if pad_width and pad_width > 0 else 3)}-{chapter_title}",
         "name": name_no_ext,
         "folder": Path(file_info.get("path", "")).parent.name,
         "ext": file_info.get("ext", "mp3"),
@@ -248,7 +252,7 @@ def apply_template(template: str, book_meta: dict, file_info: dict, index: int,
 def preview_rename(folder_path: str, template: str, book_meta: dict,
                    sort_by: str = 'name_asc', start_index: int = 1,
                    index_step: int = 1, find_regex: str = '',
-                   replace_str: str = '') -> list:
+                   replace_str: str = '', pad_width: int = 0) -> list:
     """返回预览列表
 
     sort_by: name_asc | name_desc | mtime_asc | mtime_desc | size_asc | size_desc
@@ -299,7 +303,8 @@ def preview_rename(folder_path: str, template: str, book_meta: dict,
         }
 
         new_name = apply_template(template, book_meta, file_info, idx,
-                                  start_index=start_index, index_step=index_step)
+                                  start_index=start_index, index_step=index_step,
+                                  pad_width=pad_width)
 
         # apply regex find-replace (only on stem, preserve extension)
         if _find_re and new_name:

@@ -4053,11 +4053,12 @@ def fm_rename_preview():
     index_step  = max(1, int(data.get('index_step', 1)))
     find_regex  = data.get('find_regex', '')
     replace_str = data.get('replace_str', '')
+    pad_width   = int(data.get('pad_width', 0) or 0)
     try:
         previews = _fm.preview_rename(folder_path, template, book_meta,
                                       sort_by=sort_by, start_index=start_index,
                                       index_step=index_step, find_regex=find_regex,
-                                      replace_str=replace_str)
+                                      replace_str=replace_str, pad_width=pad_width)
         return json_ok(previews=previews)
     except Exception as e:
         return json_error(str(e), 500)
