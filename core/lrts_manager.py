@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - dependency is listed in requirements.
 
 
 SALT = "vYCmm+6CFVykQk5w0wiUDliCQRA="
+_LRTS_AUDIO_DEBUG_DONE = False
 READ_HOST = "https://dapis.mting.info"
 API_HOST = "https://dapi.mting.info"
 RSA_PUB_B64 = (
@@ -752,6 +753,12 @@ class LRTSManager:
         if data.get("status") != 0:
             print(f"[lrts] getListenPath status={data.get('status')} msg={data.get('msg')}")
             return None
+        # 一次性诊断：打印懒人音频接口返回的字段名，排查高码率(320k)是否已藏在某字段里（只打字段名，不含含 token 的完整 URL）
+        global _LRTS_AUDIO_DEBUG_DONE
+        if not _LRTS_AUDIO_DEBUG_DONE:
+            _LRTS_AUDIO_DEBUG_DONE = True
+            d = data.get("data") or {}
+            print(f"[lrts-audio-debug] getListenPath 返回字段: data={list(d.keys())} 顶层={list(data.keys())}")
         url = (data.get("data") or {}).get("path") or data.get("path")
         return self._normalize_url(url)
 
