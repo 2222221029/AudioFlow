@@ -122,6 +122,38 @@ class SubscriptionManagerTest(unittest.TestCase):
             stats = manager.stats_for(sub, download_tmp, fast=True)
             self.assertEqual((stats["total"], stats["downloaded"], stats["missing"]), (3, 2, 1))
 
+    def test_manual_complete_retries_confirmed_restricted(self):
+        # 用户手动点「补全缺失」(retry_restricted=True) 时，连「已确认受限」章节也强制重试一次
+        # （权限可能已变化或之前是误判失败）；后台自动检测(retry_restricted=False) 仍跳过，
+        # 避免对真受限反复建任务。
+        from core.subscription_manager import chapter_key
+
+        def build(retry):
+            config_tmp = tempfile.mkdtemp()
+            download_tmp = tempfile.mkdtemp()
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "b", "title": "付费书", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "1", "title": "付费书 001集", "order_num": 1},
+                {"id": "2", "title": "付费书 002集", "order_num": 2, "isFree": 0},
+            ]
+            sub = manager.add_or_update(album, chapters, download_tmp)
+            # 第2集之前下载失败被误标为已确认受限
+            sub.setdefault("downloaded", {})[chapter_key(chapters[1])] = {"status": "restricted", "confirmed": True}
+            album_dir = Path(download_tmp) / "喜马拉雅" / "付费书"
+            album_dir.mkdir(parents=True)
+            (album_dir / "0001-付费书 001集.m4a").write_bytes(b"x" * 4096)
+            manager.build_audio_index(download_tmp, force=True)
+            return manager.diff_chapters(sub, chapters, download_tmp, retry_restricted=retry)
+
+        auto = build(False)  # 自动检测：跳过受限
+        self.assertEqual(auto["missing"], [])
+        self.assertEqual(auto["restricted_count"], 1)
+
+        manual = build(True)  # 手动补全：强制重试
+        self.assertEqual([c["id"] for c in manual["missing"]], ["2"])
+        self.assertEqual(manual["restricted_count"], 0)
+
     def test_diff_uses_fresh_audio_index_without_directory_scan(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
             manager = SubscriptionManager(config_tmp)

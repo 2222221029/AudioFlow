@@ -826,7 +826,7 @@ class SubscriptionManager:
             result.append(data)
         return result
 
-    def diff_chapters(self, subscription, remote_chapters, download_dir, scan_cache=None, skip_local=False, prefer_index=True):
+    def diff_chapters(self, subscription, remote_chapters, download_dir, scan_cache=None, skip_local=False, prefer_index=True, retry_restricted=False):
         scan_cache = scan_cache if isinstance(scan_cache, dict) else {}
         saved = subscription.get("chapters") or []
         saved_keys = {chapter_key(ch): ch for ch in saved if isinstance(ch, dict)}
@@ -908,7 +908,10 @@ class SubscriptionManager:
             # 跳过、检测永远「无需补全」。改为仅认 confirmed：未确认受限的章节正常进入待下载，
             # 实际下载失败会被 mark_download_results 标为 confirmed，下次自然跳过——既不会对
             # 真 VIP 无限重试(失败一次即 confirmed)，也不会漏掉用户实际可下的章节。
-            if restricted_now and not local_ok and confirmed_restricted:
+            # retry_restricted=True（用户手动点「补全缺失」）时，连已确认受限的章节也强制
+            # 重试一次：手动补全是用户明确意图(且其权限/会员可能已变化或之前是误判失败)，
+            # 应尝试所有缺失；只有后台自动检测才保持克制、跳过 confirmed 受限避免反复建任务。
+            if restricted_now and not local_ok and confirmed_restricted and not retry_restricted:
                 restricted_count += 1
                 continue
             if is_new:

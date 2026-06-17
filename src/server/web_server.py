@@ -611,7 +611,7 @@ def subscription_scheduler_status():
     return status
 
 
-def _run_subscription_check(sid, queue_missing=False, source="subscription-check", progress=None):
+def _run_subscription_check(sid, queue_missing=False, source="subscription-check", progress=None, retry_restricted=False):
     def set_progress(message, **fields):
         if callable(progress):
             try:
@@ -660,7 +660,7 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
             set_progress("合并历史章节", merged_extra=len(appended))
     set_progress("正在扫描本地文件", chapter_count=len(chapters))
     scan_cache = {}
-    diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False)
+    diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False, retry_restricted=retry_restricted)
     set_progress("正在更新订阅结果", missing_count=len(diff.get("missing") or []))
     subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
     item = subscription_manager.get(sid) or item
@@ -701,7 +701,7 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     }
 
 
-def _subscription_job(job_id, sid, queue_missing):
+def _subscription_job(job_id, sid, queue_missing, manual=False):
     started_at = time.time()
     def update_progress(message, **fields):
         payload = {"message": message, "updated_at": time.time()}
@@ -721,8 +721,15 @@ def _subscription_job(job_id, sid, queue_missing):
             }
         )
     try:
-        result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription", progress=update_progress)
-        message = "已加入下载队列" if result.get("queued") else "检测完成，无需补全" if queue_missing else "检测完成"
+        result = _run_subscription_check(sid, queue_missing=queue_missing, source="subscription", progress=update_progress, retry_restricted=manual)
+        if result.get("queued"):
+            message = "已加入下载队列"
+        elif queue_missing:
+            # 没建下载任务：区分「真的全下好了」与「有受限章节被跳过」，后者别误报无需补全
+            rc = int((result.get("diff") or {}).get("restricted_count") or 0)
+            message = f"检测完成，{rc} 章受限暂跳过（手动补全可强制重试）" if rc else "检测完成，无需补全"
+        else:
+            message = "检测完成"
         append_background_event(
             "subscription",
             message,
@@ -786,7 +793,7 @@ def cleanup_subscription_jobs(now=None):
             overflow -= 1
 
 
-def start_subscription_job(sid, queue_missing=False):
+def start_subscription_job(sid, queue_missing=False, manual=False):
     with subscription_job_lock:
         cleanup_subscription_jobs()
         for existing in subscription_jobs.values():
@@ -806,7 +813,7 @@ def start_subscription_job(sid, queue_missing=False):
             "created_at": time.time(),
             "updated_at": time.time(),
         }
-    threading.Thread(target=_subscription_job, args=(job_id, sid, queue_missing), name=job_id, daemon=True).start()
+    threading.Thread(target=_subscription_job, args=(job_id, sid, queue_missing, manual), name=job_id, daemon=True).start()
     return dict(subscription_jobs[job_id])
 
 
@@ -2777,7 +2784,7 @@ def api_subscriptions_batch():
     if action in {"check", "complete"}:
         for sid in ids:
             if subscription_manager.get(sid):
-                jobs.append(start_subscription_job(sid, queue_missing=(action == "complete")))
+                jobs.append(start_subscription_job(sid, queue_missing=(action == "complete"), manual=(action == "complete")))
         append_background_event("subscription", "批量订阅操作", f"{action} {len(jobs)} 个订阅", {"action": action, "count": len(jobs)})
         return json_ok(action=action, jobs=jobs, count=len(jobs), scheduler=subscription_scheduler_status())
     for sid in ids:
@@ -2853,7 +2860,7 @@ def api_subscription_job(job_id):
 def api_subscription_complete(sid):
     if not subscription_manager.get(sid):
         return json_error("订阅不存在", 404)
-    return json_ok(job=start_subscription_job(sid, queue_missing=True))
+    return json_ok(job=start_subscription_job(sid, queue_missing=True, manual=True))
 
 
 @app.get("/api/player/url")
