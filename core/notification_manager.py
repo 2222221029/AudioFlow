@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -11,6 +12,34 @@ from urllib.parse import parse_qs, quote, urlparse
 import requests
 
 from .platform_config import config_dir
+
+
+class _SafeFmt(dict):
+    def __missing__(self, key):
+        return ""
+
+
+def render_template(template, fields):
+    """安全渲染：{name} 占位，缺失变量按空字符串，渲染异常回退原文。"""
+    try:
+        return str(template or "").format_map(_SafeFmt(fields or {}))
+    except Exception:
+        return str(template or "")
+
+
+def wecom_album_url(platform, album_id, fallback=""):
+    """各平台官方专辑页 URL（用于卡片点击跳转），未知平台回退 fallback。"""
+    aid = str(album_id or "").strip()
+    if not aid:
+        return fallback
+    mapping = {
+        "喜马拉雅": f"https://www.ximalaya.com/album/{aid}",
+        "懒人听书": f"https://www.lrts.me/album/{aid}",
+        "蜻蜓FM": f"https://www.qingting.fm/channels/{aid}",
+        "酷我听书": f"http://www.kuwo.cn/album_detail/{aid}",
+        "荔枝FM": f"https://www.lizhi.fm/album/{aid}",
+    }
+    return mapping.get(str(platform or "").strip()) or fallback
 
 
 DEFAULT_SCENES = {
@@ -42,6 +71,17 @@ DEFAULT_WECOM_TEMPLATES = {
     "processing_search": "⏳ 正在搜索，结果会以卡片形式推送给你…",
     "processing_subscribe": "⏳ 正在订阅，处理结果会推送给你…",
     "processing_download": "⏳ 正在创建下载任务，结果会推送给你…",
+    "help_title": "AudioFlow 企业微信指令",
+    "help_desc": "帮助：显示指令\n状态：服务版本与任务数\n搜索 关键词：全平台搜索（卡片推送）\n搜索 平台 关键词：指定平台，如「搜索 喜马拉雅 三体」\n下一页 / 上一页：翻看搜索结果\n订阅 序号 / 下载 序号：操作搜索结果",
+    # 场景通知卡片（notify_<scene>_title/_desc），download_partial/stopped 复用 download_completed
+    "notify_subscription_queued_title": "🆕 订阅发现新章节：{title}",
+    "notify_subscription_queued_desc": "平台：{platform}\n新增/缺失：{missing_count} 章\n任务：{task_id}",
+    "notify_subscription_checked_title": "🔎 订阅检测发现缺失：{title}",
+    "notify_subscription_checked_desc": "平台：{platform}\n缺失：{missing_count} 章",
+    "notify_download_completed_title": "✅ 下载完成：{title}",
+    "notify_download_completed_desc": "平台：{platform}\n成功：{success} 章 · 失败：{failed} 章\n任务：{task_id}",
+    "notify_download_failed_title": "❌ 下载失败：{title}",
+    "notify_download_failed_desc": "错误：{error}\n任务：{task_id}",
 }
 
 
@@ -418,6 +458,39 @@ class NotificationManager:
         return self._assert_provider_ok(response, "企业微信应用", ok_codes=(0,), ok_field="errcode", message_fields=("errmsg", "message", "msg"))
 
     def _send_wecom_app(self, config, message):
+        payload = message.get("payload") or {}
+        album = payload.get("album") or {}
+        task = payload.get("task") or {}
+        scene = str(message.get("scene") or "")
+        # download_partial/stopped 复用 download_completed 模板
+        tpl_scene = "download_completed" if scene.startswith("download_") and scene != "download_failed" else scene
+        templates = self.get_wecom_templates()
+        title_tpl = templates.get(f"notify_{tpl_scene}_title")
+        desc_tpl = templates.get(f"notify_{tpl_scene}_desc")
+        if title_tpl and desc_tpl:
+            fields = {
+                "title": album.get("title") or task.get("title") or message.get("title") or "",
+                "platform": album.get("platform") or "",
+                "missing_count": payload.get("missing_count", ""),
+                "task_id": payload.get("task_id") or task.get("id") or task.get("task_id") or "",
+                "success": payload.get("success", ""),
+                "failed": payload.get("failed", ""),
+                "error": payload.get("error", ""),
+            }
+            article = {
+                "title": render_template(title_tpl, fields),
+                "description": render_template(desc_tpl, fields),
+            }
+            if album.get("cover"):
+                article["picurl"] = album.get("cover")
+            url = wecom_album_url(
+                album.get("platform"),
+                album.get("id") or album.get("album_id") or album.get("book_id"),
+                os.getenv("PUBLIC_BASE_URL") or "",
+            )
+            if url:
+                article["url"] = url
+            return self.send_wecom_app_news(config, [article])
         content = f"{message['title']}\n{message['text']}".strip()
         return self.send_wecom_app_text(config, content)
 

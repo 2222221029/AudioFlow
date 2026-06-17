@@ -1587,6 +1587,16 @@ WECOM_TEMPLATE_FIELDS = [
     {"key": "processing_search", "label": "搜索·处理中回执", "vars": []},
     {"key": "processing_subscribe", "label": "订阅·处理中回执", "vars": []},
     {"key": "processing_download", "label": "下载·处理中回执", "vars": []},
+    {"key": "help_title", "label": "帮助·卡片标题", "vars": []},
+    {"key": "help_desc", "label": "帮助·卡片内容", "vars": []},
+    {"key": "notify_subscription_queued_title", "label": "通知·订阅新章节·标题", "vars": ["title", "platform", "missing_count", "task_id"]},
+    {"key": "notify_subscription_queued_desc", "label": "通知·订阅新章节·描述", "vars": ["title", "platform", "missing_count", "task_id"]},
+    {"key": "notify_subscription_checked_title", "label": "通知·订阅检测缺失·标题", "vars": ["title", "platform", "missing_count"]},
+    {"key": "notify_subscription_checked_desc", "label": "通知·订阅检测缺失·描述", "vars": ["title", "platform", "missing_count"]},
+    {"key": "notify_download_completed_title", "label": "通知·下载完成·标题", "vars": ["title", "platform", "success", "failed", "task_id"]},
+    {"key": "notify_download_completed_desc", "label": "通知·下载完成·描述", "vars": ["title", "platform", "success", "failed", "task_id"]},
+    {"key": "notify_download_failed_title", "label": "通知·下载失败·标题", "vars": ["title", "task_id", "error"]},
+    {"key": "notify_download_failed_desc", "label": "通知·下载失败·描述", "vars": ["title", "task_id", "error"]},
 ]
 
 
@@ -1597,6 +1607,7 @@ def _wecom_help_text():
         "状态：查看服务版本和任务数\n"
         "搜索 关键词：全平台搜索（结果以卡片推送）\n"
         "搜索 平台 关键词：指定平台搜索，如「搜索 喜马拉雅 三体」\n"
+        "下一页 / 上一页：翻看搜索结果\n"
         "订阅 序号：订阅最近一次搜索结果\n"
         "下载 序号：下载最近一次搜索结果全部章节\n"
         "示例：搜索 三体 / 搜索 喜马拉雅 三体"
@@ -1690,12 +1701,18 @@ def _wecom_push(service_id, to_user, articles=None, text=None):
         logging.exception("wecom push failed: %s", service_id)
 
 
-def _wecom_search_articles(keyword, platform, results):
-    """按可配置模板渲染搜索结果图文卡片（封面 + 标题 + 描述）。"""
+WECOM_SEARCH_PAGE_SIZE = 8
+
+
+def _wecom_search_articles(keyword, platform, results, page=0):
+    """渲染搜索结果图文卡片（封面+标题+描述+官方专辑页链接），按页取 8 条，序号全局连续。"""
+    from core.notification_manager import wecom_album_url
     tpl = notification_manager.get_wecom_templates()
     base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    start = max(0, int(page)) * WECOM_SEARCH_PAGE_SIZE
     articles = []
-    for idx, item in enumerate(results[:8], start=1):
+    for offset, item in enumerate(results[start:start + WECOM_SEARCH_PAGE_SIZE]):
+        idx = start + offset + 1
         plat = item.get("platform") or "未知平台"
         fields = {
             "index": idx,
@@ -1712,10 +1729,30 @@ def _wecom_search_articles(keyword, platform, results):
         cover = normalize_cover_url(item.get("cover") or "", plat)
         if cover:
             article["picurl"] = cover
-        if base:
-            article["url"] = base
+        url = wecom_album_url(plat, item.get("id") or item.get("album_id") or item.get("book_id"), base)
+        if url:
+            article["url"] = url
         articles.append(article)
     return articles
+
+
+def _wecom_push_help(service_id, user_id):
+    tpl = notification_manager.get_wecom_templates()
+    _wecom_push(service_id, user_id, articles=[{
+        "title": tpl.get("help_title") or "AudioFlow 指令",
+        "description": tpl.get("help_desc") or _wecom_help_text(),
+    }])
+
+
+def _wecom_push_page_hint(service_id, user_id, results, page):
+    total = len(results)
+    total_pages = max(1, (total + WECOM_SEARCH_PAGE_SIZE - 1) // WECOM_SEARCH_PAGE_SIZE)
+    if total_pages <= 1:
+        return
+    _wecom_push(service_id, user_id, text=(
+        f"📄 第 {page + 1}/{total_pages} 页 · 共 {total} 条。"
+        f"回复「下一页」/「上一页」翻页，「订阅 序号」/「下载 序号」操作。"
+    ))
 
 
 def _wecom_result_card(title, desc, cover="", platform=""):
@@ -1742,15 +1779,35 @@ def _wecom_async_command(service_id, user_id, text):
             if len(parts) == 2 and parts[0] in WECOM_PLATFORM_NAMES:
                 platform = parts[0]
                 keyword = parts[1].strip()
-            results = [normalize_album(item) for item in search_manager.search_books(keyword, platform)][:8]
+            results = [normalize_album(item) for item in search_manager.search_books(keyword, platform)]
             with wecom_session_lock:
                 cleanup_wecom_sessions()
-                wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
+                wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "platform": platform, "results": results, "page": 0, "updated_at": time.time()}
             if not results:
                 tpl = notification_manager.get_wecom_templates()
                 _wecom_push(service_id, user_id, text=_wecom_render(tpl["search_empty"], keyword=keyword, platform=platform))
                 return
-            _wecom_push(service_id, user_id, articles=_wecom_search_articles(keyword, platform, results))
+            _wecom_push(service_id, user_id, articles=_wecom_search_articles(keyword, platform, results, 0))
+            _wecom_push_page_hint(service_id, user_id, results, 0)
+            return
+        if re.match(r"^(下一页|next|/next|上一页|prev|/prev)$", text, re.I):
+            forward = bool(re.match(r"^(下一页|next|/next)$", text, re.I))
+            key = _wecom_session_key(service_id, user_id)
+            with wecom_session_lock:
+                cleanup_wecom_sessions()
+                session = wecom_sessions.get(key) or {}
+            results = session.get("results") or []
+            if not results:
+                _wecom_push(service_id, user_id, text="还没有搜索结果，请先发送：搜索 关键词")
+                return
+            total_pages = max(1, (len(results) + WECOM_SEARCH_PAGE_SIZE - 1) // WECOM_SEARCH_PAGE_SIZE)
+            page = max(0, min(total_pages - 1, int(session.get("page", 0)) + (1 if forward else -1)))
+            with wecom_session_lock:
+                if key in wecom_sessions:
+                    wecom_sessions[key]["page"] = page
+                    wecom_sessions[key]["updated_at"] = time.time()
+            _wecom_push(service_id, user_id, articles=_wecom_search_articles(session.get("keyword", ""), session.get("platform", "all"), results, page))
+            _wecom_push_page_hint(service_id, user_id, results, page)
             return
         m_sub = re.match(r"^(订阅|subscribe|/subscribe)\s+(\d+)$", text, re.I)
         if m_sub:
@@ -1794,16 +1851,20 @@ def _wecom_async_command(service_id, user_id, text):
 def _wecom_handle_text_command(service_id, user_id, text):
     text = str(text or "").strip()
     if not text or text in {"帮助", "help", "/help", "？", "?"}:
-        return _wecom_help_text()
+        threading.Thread(target=_wecom_push_help, args=(service_id, user_id), daemon=True).start()
+        return "📖 指令说明已推送给你"
     if text in {"状态", "status", "/status"}:
         tasks_now = task_snapshot()
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
         return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
-    # 慢指令（搜索/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
+    # 慢指令（搜索/翻页/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
     tpl = notification_manager.get_wecom_templates()
     if re.match(r"^(搜索|search|/search)\s+.+$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
         return tpl["processing_search"]
+    if re.match(r"^(下一页|上一页|next|prev|/next|/prev)$", text, re.I):
+        threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
+        return "⏳ 正在翻页…"
     if re.match(r"^(订阅|subscribe|/subscribe)\s+\d+$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
         return tpl["processing_subscribe"]
