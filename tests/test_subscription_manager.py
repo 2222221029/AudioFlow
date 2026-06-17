@@ -89,6 +89,39 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(diff["missing"], [])
         self.assertEqual(diff["restricted_count"], 1)
 
+    def test_diff_clears_stale_downloaded_flag_when_file_missing(self):
+        # 回归：旧版「按数量兜底」把整本书全部章节误标 downloaded，但磁盘实际缺最后几集。
+        # 检测时必须清除「标记已下载却无文件」的脏状态，否则 stats(fast) 会假报「已下载 N/N、
+        # 缺失 0」，与本地实际不符，且该章节被误认为已完成漏下。
+        from core.subscription_manager import chapter_key
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "book", "title": "测试书", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "1", "title": "测试书 001集", "order_num": 1},
+                {"id": "2", "title": "测试书 002集", "order_num": 2},
+                {"id": "3", "title": "测试书 003集", "order_num": 3},
+            ]
+            sub = manager.add_or_update(album, chapters, download_tmp)
+            dlmap = sub.setdefault("downloaded", {})
+            for ch in chapters:  # 全部 3 章被误标已下载
+                dlmap[chapter_key(ch)] = {"status": "downloaded", "source": "local-count-full"}
+            album_dir = Path(download_tmp) / "喜马拉雅" / "测试书"
+            album_dir.mkdir(parents=True)
+            for idx in (1, 2):  # 但磁盘只有前 2 集
+                (album_dir / f"{idx:04d}-测试书 {idx:03d}集.m4a").write_bytes(b"x" * 4096)
+            manager.build_audio_index(download_tmp, force=True)
+
+            diff = manager.diff_chapters(sub, chapters, download_tmp)
+            self.assertEqual([c["id"] for c in diff["missing"]], ["3"])
+            self.assertNotIn(chapter_key(chapters[2]), dlmap)  # 第3集脏状态已清除
+            self.assertEqual(len(dlmap), 2)
+
+            sub["download_dir"] = download_tmp
+            stats = manager.stats_for(sub, download_tmp, fast=True)
+            self.assertEqual((stats["total"], stats["downloaded"], stats["missing"]), (3, 2, 1))
+
     def test_diff_uses_fresh_audio_index_without_directory_scan(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
             manager = SubscriptionManager(config_tmp)

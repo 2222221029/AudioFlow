@@ -893,6 +893,13 @@ class SubscriptionManager:
                 if state_restricted:
                     downloaded.pop(key, None)
                     state = {}
+            elif not skip_local and state.get("status") in ("downloaded", "skipped"):
+                # 标记为「已下载」但磁盘上实际没有该文件：多为旧版「按数量兜底」(local-count/
+                # local-count-full) 把整本书全部章节误标成已下载留下的脏状态。清除它，否则
+                # stats(fast 模式按 state 计数) 会持续假报「已下载 N/N、缺失 0」，与本地实际
+                # 文件数不符，且该章节会被误认为已完成而漏下。清除后本章按真实缺失走补全。
+                downloaded.pop(key, None)
+                state = {}
             # 受限章节只在「已实际下载失败并确认受限」(confirmed_restricted) 时才跳过。
             # 仅凭元数据(isFree/isVip 等)判定的受限并不可靠——能否下载取决于用户 cookie 的
             # 会员/已购权限。早期版本额外用 had_state_record(此前有任意下载记录) 一并跳过，
