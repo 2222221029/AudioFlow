@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 
@@ -16,8 +17,14 @@ class Signal:
             self._callbacks.append(callback)
 
     def emit(self, *args, **kwargs):
+        # 单个回调抛异常不能影响其它回调，更不能把异常抛回 emit 的调用方——否则下载主循环
+        # 里每章触发的进度 emit 一旦遇到回调(set_task 等)偶发失败，就会中断整个下载循环、
+        # 进度卡死（文件仍由线程池下完，进度条却停在中途）。逐个隔离、失败仅记日志。
         for callback in list(self._callbacks):
-            callback(*args, **kwargs)
+            try:
+                callback(*args, **kwargs)
+            except Exception:
+                logging.getLogger(__name__).warning("signal callback failed", exc_info=True)
 
 
 class SignalDescriptor:

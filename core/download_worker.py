@@ -271,18 +271,22 @@ class DownloadWorker(QThread):
                         chapter['_error'] = f'下载异常: {str(e)[:50]}'
                         self.failed_chapters.append(chapter)
 
-                    current_time = time.time()
-                    with self._progress_lock:
-                        self._completed_for_progress = completed_count
-                        self._chapter_progress.pop(chapter_index, None)
-                        self._emit_realtime_progress_locked()
-                    if current_time - last_update_time >= 0.2 or completed_count == len(self.chapters):
-                        self.progress_updated.emit(self.task_id, completed_count, len(self.chapters))
-                        last_update_time = current_time
-                        # 进度日志每 20 章（或最后一章）打印一次，避免上千集时刷屏
-                        if completed_count % 20 == 0 or completed_count == len(self.chapters):
-                            print(f"📊 下载进度: {completed_count}/{len(self.chapters)} "
-                                  f"({int(completed_count / len(self.chapters) * 100)}%)")
+                    # 进度上报失败绝不能中断下载循环（否则文件继续下完、进度却卡在中途）
+                    try:
+                        current_time = time.time()
+                        with self._progress_lock:
+                            self._completed_for_progress = completed_count
+                            self._chapter_progress.pop(chapter_index, None)
+                            self._emit_realtime_progress_locked()
+                        if current_time - last_update_time >= 0.2 or completed_count == len(self.chapters):
+                            self.progress_updated.emit(self.task_id, completed_count, len(self.chapters))
+                            last_update_time = current_time
+                            # 进度日志每 20 章（或最后一章）打印一次，避免上千集时刷屏
+                            if completed_count % 20 == 0 or completed_count == len(self.chapters):
+                                print(f"📊 下载进度: {completed_count}/{len(self.chapters)} "
+                                      f"({int(completed_count / len(self.chapters) * 100)}%)")
+                    except Exception as progress_exc:
+                        print(f"   ⚠️ 进度上报失败(已忽略，不影响下载): {progress_exc}")
 
             print(f"🎉 下载任务完成: 成功 {self.success_count} 个，失败 {self.failed_count} 个")
             self.download_completed.emit(

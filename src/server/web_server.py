@@ -1315,6 +1315,8 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
         success_chapters=success_chapters,
         failed_chapters=failed_chapters,
         failure_reason=failure_reason,
+        # 完成(非中途停止)时把进度拉满，避免过程中某次进度上报丢失导致进度条停在中途
+        completed=current.get("total") if status != "stopped" else current.get("completed", success + failed),
         percent=100 if status != "stopped" else current.get("percent", 0),
         finished_at=time.time(),
     )
