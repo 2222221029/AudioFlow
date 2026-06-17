@@ -869,7 +869,6 @@ class SubscriptionManager:
             key = chapter_key(chapter)
             is_new = key not in saved_keys
             state = downloaded.get(key, {})
-            had_state_record = bool(state.get("status"))
             restricted_now = is_restricted_chapter(chapter)
             state_restricted = state.get("status") == "restricted"
             # 只有「实际下载失败并确认受限」(confirmed=True，由 mark_download_results 写入)
@@ -894,12 +893,15 @@ class SubscriptionManager:
                 if state_restricted:
                     downloaded.pop(key, None)
                     state = {}
-            # 受限章节：仅在「首次遇到」(无任何下载记录) 时尝试下载一次，
-            # 用于解决元数据误判受限（会员/已购实际可下）导致永不下载的问题；
-            # 一旦已确认受限(confirmed) 或此前已有任意下载记录(had_state_record)，即跳过，
-            # 避免每次检测都对真 VIP/会员章节反复创建下载任务（修复 v0.62 的副作用）。
-            # 元数据已解锁(restricted_now=False) 的章节不受此限制，走正常缺失补全。
-            if restricted_now and not local_ok and (confirmed_restricted or had_state_record):
+            # 受限章节只在「已实际下载失败并确认受限」(confirmed_restricted) 时才跳过。
+            # 仅凭元数据(isFree/isVip 等)判定的受限并不可靠——能否下载取决于用户 cookie 的
+            # 会员/已购权限。早期版本额外用 had_state_record(此前有任意下载记录) 一并跳过，
+            # 本意是防 VIP 章节反复建任务，但副作用是：有会员、实际可下的最新几集(如付费精品
+            # 书的 613/614/615)，只要历史上被误标过任意状态(local-count/failed 等)，就被永久
+            # 跳过、检测永远「无需补全」。改为仅认 confirmed：未确认受限的章节正常进入待下载，
+            # 实际下载失败会被 mark_download_results 标为 confirmed，下次自然跳过——既不会对
+            # 真 VIP 无限重试(失败一次即 confirmed)，也不会漏掉用户实际可下的章节。
+            if restricted_now and not local_ok and confirmed_restricted:
                 restricted_count += 1
                 continue
             if is_new:

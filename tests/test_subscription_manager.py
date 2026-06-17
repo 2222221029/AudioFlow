@@ -57,6 +57,38 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertEqual(diff["missing"], [])
             self.assertEqual(diff["file_missing_count"], 0)
 
+    def test_diff_retries_restricted_chapter_unless_confirmed(self):
+        # 回归：付费精品书的最新几集元数据是受限(isFree=0)，且历史上被误标过状态
+        # (had_state_record)。这些章节用户有会员实际可下，不能仅凭「元数据受限+有历史记录」
+        # 就永久跳过、检测永远「无需补全」。只有「实际下载失败并确认受限」(confirmed) 才跳过。
+        from core.subscription_manager import chapter_key
+
+        def build(state_for_missing):
+            config_tmp = tempfile.mkdtemp()
+            download_tmp = tempfile.mkdtemp()
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "vipbook", "title": "付费书", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "1", "title": "付费书 001集", "order_num": 1},
+                {"id": "2", "title": "付费书 002集", "order_num": 2, "isFree": 0},
+            ]
+            sub = manager.add_or_update(album, chapters, download_tmp)
+            sub.setdefault("downloaded", {})[chapter_key(chapters[1])] = dict(state_for_missing)
+            album_dir = Path(download_tmp) / "喜马拉雅" / "付费书"
+            album_dir.mkdir(parents=True)
+            (album_dir / "0001-付费书 001集.m4a").write_bytes(b"a" * 4096)  # 仅第1集在本地
+            manager.build_audio_index(download_tmp, force=True)
+            return manager.diff_chapters(sub, chapters, download_tmp)
+
+        # 受限但仅 failed（非 confirmed）→ 应继续尝试下载（进 missing）
+        diff = build({"status": "failed"})
+        self.assertEqual([c["id"] for c in diff["missing"]], ["2"])
+
+        # 受限且已确认(confirmed) → 防回归：仍跳过，不报缺失
+        diff = build({"status": "restricted", "confirmed": True})
+        self.assertEqual(diff["missing"], [])
+        self.assertEqual(diff["restricted_count"], 1)
+
     def test_diff_uses_fresh_audio_index_without_directory_scan(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
             manager = SubscriptionManager(config_tmp)
