@@ -34,6 +34,29 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertEqual(diff["missing"][0]["id"], "2")
             self.assertEqual(diff["file_missing_count"], 1)
 
+    def test_diff_does_not_loop_when_title_starts_with_number(self):
+        # 回归：标题以书名数字开头（如「1984：…001集」）且 order_num=0 时，
+        # 检测端不能用裸 \d+ 抓到书名里的「1984」当章节号——否则与下载端按
+        # 「001集」→1 命名的本地文件对不上，导致每轮检测都误报缺失、反复下载跳过。
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1984", "title": "1984：从破产川菜馆开始", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "101", "title": "1984：从破产川菜馆开始 001集 重生1984", "order_num": 0},
+                {"id": "102", "title": "1984：从破产川菜馆开始 002集 重生1984", "order_num": 0},
+                {"id": "103", "title": "1984：从破产川菜馆开始 003集 双椒牛肉拌面", "order_num": 0},
+            ]
+            subscription = manager.add_or_update(album, chapters, download_tmp)
+            album_dir = Path(download_tmp) / "喜马拉雅" / "1984：从破产川菜馆开始"
+            album_dir.mkdir(parents=True)
+            for ch, idx in zip(chapters, (1, 2, 3)):
+                (album_dir / f"{idx:04d}-{ch['title']}.m4a").write_bytes(b"x" * 2048)
+            manager.build_audio_index(download_tmp, force=True)
+
+            diff = manager.diff_chapters(subscription, chapters, download_tmp)
+            self.assertEqual(diff["missing"], [])
+            self.assertEqual(diff["file_missing_count"], 0)
+
     def test_diff_uses_fresh_audio_index_without_directory_scan(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
             manager = SubscriptionManager(config_tmp)

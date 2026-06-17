@@ -354,12 +354,19 @@ def chapter_order(chapter, fallback):
                 return int(value)
         except Exception:
             pass
-    match = re.search(r"(\d+)", chapter_title(chapter))
-    if match:
-        try:
-            return int(match.group(1))
-        except Exception:
-            pass
+    # 与下载端 download_worker._download_single_chapter 完全一致的提取规则：
+    # 先匹配带「章/节/集」锚点的序号（如「001集」→1），最后才退化到任意数字。
+    # 否则像「1984：从破产川菜馆开始 001集」这类标题，裸 \d+ 会先抓到书名里的
+    # 「1984」当章节号，与下载端实际命名(0001-)的序号(1)对不上，导致已下载文件
+    # 永远匹配不到、每轮检测都误报缺失并反复创建「文件已存在被跳过」的无效下载。
+    title = chapter_title(chapter)
+    for pattern in (r"第?(\d+)[章节集]", r"(\d+)[章节集]", r"第(\d+)", r"(\d+)"):
+        match = re.search(pattern, title)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                pass
     return fallback
 
 
