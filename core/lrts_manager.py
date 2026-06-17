@@ -740,9 +740,22 @@ class LRTSManager:
         if not entity_id or not chapter:
             return None
         try:
+            import os
             with _RATE_SEMAPHORE:
                 _throttle_audio_request()
-                data = self._client_or_guest().get_play_path(entity_type, entity_id, chapter, section, op_type=1)
+                client = self._client_or_guest()
+                # 取流专用 UA 开关：懒人按客户端类型分码率，安卓只给 48k。
+                # 填入 iOS UA（环境变量 LRTS_AUDIO_UA）可尝试拿高码率；仅替换取流这一步的 UA，
+                # 不影响搜索/章节（懒人下载并发=1，临时改 header 安全）。
+                audio_ua = os.getenv("LRTS_AUDIO_UA")
+                old_ua = client.session.headers.get("User-Agent") if audio_ua else None
+                if audio_ua:
+                    client.session.headers["User-Agent"] = audio_ua
+                try:
+                    data = client.get_play_path(entity_type, entity_id, chapter, section, op_type=1)
+                finally:
+                    if audio_ua and old_ua is not None:
+                        client.session.headers["User-Agent"] = old_ua
         except Exception as exc:
             print(f"[lrts] getListenPath failed: {exc}")
             return None
@@ -758,7 +771,7 @@ class LRTSManager:
         if not _LRTS_AUDIO_DEBUG_DONE:
             _LRTS_AUDIO_DEBUG_DONE = True
             d = data.get("data") or {}
-            print(f"[lrts-audio-debug] getListenPath 返回字段: data={list(d.keys())} 顶层={list(data.keys())}")
+            print(f"[lrts-audio-debug] UA={os.getenv('LRTS_AUDIO_UA') or '默认安卓'} mimeType={d.get('mimeType')} fileSize={d.get('fileSize')} fileLength={d.get('fileLength')}")
         url = (data.get("data") or {}).get("path") or data.get("path")
         return self._normalize_url(url)
 
