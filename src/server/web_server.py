@@ -1556,15 +1556,22 @@ def _wecom_config_for_callback(service_id):
     return service, config
 
 
+WECOM_PLATFORM_NAMES = {
+    "喜马拉雅", "懒人听书", "番茄畅听", "番茄听书", "网易云听书", "荔枝FM",
+    "七猫听书", "蜻蜓FM", "云听FM", "起点听书", "酷我听书",
+}
+
+
 def _wecom_help_text():
     return (
         "AudioFlow 企业微信指令：\n"
         "帮助：显示指令\n"
         "状态：查看服务版本和任务数\n"
-        "搜索 关键词：搜索有声书\n"
+        "搜索 关键词：全平台搜索（结果以卡片推送）\n"
+        "搜索 平台 关键词：指定平台搜索，如「搜索 喜马拉雅 三体」\n"
         "订阅 序号：订阅最近一次搜索结果\n"
         "下载 序号：下载最近一次搜索结果全部章节\n"
-        "示例：搜索 三体"
+        "示例：搜索 三体 / 搜索 喜马拉雅 三体"
     )
 
 
@@ -1643,6 +1650,104 @@ def _wecom_load_album_chapters(album):
     return album, chapters, voice
 
 
+def _wecom_push(service_id, to_user, articles=None, text=None):
+    """主动给企业微信用户推送结果（图文卡片优先，回退文本）。"""
+    try:
+        _service, config = _wecom_config_for_callback(service_id)
+        if articles:
+            notification_manager.send_wecom_app_news(config, articles, to_user=to_user)
+        elif text:
+            notification_manager.send_wecom_app_text(config, text, to_user=to_user)
+    except Exception:
+        logging.exception("wecom push failed: %s", service_id)
+
+
+def _wecom_search_articles(keyword, platform, results):
+    """默认搜索结果卡片模板：每个专辑一张图文卡片（封面+标题+平台/作者/章节+操作提示）。"""
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    articles = []
+    for idx, item in enumerate(results[:8], start=1):
+        title = item.get("title") or "未知专辑"
+        plat = item.get("platform") or "未知平台"
+        author = item.get("author") or "未知作者"
+        episodes = item.get("episodes") or "?"
+        article = {
+            "title": f"{idx}. {title}",
+            "description": f"{plat} · {author} · {episodes}章\n回复「订阅 {idx}」或「下载 {idx}」",
+        }
+        cover = normalize_cover_url(item.get("cover") or "", plat)
+        if cover:
+            article["picurl"] = cover
+        if base:
+            article["url"] = base
+        articles.append(article)
+    return articles
+
+
+def _wecom_result_card(title, desc, cover="", platform=""):
+    """默认结果卡片模板：订阅/下载等单条结果。"""
+    article = {"title": title, "description": desc}
+    cover = normalize_cover_url(cover or "", platform)
+    if cover:
+        article["picurl"] = cover
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    if base:
+        article["url"] = base
+    return [article]
+
+
+def _wecom_async_command(service_id, user_id, text):
+    """后台异步执行慢指令（搜索/订阅/下载）并把结果以卡片推送，避免被动回复 5 秒超时。"""
+    try:
+        m_search = re.match(r"^(搜索|search|/search)\s+(.+)$", text, re.I)
+        if m_search:
+            rest = m_search.group(2).strip()
+            platform = "all"
+            keyword = rest
+            parts = rest.split(None, 1)
+            if len(parts) == 2 and parts[0] in WECOM_PLATFORM_NAMES:
+                platform = parts[0]
+                keyword = parts[1].strip()
+            results = [normalize_album(item) for item in search_manager.search_books(keyword, platform)][:8]
+            with wecom_session_lock:
+                cleanup_wecom_sessions()
+                wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
+            if not results:
+                _wecom_push(service_id, user_id, text=f"🔍 没有搜索到：{keyword}（平台：{platform}）")
+                return
+            _wecom_push(service_id, user_id, articles=_wecom_search_articles(keyword, platform, results))
+            return
+        m_sub = re.match(r"^(订阅|subscribe|/subscribe)\s+(\d+)$", text, re.I)
+        if m_sub:
+            album = _wecom_get_cached_album(service_id, user_id, m_sub.group(2))
+            album, chapters, voice = _wecom_load_album_chapters(album)
+            if voice:
+                album["voice"] = voice
+            item = subscription_manager.add_or_update(album, chapters, active_download_dir())
+            job = None
+            if subscription_manager.settings().get("enabled", True):
+                ensure_subscription_scheduler()
+                job = start_subscription_job(item["id"], queue_missing=subscription_manager.settings().get("auto_download_missing", True))
+            desc = f"章节数：{len(chapters)}" + (f"\n检测任务：{job.get('id')}" if job else "")
+            _wecom_push(service_id, user_id, articles=_wecom_result_card(f"✅ 已订阅：{album.get('title')}", desc, album.get("cover"), album.get("platform")))
+            return
+        m_dl = re.match(r"^(下载|download|/download)\s+(\d+)$", text, re.I)
+        if m_dl:
+            album = _wecom_get_cached_album(service_id, user_id, m_dl.group(2))
+            album, chapters, voice = _wecom_load_album_chapters(album)
+            options = {"download_dir": active_download_dir(), "quality": subscription_manager.settings().get("quality", "M4A 96K")}
+            if voice:
+                options["voice"] = voice
+            task_id = f"wecom-{uuid.uuid4().hex[:12]}"
+            start_download_task(task_id, album, chapters, options, source="wecom")
+            desc = f"章节数：{len(chapters)}\n任务 ID：{task_id}"
+            _wecom_push(service_id, user_id, articles=_wecom_result_card(f"⬇️ 已加入下载：{album.get('title')}", desc, album.get("cover"), album.get("platform")))
+            return
+    except Exception as exc:
+        logging.exception("wecom async command failed: %s", service_id)
+        _wecom_push(service_id, user_id, text=f"❌ 执行失败：{exc}")
+
+
 def _wecom_handle_text_command(service_id, user_id, text):
     text = str(text or "").strip()
     if not text or text in {"帮助", "help", "/help", "？", "?"}:
@@ -1651,39 +1756,16 @@ def _wecom_handle_text_command(service_id, user_id, text):
         tasks_now = task_snapshot()
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
         return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
-    match = re.match(r"^(搜索|search|/search)\s+(.+)$", text, re.I)
-    if match:
-        keyword = match.group(2).strip()
-        results = [normalize_album(item) for item in search_manager.search_books(keyword, "all")][:8]
-        with wecom_session_lock:
-            cleanup_wecom_sessions()
-            wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
-        if not results:
-            return f"没有搜索到：{keyword}"
-        return f"搜索结果：{keyword}\n{_wecom_album_lines(results)}\n\n发送“订阅 序号”或“下载 序号”继续。"
-    match = re.match(r"^(订阅|subscribe|/subscribe)\s+(\d+)$", text, re.I)
-    if match:
-        album = _wecom_get_cached_album(service_id, user_id, match.group(2))
-        album, chapters, voice = _wecom_load_album_chapters(album)
-        if voice:
-            album["voice"] = voice
-        item = subscription_manager.add_or_update(album, chapters, active_download_dir())
-        job = None
-        if subscription_manager.settings().get("enabled", True):
-            ensure_subscription_scheduler()
-            job = start_subscription_job(item["id"], queue_missing=subscription_manager.settings().get("auto_download_missing", True))
-        suffix = f"\n已启动检测任务：{job.get('id')}" if job else ""
-        return f"已订阅：{album.get('title')}\n章节数：{len(chapters)}{suffix}"
-    match = re.match(r"^(下载|download|/download)\s+(\d+)$", text, re.I)
-    if match:
-        album = _wecom_get_cached_album(service_id, user_id, match.group(2))
-        album, chapters, voice = _wecom_load_album_chapters(album)
-        options = {"download_dir": active_download_dir(), "quality": subscription_manager.settings().get("quality", "M4A 96K")}
-        if voice:
-            options["voice"] = voice
-        task_id = f"wecom-{uuid.uuid4().hex[:12]}"
-        start_download_task(task_id, album, chapters, options, source="wecom")
-        return f"已加入下载：{album.get('title')}\n章节数：{len(chapters)}\n任务 ID：{task_id}"
+    # 慢指令（搜索/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
+    if re.match(r"^(搜索|search|/search)\s+.+$", text, re.I):
+        threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
+        return "⏳ 正在搜索，结果会以卡片形式推送给你…"
+    if re.match(r"^(订阅|subscribe|/subscribe)\s+\d+$", text, re.I):
+        threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
+        return "⏳ 正在订阅，处理结果会推送给你…"
+    if re.match(r"^(下载|download|/download)\s+\d+$", text, re.I):
+        threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
+        return "⏳ 正在创建下载任务，结果会推送给你…"
     return "无法识别指令。\n\n" + _wecom_help_text()
 
 

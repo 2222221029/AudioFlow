@@ -358,6 +358,32 @@ class NotificationManager:
         response = self._post_json(f"{self._wecom_api_base(config)}/cgi-bin/message/send?access_token={token}", payload)
         return self._assert_provider_ok(response, "企业微信应用", ok_codes=(0,), ok_field="errcode", message_fields=("errmsg", "message", "msg"))
 
+    def send_wecom_app_news(self, config, articles, to_user=None):
+        """主动推送图文卡片消息。articles: [{title, description, url, picurl}]，最多 8 条。"""
+        token = self._wecom_access_token(config)
+        arts = []
+        for a in (articles or [])[:8]:
+            if not isinstance(a, dict):
+                continue
+            art = {"title": _clean_text(a.get("title") or "无标题", 128)}
+            if a.get("description"):
+                art["description"] = _clean_text(a.get("description") or "", 512)
+            if a.get("url"):
+                art["url"] = str(a.get("url"))
+            if a.get("picurl"):
+                art["picurl"] = str(a.get("picurl"))
+            arts.append(art)
+        if not arts:
+            return self.send_wecom_app_text(config, "（无内容）", to_user=to_user)
+        payload = {
+            "touser": str(to_user or config.get("to_user") or "@all").strip() or "@all",
+            "msgtype": "news",
+            "agentid": int(config["agent_id"]),
+            "news": {"articles": arts},
+        }
+        response = self._post_json(f"{self._wecom_api_base(config)}/cgi-bin/message/send?access_token={token}", payload)
+        return self._assert_provider_ok(response, "企业微信应用", ok_codes=(0,), ok_field="errcode", message_fields=("errmsg", "message", "msg"))
+
     def _send_wecom_app(self, config, message):
         content = f"{message['title']}\n{message['text']}".strip()
         return self.send_wecom_app_text(config, content)
