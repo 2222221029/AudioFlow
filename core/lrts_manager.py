@@ -354,7 +354,7 @@ class LrtsAppClient:
         })
 
     def get_play_path(self, entity_type: int, entity_id: int, chapter_id: int, section: int = 1, op_type: int = 1) -> dict:
-        return self.get(READ_HOST, "/yyting/gateway/getListenPath.action", {
+        params = {
             "entityType": entity_type,
             "entityId": entity_id,
             "id": chapter_id,
@@ -364,7 +364,14 @@ class LrtsAppClient:
             "generateFactor": "",
             "httpStatus": 0,
             "bizError": "",
-        })
+        }
+        # 码率档位开关：懒人 iOS(v3 接口)用 quality=3 拿高码率(320k)。先尝试在当前接口附加该参数
+        # （签名 sc 会自动把它算进去）。环境变量 LRTS_AUDIO_QUALITY=3 启用。
+        import os
+        quality = os.getenv("LRTS_AUDIO_QUALITY")
+        if quality:
+            params["quality"] = quality
+        return self.get(READ_HOST, "/yyting/gateway/getListenPath.action", params)
 
     def fetch_all_chapters(self, entity_type: int, entity_id: int) -> list[dict]:
         if entity_type == 2:
