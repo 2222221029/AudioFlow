@@ -30,6 +30,20 @@ CHANNEL_LABELS = {
     "webhook": "通用 Webhook",
 }
 
+# 企业微信交互指令消息模板（可在 UI 配置；变量用 {name} 占位，缺失变量按空字符串处理）
+DEFAULT_WECOM_TEMPLATES = {
+    "search_item_title": "{index}. {title}",
+    "search_item_desc": "{platform} · {author} · {episodes}章\n回复「订阅 {index}」或「下载 {index}」",
+    "subscribe_title": "✅ 已订阅：{title}",
+    "subscribe_desc": "章节数：{episodes}{job_suffix}",
+    "download_title": "⬇️ 已加入下载：{title}",
+    "download_desc": "章节数：{episodes}\n任务 ID：{task_id}",
+    "search_empty": "🔍 没有搜索到：{keyword}（平台：{platform}）",
+    "processing_search": "⏳ 正在搜索，结果会以卡片形式推送给你…",
+    "processing_subscribe": "⏳ 正在订阅，处理结果会推送给你…",
+    "processing_download": "⏳ 正在创建下载任务，结果会推送给你…",
+}
+
 
 def _now():
     return int(time.time())
@@ -69,8 +83,25 @@ class NotificationManager:
             "enabled": False,
             "scenes": deepcopy(DEFAULT_SCENES),
             "services": [],
+            "wecom_templates": deepcopy(DEFAULT_WECOM_TEMPLATES),
             "updated_at": _now(),
         }
+
+    def _merge_templates(self, raw):
+        templates = deepcopy(DEFAULT_WECOM_TEMPLATES)
+        for key, value in (raw or {}).items():
+            if key in DEFAULT_WECOM_TEMPLATES and isinstance(value, str) and value.strip():
+                templates[key] = value
+        return templates
+
+    def get_wecom_templates(self):
+        return self._merge_templates(self.load().get("wecom_templates"))
+
+    def save_wecom_templates(self, templates):
+        current = deepcopy(self.load())
+        current["wecom_templates"] = templates or {}
+        self.save(current)
+        return self.get_wecom_templates()
 
     def load(self):
         if self._config is not None:
@@ -90,6 +121,7 @@ class NotificationManager:
         scenes = deepcopy(DEFAULT_SCENES)
         scenes.update(data.get("scenes") or {})
         base["scenes"] = scenes
+        base["wecom_templates"] = self._merge_templates(data.get("wecom_templates"))
         base["services"] = [self._normalize_service(item) for item in (data.get("services") or []) if isinstance(item, dict)]
         self._config = base
         return self._config
@@ -100,6 +132,7 @@ class NotificationManager:
         scenes = deepcopy(DEFAULT_SCENES)
         scenes.update(data.get("scenes") or {})
         data["scenes"] = scenes
+        data["wecom_templates"] = self._merge_templates((config or {}).get("wecom_templates"))
         data["services"] = [self._normalize_service(item) for item in data.get("services") or [] if isinstance(item, dict)]
         data["updated_at"] = _now()
         self.path.parent.mkdir(parents=True, exist_ok=True)

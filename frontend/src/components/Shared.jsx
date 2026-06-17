@@ -1004,6 +1004,73 @@ function NotificationSettings({notificationConfig, actions, busy}) {
           />
         )) : <div className="empty small"><Icon id="i-bell" />暂无通知渠道</div>}
       </div>
+      {services.some((s) => s.type === 'wecom_app') && <WecomTemplates />}
+    </div>
+  );
+}
+
+function WecomTemplates() {
+  const [fields, setFields] = useState([]);
+  const [templates, setTemplates] = useState({});
+  const [defaults, setDefaults] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  useEffect(() => {
+    setLoading(true);
+    api('/api/wecom/templates').then((r) => {
+      if (r.ok) { setFields(r.fields || []); setTemplates(r.templates || {}); setDefaults(r.defaults || {}); }
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+  const setField = (key, value) => setTemplates((p) => ({...p, [key]: value}));
+  const save = () => {
+    setSaving(true); setMsg('');
+    api('/api/wecom/templates', {method: 'POST', body: JSON.stringify({templates})})
+      .then((r) => { if (r.ok) { setTemplates(r.templates || templates); setMsg('已保存'); } else setMsg(r.error || '保存失败'); })
+      .catch((e) => setMsg(String(e)))
+      .finally(() => { setSaving(false); setTimeout(() => setMsg(''), 2500); });
+  };
+  const ipt = {width: '100%', background: 'var(--panel-hi)', border: '1px solid var(--border)', borderRadius: 8, padding: '7px 10px', color: 'var(--text)', fontSize: 12.5, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box'};
+  return (
+    <div style={{marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14}}>
+      <div className="panel-head" style={{marginBottom: 8}}>
+        <h4 style={{fontSize: 14}}>企业微信 · 消息模板</h4>
+        <div className="panel-actions">
+          <button className="btn btn-ghost btn-tiny" onClick={() => setTemplates({...defaults})}>全部恢复默认</button>
+          <button className="btn btn-primary btn-tiny" disabled={saving} onClick={save}><BusyIcon busy={saving} icon="i-check" />保存模板</button>
+        </div>
+      </div>
+      <div style={{fontSize: 12, color: 'var(--text-mute)', marginBottom: 10}}>
+        交互指令的卡片 / 文本内容。变量用 <code>{'{名称}'}</code> 占位，点下方变量可插入；留空则用默认。
+      </div>
+      {loading ? <div className="empty small"><span className="loading" />加载中</div> : (
+        <div style={{display: 'flex', flexDirection: 'column', gap: 12}}>
+          {fields.map((f) => (
+            <div key={f.key}>
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4}}>
+                <label style={{fontSize: 12.5, fontWeight: 600}}>{f.label}</label>
+                {defaults[f.key] !== undefined && <button className="btn btn-ghost btn-tiny" style={{fontSize: 11}} onClick={() => setField(f.key, defaults[f.key])}>恢复默认</button>}
+              </div>
+              <textarea
+                value={templates[f.key] ?? ''}
+                onChange={(e) => setField(f.key, e.target.value)}
+                rows={(f.key.includes('desc') || f.key.includes('item')) ? 2 : 1}
+                placeholder={defaults[f.key] || ''}
+                style={ipt}
+              />
+              {f.vars && f.vars.length > 0 && (
+                <div style={{display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4}}>
+                  {f.vars.map((v) => (
+                    <code key={v} onClick={() => setField(f.key, (templates[f.key] ?? '') + `{${v}}`)}
+                      style={{fontSize: 11, padding: '1px 6px', borderRadius: 5, background: 'var(--pre-bg)', border: '1px solid var(--border)', color: 'var(--primary)', cursor: 'pointer'}}>{`{${v}}`}</code>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {msg && <div style={{marginTop: 8, fontSize: 12, color: msg === '已保存' ? 'var(--success)' : 'var(--danger)'}}>{msg}</div>}
     </div>
   );
 }

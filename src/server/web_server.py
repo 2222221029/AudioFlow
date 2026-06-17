@@ -1562,6 +1562,34 @@ WECOM_PLATFORM_NAMES = {
 }
 
 
+class _SafeFormatDict(dict):
+    def __missing__(self, key):
+        return ""
+
+
+def _wecom_render(template, **kwargs):
+    """安全渲染模板：用 {name} 占位，缺失变量按空字符串处理，渲染异常回退原文。"""
+    try:
+        return str(template or "").format_map(_SafeFormatDict(kwargs))
+    except Exception:
+        return str(template or "")
+
+
+# 模板字段元数据（供前端配置界面展示标签与可用变量）
+WECOM_TEMPLATE_FIELDS = [
+    {"key": "search_item_title", "label": "搜索结果·卡片标题", "vars": ["index", "title", "platform", "author", "episodes", "keyword"]},
+    {"key": "search_item_desc", "label": "搜索结果·卡片描述", "vars": ["index", "title", "platform", "author", "episodes", "keyword"]},
+    {"key": "subscribe_title", "label": "订阅结果·标题", "vars": ["title", "episodes", "job_suffix"]},
+    {"key": "subscribe_desc", "label": "订阅结果·描述", "vars": ["title", "episodes", "job_suffix"]},
+    {"key": "download_title", "label": "下载结果·标题", "vars": ["title", "episodes", "task_id"]},
+    {"key": "download_desc", "label": "下载结果·描述", "vars": ["title", "episodes", "task_id"]},
+    {"key": "search_empty", "label": "搜索无结果提示", "vars": ["keyword", "platform"]},
+    {"key": "processing_search", "label": "搜索·处理中回执", "vars": []},
+    {"key": "processing_subscribe", "label": "订阅·处理中回执", "vars": []},
+    {"key": "processing_download", "label": "下载·处理中回执", "vars": []},
+]
+
+
 def _wecom_help_text():
     return (
         "AudioFlow 企业微信指令：\n"
@@ -1663,17 +1691,23 @@ def _wecom_push(service_id, to_user, articles=None, text=None):
 
 
 def _wecom_search_articles(keyword, platform, results):
-    """默认搜索结果卡片模板：每个专辑一张图文卡片（封面+标题+平台/作者/章节+操作提示）。"""
+    """按可配置模板渲染搜索结果图文卡片（封面 + 标题 + 描述）。"""
+    tpl = notification_manager.get_wecom_templates()
     base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     articles = []
     for idx, item in enumerate(results[:8], start=1):
-        title = item.get("title") or "未知专辑"
         plat = item.get("platform") or "未知平台"
-        author = item.get("author") or "未知作者"
-        episodes = item.get("episodes") or "?"
+        fields = {
+            "index": idx,
+            "title": item.get("title") or "未知专辑",
+            "platform": plat,
+            "author": item.get("author") or "未知作者",
+            "episodes": item.get("episodes") or "?",
+            "keyword": keyword,
+        }
         article = {
-            "title": f"{idx}. {title}",
-            "description": f"{plat} · {author} · {episodes}章\n回复「订阅 {idx}」或「下载 {idx}」",
+            "title": _wecom_render(tpl["search_item_title"], **fields),
+            "description": _wecom_render(tpl["search_item_desc"], **fields),
         }
         cover = normalize_cover_url(item.get("cover") or "", plat)
         if cover:
@@ -1713,7 +1747,8 @@ def _wecom_async_command(service_id, user_id, text):
                 cleanup_wecom_sessions()
                 wecom_sessions[_wecom_session_key(service_id, user_id)] = {"keyword": keyword, "results": results, "updated_at": time.time()}
             if not results:
-                _wecom_push(service_id, user_id, text=f"🔍 没有搜索到：{keyword}（平台：{platform}）")
+                tpl = notification_manager.get_wecom_templates()
+                _wecom_push(service_id, user_id, text=_wecom_render(tpl["search_empty"], keyword=keyword, platform=platform))
                 return
             _wecom_push(service_id, user_id, articles=_wecom_search_articles(keyword, platform, results))
             return
@@ -1728,8 +1763,12 @@ def _wecom_async_command(service_id, user_id, text):
             if subscription_manager.settings().get("enabled", True):
                 ensure_subscription_scheduler()
                 job = start_subscription_job(item["id"], queue_missing=subscription_manager.settings().get("auto_download_missing", True))
-            desc = f"章节数：{len(chapters)}" + (f"\n检测任务：{job.get('id')}" if job else "")
-            _wecom_push(service_id, user_id, articles=_wecom_result_card(f"✅ 已订阅：{album.get('title')}", desc, album.get("cover"), album.get("platform")))
+            tpl = notification_manager.get_wecom_templates()
+            fields = {"title": album.get("title") or "", "episodes": len(chapters), "job_suffix": (f"\n检测任务：{job.get('id')}" if job else "")}
+            _wecom_push(service_id, user_id, articles=_wecom_result_card(
+                _wecom_render(tpl["subscribe_title"], **fields),
+                _wecom_render(tpl["subscribe_desc"], **fields),
+                album.get("cover"), album.get("platform")))
             return
         m_dl = re.match(r"^(下载|download|/download)\s+(\d+)$", text, re.I)
         if m_dl:
@@ -1740,8 +1779,12 @@ def _wecom_async_command(service_id, user_id, text):
                 options["voice"] = voice
             task_id = f"wecom-{uuid.uuid4().hex[:12]}"
             start_download_task(task_id, album, chapters, options, source="wecom")
-            desc = f"章节数：{len(chapters)}\n任务 ID：{task_id}"
-            _wecom_push(service_id, user_id, articles=_wecom_result_card(f"⬇️ 已加入下载：{album.get('title')}", desc, album.get("cover"), album.get("platform")))
+            tpl = notification_manager.get_wecom_templates()
+            fields = {"title": album.get("title") or "", "episodes": len(chapters), "task_id": task_id}
+            _wecom_push(service_id, user_id, articles=_wecom_result_card(
+                _wecom_render(tpl["download_title"], **fields),
+                _wecom_render(tpl["download_desc"], **fields),
+                album.get("cover"), album.get("platform")))
             return
     except Exception as exc:
         logging.exception("wecom async command failed: %s", service_id)
@@ -1757,15 +1800,16 @@ def _wecom_handle_text_command(service_id, user_id, text):
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
         return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
     # 慢指令（搜索/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
+    tpl = notification_manager.get_wecom_templates()
     if re.match(r"^(搜索|search|/search)\s+.+$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
-        return "⏳ 正在搜索，结果会以卡片形式推送给你…"
+        return tpl["processing_search"]
     if re.match(r"^(订阅|subscribe|/subscribe)\s+\d+$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
-        return "⏳ 正在订阅，处理结果会推送给你…"
+        return tpl["processing_subscribe"]
     if re.match(r"^(下载|download|/download)\s+\d+$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
-        return "⏳ 正在创建下载任务，结果会推送给你…"
+        return tpl["processing_download"]
     return "无法识别指令。\n\n" + _wecom_help_text()
 
 
@@ -1818,6 +1862,27 @@ def api_wecom_callback(service_id):
     except Exception as exc:
         logging.exception("wecom callback failed: %s", service_id)
         return Response(str(exc), status=200, mimetype="text/plain")
+
+
+@app.get("/api/wecom/templates")
+def api_get_wecom_templates():
+    if not current_user():
+        return json_error("未登录", 401)
+    from core.notification_manager import DEFAULT_WECOM_TEMPLATES
+    return json_ok(
+        templates=notification_manager.get_wecom_templates(),
+        defaults=DEFAULT_WECOM_TEMPLATES,
+        fields=WECOM_TEMPLATE_FIELDS,
+    )
+
+
+@app.post("/api/wecom/templates")
+def api_save_wecom_templates():
+    if not current_user():
+        return json_error("未登录", 401)
+    data = request.get_json(silent=True) or {}
+    saved = notification_manager.save_wecom_templates(data.get("templates") or {})
+    return json_ok(templates=saved)
 
 
 def _path_status(path):
