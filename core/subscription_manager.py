@@ -1079,13 +1079,9 @@ class SubscriptionManager:
                 local_count = int(local_stats.get("downloaded") or 0)
             except Exception:
                 local_count = 0
-            if not local_count:
-                try:
-                    album = subscription.get("album") or subscription
-                    local_files, has_album_scope, _index = self.indexed_album_files(album, download_dir)
-                    local_count = build_local_file_match_index(local_files, has_album_scope=has_album_scope).get("file_count", 0)
-                except Exception:
-                    local_count = 0
+            # fast 模式严格不触碰磁盘（不扫描下载目录）：直接用持久化的 local_stats 与内存中的
+            # 下载状态计数，保证 /api/subscriptions?fast=1 秒回。精确的本地文件数由后台异步刷新
+            # （refresh_subscription_stats_async）写回 local_stats，下次打开即生效。
             downloaded = min(total, max(state_count, local_count))
         else:
             refreshed = self.refresh_local_stats(subscription, download_dir, save=True, scan_cache=scan_cache)

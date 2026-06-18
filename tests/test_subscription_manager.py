@@ -154,6 +154,21 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual([c["id"] for c in manual["missing"]], ["2"])
         self.assertEqual(manual["restricted_count"], 0)
 
+    def test_stats_for_fast_does_not_touch_disk(self):
+        # 性能：/api/subscriptions?fast=1 必须秒回——fast 模式只读持久化的 local_stats 与内存
+        # 下载状态，绝不扫描下载目录(indexed_album_files)。精确文件数由后台异步刷新写回。
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cfg:
+            mgr = SubscriptionManager(cfg)
+            sub = {
+                "chapters": [{"id": str(i)} for i in range(10)],
+                "downloaded": {},
+                "local_stats": {"downloaded": 7, "restricted": 0},
+            }
+            with mock.patch.object(SubscriptionManager, "indexed_album_files", side_effect=AssertionError("fast 不应扫描磁盘")):
+                stats = mgr.stats_for(sub, "/no/such/dir", fast=True)
+            self.assertEqual(stats["downloaded"], 7)
+            self.assertEqual(stats["missing"], 3)
+
     def test_diff_uses_fresh_audio_index_without_directory_scan(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
             manager = SubscriptionManager(config_tmp)

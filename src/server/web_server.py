@@ -1399,6 +1399,40 @@ def refresh_subscription_audio_index_async():
     threading.Thread(target=worker, name="subscription-index-refresh", daemon=True).start()
 
 
+_last_subscription_stats_refresh = 0.0
+_subscription_stats_refresh_lock = threading.Lock()
+
+
+def refresh_subscription_stats_async(min_interval=600):
+    """后台异步刷新所有订阅的本地统计(local_stats)，带节流。
+
+    /api/subscriptions?fast=1 只读 local_stats 缓存秒回，真正的下载目录扫描放这里异步做，
+    扫完写回 local_stats，下次打开即生效——既保证订阅页秒开，又让「已下载/缺失」最终准确。
+    """
+    global _last_subscription_stats_refresh
+    now = time.time()
+    with _subscription_stats_refresh_lock:
+        if now - _last_subscription_stats_refresh < min_interval:
+            return
+        _last_subscription_stats_refresh = now
+
+    def worker():
+        try:
+            dl = active_download_dir()
+            subscription_manager.build_audio_index(dl, force=True)  # 全盘扫描一次，建索引
+            scan_cache = {}
+            for item in subscription_manager.all_subscriptions():
+                try:
+                    subscription_manager.refresh_local_stats(item, dl, save=False, scan_cache=scan_cache)
+                except Exception:
+                    logging.debug("refresh local stats failed for one subscription", exc_info=True)
+            subscription_manager.save()  # 批量持久化一次
+        except Exception:
+            logging.debug("refresh subscription stats failed", exc_info=True)
+
+    threading.Thread(target=worker, name="subscription-stats-refresh", daemon=True).start()
+
+
 def handle_download_completed(task_id, success, failed, success_chapters, failed_chapters):
     current = task_snapshot(task_id)
     status = "stopped" if current.get("status") == "stopping" else ("completed" if failed == 0 else "partial")
@@ -2732,6 +2766,9 @@ def api_subscriptions():
         items.append(data)
     if cover_changed:
         subscription_manager.save()
+    # fast 模式秒回缓存后，后台异步刷新一次本地统计（带节流），让数字最终保持准确
+    if fast and not refresh_local:
+        refresh_subscription_stats_async()
     return json_ok(subscriptions=items, settings=subscription_manager.settings(), scheduler=subscription_scheduler_status(), fast=fast, refresh_local=refresh_local)
 
 
