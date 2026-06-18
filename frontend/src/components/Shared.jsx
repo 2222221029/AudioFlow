@@ -265,21 +265,20 @@ export function AlbumDetail({app, mobile = false}) {
 }
 
 export function DownloadsPage({app}) {
-  const {downloads, metrics, actions, setModal, closeModal, busy} = app;
-  const [statusFilter, setStatusFilter] = useState('all');
+  const {downloads, downloadPagination, downloadStatusFilter, metrics, actions, setModal, closeModal, busy} = app;
   const confirmDelete = (id) => setModal({content: <ConfirmModal icon="i-trash" title="清除任务记录" message="只清除历史记录，不会删除已下载文件。" okText="清除" danger onClose={closeModal} onOk={() => { closeModal(); actions.deleteDownload(id); }} />});
   const confirmCleanup = (statuses) => setModal({content: <ConfirmModal icon="i-trash" title="批量清理任务" message="将清理符合条件的历史任务记录，不会删除已下载文件。" okText="清理" danger onClose={closeModal} onOk={() => { closeModal(); actions.cleanupDownloads(statuses); }} />});
 
+  // 状态筛选改由后端分页：切换即回到第 1 页并带上 status 重新拉取
   const STATUS_FILTERS = [
     {key: 'all', label: '全部'},
-    {key: 'active', label: '活跃', match: (s) => ['running', 'queued', 'paused'].includes(s)},
-    {key: 'completed', label: '已完成', match: (s) => s === 'completed'},
-    {key: 'failed', label: '失败/中断', match: (s) => ['failed', 'partial', 'interrupted', 'stopped'].includes(s)},
+    {key: 'active', label: '活跃'},
+    {key: 'completed', label: '已完成'},
+    {key: 'failed', label: '失败/中断'},
   ];
-  const filteredDownloads = statusFilter === 'all'
-    ? downloads
-    : downloads.filter((t) => STATUS_FILTERS.find((f) => f.key === statusFilter)?.match?.(t.status));
+  const pg = downloadPagination || {page: 1, total_pages: 1, total: 0};
 
+  // 批量操作作用于当前页可见任务（活跃任务按时间倒序天然在前页）
   const hasRunning = downloads.some((t) => t.status === 'running');
   const hasStoppable = downloads.some((t) => ['queued', 'running', 'paused'].includes(t.status));
 
@@ -289,12 +288,12 @@ export function DownloadsPage({app}) {
         <div className="metric"><div className="metric-label">活跃任务</div><div className="metric-value">{metrics.activeDownloads}</div><div className="metric-foot">运行中 / 排队中</div></div>
         <div className="metric"><div className="metric-label">已完成</div><div className="metric-value">{metrics.completedDownloads}</div><div className="metric-foot">下载完成</div></div>
         <div className="metric"><div className="metric-label">失败</div><div className="metric-value">{metrics.failedDownloads}</div><div className="metric-foot">失败 / 部分完成</div></div>
-        <div className="metric"><div className="metric-label">合计</div><div className="metric-value">{downloads.length}</div><div className="metric-foot">所有任务</div></div>
+        <div className="metric"><div className="metric-label">合计</div><div className="metric-value">{pg.total}</div><div className="metric-foot">所有任务</div></div>
       </div>
       <div className="glass glass-pad compact-tools">
         <div className="seg-control" style={{marginRight: 'auto'}}>
           {STATUS_FILTERS.map((f) => (
-            <button key={f.key} className={statusFilter === f.key ? 'active' : ''} onClick={() => setStatusFilter(f.key)}>{f.label}</button>
+            <button key={f.key} className={downloadStatusFilter === f.key ? 'active' : ''} onClick={() => actions.loadDownloads(1, f.key)}>{f.label}</button>
           ))}
         </div>
         {hasRunning && <button className="btn btn-ghost btn-sm" disabled={busy['batchDownload:pause']} onClick={() => actions.batchControlDownloads('pause')}><BusyIcon busy={busy['batchDownload:pause']} icon="i-pause" />全部暂停</button>}
@@ -304,10 +303,17 @@ export function DownloadsPage({app}) {
         <button className="btn btn-primary btn-sm" disabled={busy.retryUnfinishedDownloads} onClick={actions.retryUnfinishedDownloads}><BusyIcon busy={busy.retryUnfinishedDownloads} icon="i-refresh" />重试未完成</button>
       </div>
       <div id="downloadList">
-        {!filteredDownloads.length
-          ? <div className="empty"><Icon id="i-download" />{downloads.length ? '该筛选条件下暂无任务' : '暂无下载任务'}</div>
-          : filteredDownloads.map((task) => <TaskCard key={task.id} task={task} actions={actions} busy={busy} onDelete={confirmDelete} />)}
+        {!downloads.length
+          ? <div className="empty"><Icon id="i-download" />{pg.total ? '该筛选条件下暂无任务' : '暂无下载任务'}</div>
+          : downloads.map((task) => <TaskCard key={task.id} task={task} actions={actions} busy={busy} onDelete={confirmDelete} />)}
       </div>
+      {pg.total_pages > 1 && (
+        <div className="glass glass-pad" style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px'}}>
+          <button className="btn btn-ghost btn-sm" disabled={pg.page <= 1} onClick={() => actions.loadDownloads(pg.page - 1)}><Icon id="i-arrow-left" className="icon icon-sm" />上一页</button>
+          <span style={{color: 'var(--text-dim)', fontSize: '13px'}}>第 {pg.page} / {pg.total_pages} 页 · 共 {pg.total} 条</span>
+          <button className="btn btn-ghost btn-sm" disabled={pg.page >= pg.total_pages} onClick={() => actions.loadDownloads(pg.page + 1)}>下一页<Icon id="i-arrow-right" className="icon icon-sm" /></button>
+        </div>
+      )}
     </>
   );
 }
@@ -480,7 +486,7 @@ function TaskCard({task, actions, busy, onDelete}) {
   const canPause = status === 'running';
   const canResume = ['paused', 'stopping'].includes(status);
   const canStop = ['queued', 'running', 'paused', 'stopping'].includes(status);
-  const canRetry = (task.failed_chapters && task.failed_chapters.length) || ['failed', 'partial', 'interrupted', 'stopped'].includes(status);
+  const canRetry = failedCount > 0 || ['failed', 'partial', 'interrupted', 'stopped'].includes(status);
   const canDelete = !['queued', 'running', 'paused'].includes(status);
   const busyPrefix = `download:${task.id}:`;
   return (

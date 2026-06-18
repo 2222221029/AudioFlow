@@ -1252,6 +1252,106 @@ def set_task(task_id, **updates):
         return dict(task)
 
 
+# 下载记录列表轻量化：列表页只需展示/操作用的小字段，绝不返回 album/chapters/
+# success_chapters/failed_chapters 等重字段（单任务可达几百 KB，任务一多前端会白屏卡顿）。
+def _download_list_item(task):
+    album = task.get("album") or {}
+    platform = album.get("platform") or (task.get("task_info") or {}).get("platform") or ""
+    return {
+        "id": task.get("id"),
+        "title": task.get("title"),
+        "platform": platform,
+        "status": task.get("status"),
+        "total": task.get("total", 0),
+        "completed": task.get("completed", 0),
+        "percent": task.get("percent", 0),
+        "success": task.get("success", 0),
+        "failed": task.get("failed", 0),
+        "source": task.get("source"),
+        "warning": task.get("warning"),
+        "error": task.get("error"),
+        "failure_reason": task.get("failure_reason"),
+        "created_at": task.get("created_at"),
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+    }
+
+
+# status 过滤分组（对齐前端下载页的标签：活跃 / 已完成 / 失败-中断）
+_DOWNLOAD_FILTER_GROUPS = {
+    "active": {"running", "queued", "paused", "stopping"},
+    "completed": {"completed"},
+    "failed": {"failed", "partial", "interrupted", "stopped"},
+}
+# 终态任务（用于自动清理上限与分页排序）
+_DOWNLOAD_TERMINAL_STATUSES = {"completed", "partial", "failed", "interrupted", "stopped"}
+
+
+def _download_summary(snapshot):
+    # 全局统计，喂给前端顶部 metrics 瓷砖（分页后前端只有当前页，统计必须由后端给）
+    summary = {"total": len(snapshot), "active_count": 0, "completed_count": 0, "failed_count": 0, "interrupted_count": 0}
+    for task in snapshot:
+        status = task.get("status")
+        if status in ("running", "queued", "paused", "stopping"):
+            summary["active_count"] += 1
+        elif status == "completed":
+            summary["completed_count"] += 1
+        elif status in ("failed", "partial"):
+            summary["failed_count"] += 1
+        elif status in ("interrupted", "stopped"):
+            summary["interrupted_count"] += 1
+    return summary
+
+
+def paginate_downloads(snapshot, page=1, limit=20, status="all"):
+    summary = _download_summary(snapshot)
+    filter_set = _DOWNLOAD_FILTER_GROUPS.get(status)
+    items = [t for t in snapshot if t.get("status") in filter_set] if filter_set else list(snapshot)
+    items.sort(key=lambda t: t.get("created_at") or 0, reverse=True)  # 最新在前
+    total = len(items)
+    try:
+        limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        limit = 20
+    total_pages = max(1, (total + limit - 1) // limit)
+    try:
+        page = max(1, min(int(page), total_pages))
+    except (TypeError, ValueError):
+        page = 1
+    start = (page - 1) * limit
+    page_items = [_download_list_item(t) for t in items[start:start + limit]]
+    return {
+        "tasks": page_items,
+        "pagination": {"page": page, "limit": limit, "total": total, "total_pages": total_pages},
+        "summary": summary,
+    }
+
+
+def prune_tasks(max_keep=200):
+    """限制下载记录上限：终态任务超过 max_keep 时删最旧的（活跃任务永不删），防止无限堆积。"""
+    removed = 0
+    with task_lock:
+        terminal = [
+            (tid, task) for tid, task in tasks.items()
+            if task.get("status") in _DOWNLOAD_TERMINAL_STATUSES
+        ]
+        if len(terminal) > max_keep:
+            terminal.sort(key=lambda kv: kv[1].get("finished_at") or kv[1].get("created_at") or 0, reverse=True)
+            for tid, _ in terminal[max_keep:]:
+                tasks.pop(tid, None)
+                removed += 1
+    if removed:
+        save_tasks(force=True)
+    return removed
+
+
+# 启动时清理一次历史积累（此处 tasks 已在模块加载时 load 完毕）
+try:
+    prune_tasks()
+except Exception:
+    logging.debug("startup prune_tasks failed", exc_info=True)
+
+
 def start_download_task(task_id, album, chapters, options, source="web"):
     album = normalize_album(album)
     chapters = list(chapters or [])
@@ -1335,6 +1435,7 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
             f"平台：{album.get('platform') or '-'}\n成功：{success} 章\n失败：{failed} 章\n任务：{task_id}",
             {"task": task, "album": album, "success": success, "failed": failed},
         )
+    prune_tasks()  # 任务进入终态后清理超量历史记录，防止无限堆积
     return task
 
 
@@ -2406,7 +2507,10 @@ def api_download():
 
 @app.get("/api/downloads")
 def api_downloads():
-    return json_ok(tasks=task_snapshot())
+    page = request.args.get("page", 1)
+    limit = request.args.get("limit", 20)
+    status = request.args.get("status") or "all"
+    return json_ok(**paginate_downloads(task_snapshot(), page=page, limit=limit, status=status))
 
 
 @app.post("/api/downloads/retry-unfinished")

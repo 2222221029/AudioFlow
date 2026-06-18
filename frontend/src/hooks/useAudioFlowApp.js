@@ -136,6 +136,9 @@ export function useAudioFlowApp() {
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
+  const [downloadPagination, setDownloadPagination] = useState({page: 1, limit: 20, total: 0, total_pages: 1});
+  const [downloadSummary, setDownloadSummary] = useState({total: 0, active_count: 0, completed_count: 0, failed_count: 0, interrupted_count: 0});
+  const [downloadStatusFilter, setDownloadStatusFilter] = useState('all');
   const [subscriptions, setSubscriptions] = useState(() => loadCachedList(SUBSCRIPTIONS_CACHE_KEY));
   const [subscriptionSettings, setSubscriptionSettings] = useState({});
   const [subscriptionScheduler, setSubscriptionScheduler] = useState({});
@@ -216,10 +219,7 @@ export function useAudioFlowApp() {
     }
   }, []);
 
-  const activeDownloads = downloads.filter((task) => ['running', 'queued'].includes(task.status)).length;
-  const completedDownloads = downloads.filter((task) => task.status === 'completed').length;
-  const failedDownloads = downloads.filter((task) => ['failed', 'partial'].includes(task.status)).length;
-  const interruptedDownloads = downloads.filter((task) => ['interrupted', 'stopped'].includes(task.status)).length;
+  // 下载统计改由后端 summary 提供（分页后前端只有当前页，不能再靠全量 filter 计算）
 
   const loadConfig = useCallback(async () => {
     const data = await api('/api/config');
@@ -227,14 +227,18 @@ export function useAudioFlowApp() {
     return data;
   }, []);
 
-  const loadDownloads = useCallback(async () => {
-    const data = await api('/api/downloads');
+  const loadDownloads = useCallback(async (page = 1, status) => {
+    const useStatus = status ?? downloadStatusFilter;
+    const data = await api(`/api/downloads?page=${page}&limit=20&status=${encodeURIComponent(useStatus)}`);
     const tasks = data.tasks || [];
     setDownloads(tasks);
+    if (data.pagination) setDownloadPagination(data.pagination);
+    if (data.summary) setDownloadSummary(data.summary);
+    if (status !== undefined && status !== downloadStatusFilter) setDownloadStatusFilter(useStatus);
     saveCachedList(DOWNLOADS_CACHE_KEY, tasks);
     prevDownloadStatusRef.current = Object.fromEntries(tasks.map((t) => [t.id, t.status]));
     return tasks;
-  }, []);
+  }, [downloadStatusFilter]);
 
   const loadCookies = useCallback(async () => {
     const data = await api('/api/cookies');
@@ -804,7 +808,8 @@ export function useAudioFlowApp() {
   useEffect(() => {
     const timer = setInterval(async () => {
       if (page !== 'downloads' && mobileView !== 'downloads') return;
-      const data = await api('/api/downloads').catch(() => null);
+      const pg = downloadPagination.page || 1;
+      const data = await api(`/api/downloads?page=${pg}&limit=20&status=${encodeURIComponent(downloadStatusFilter)}`).catch(() => null);
       if (!data) return;
       const tasks = data.tasks || [];
       for (const task of tasks) {
@@ -816,10 +821,12 @@ export function useAudioFlowApp() {
       }
       prevDownloadStatusRef.current = Object.fromEntries(tasks.map((t) => [t.id, t.status]));
       setDownloads(tasks);
+      if (data.pagination) setDownloadPagination(data.pagination);
+      if (data.summary) setDownloadSummary(data.summary);
       saveCachedList(DOWNLOADS_CACHE_KEY, tasks);
     }, 3000);
     return () => clearInterval(timer);
-  }, [mobileView, page, showToast]);
+  }, [mobileView, page, showToast, downloadStatusFilter, downloadPagination.page]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -884,6 +891,9 @@ export function useAudioFlowApp() {
     voices,
     selectedVoice,
     downloads,
+    downloadPagination,
+    downloadSummary,
+    downloadStatusFilter,
     subscriptions,
     subscriptionSettings,
     subscriptionScheduler,
@@ -908,7 +918,12 @@ export function useAudioFlowApp() {
     setPlayer,
     audioRef,
     searchHistory,
-    metrics: {activeDownloads, completedDownloads, failedDownloads, interruptedDownloads},
+    metrics: {
+      activeDownloads: downloadSummary.active_count || 0,
+      completedDownloads: downloadSummary.completed_count || 0,
+      failedDownloads: downloadSummary.failed_count || 0,
+      interruptedDownloads: downloadSummary.interrupted_count || 0,
+    },
     actions: {
       showToast,
       doSearch,
