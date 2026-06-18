@@ -2176,7 +2176,13 @@ def api_chapters():
     warning = ""
     if platform == "懒人听书":
         warning = str(getattr(search_manager.lrts_manager, "last_chapter_warning", "") or "")
-    if _to_int(album.get("episodes")) <= 0 or not album.get("cover") or not album.get("author"):
+    # episodes/cover/author 缺失，或缺简介(intro/description) 时拉取专辑详情补全——
+    # 搜索结果通常不含简介，而详情页右栏需要它。详情请求失败不影响章节展示。
+    needs_detail = (
+        _to_int(album.get("episodes")) <= 0 or not album.get("cover") or not album.get("author")
+        or not (album.get("intro") or album.get("description") or album.get("desc"))
+    )
+    if needs_detail:
         try:
             album = merge_album_detail(album, search_manager.get_album_detail(str(album_id), platform))
         except Exception:

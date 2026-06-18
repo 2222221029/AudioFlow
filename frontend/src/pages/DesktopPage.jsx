@@ -178,6 +178,8 @@ function SearchPage({app}) {
 
 function AlbumInfoPanel({album}) {
   // 不再重复左栏已有的标题/作者/章节，右栏聚焦「简介 + 扩展信息」
+  // 简介字段各平台命名不一（intro/description/desc/summary），统一兼容
+  const intro = album.intro || album.description || album.desc || album.summary || '';
   const fields = [
     ['状态', album.status],
     ['分类', album.category || album.classify],
@@ -188,8 +190,8 @@ function AlbumInfoPanel({album}) {
   return (
     <div className="album-aside-panel">
       <div className="album-aside-head">专辑简介</div>
-      {album.intro
-        ? <div className="album-aside-intro">{album.intro}</div>
+      {intro
+        ? <div className="album-aside-intro">{intro}</div>
         : <div className="album-aside-empty">该专辑暂无简介</div>}
       {fields.length > 0 && (
         <div className="album-aside-fields">
