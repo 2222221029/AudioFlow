@@ -984,6 +984,12 @@ def merge_album_detail(album, detail):
         value = normalized.get(key) or detail.get(key)
         if value and (not merged.get(key) or str(merged.get(key)).strip() in ("未知", "未知作者", "未知专辑")):
             merged[key] = value
+    # 简介：各平台详情字段名不一（多数用 description，起点用 intro，另有 desc/summary），
+    # 统一并入 description，前端右栏即可跨平台读到简介。
+    if not merged.get("description"):
+        detail_intro = detail.get("description") or detail.get("intro") or detail.get("desc") or detail.get("summary")
+        if detail_intro:
+            merged["description"] = str(detail_intro).strip()
     if _to_int(merged.get("episodes")) <= 0 and _to_int(normalized.get("episodes")) > 0:
         merged["episodes"] = normalized["episodes"]
     return normalize_album(merged)
