@@ -861,14 +861,17 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 .task-actions .btn{white-space:nowrap}
 .compact-tools{border-radius:16px}
 
-.subscription-controls{margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.subscription-controls{margin-bottom:14px;display:flex;flex-direction:column;align-items:stretch;gap:12px}
+.sub-controls-settings{display:flex;align-items:stretch;gap:12px;flex-wrap:wrap}
+.sub-controls-settings .subscription-control-group{flex:1 1 320px}
+.sub-controls-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .subscription-control-group{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-hi)}
 .control-group-title{font-size:12px;font-weight:750;color:var(--text);white-space:nowrap}
 .check-row{display:inline-flex;align-items:center;gap:8px;color:var(--text);font-size:13px;line-height:1.2;white-space:nowrap}
 .check-row input[type=checkbox]{width:16px;height:16px;accent-color:var(--primary);flex:0 0 auto}
 .interval-row{gap:10px;color:var(--text-mute)}
 .interval-input{width:90px!important;flex:0 0 90px}
-.subscription-scheduler{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;margin-left:auto}
+.subscription-scheduler{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;padding-top:11px;border-top:1px solid var(--border)}
 .subscription-scheduler span{display:inline-flex;align-items:center;min-height:24px;padding:0 9px;border-radius:999px;background:var(--panel-hi);
   color:var(--text-mute);font-size:11.5px;white-space:nowrap}
 .subscription-scheduler span.ok{color:var(--success)}
@@ -889,8 +892,21 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 .sub-stats{min-width:0;display:flex;gap:6px;flex-wrap:wrap;margin-bottom:0;line-height:1.2}
 .sub-stats span{display:inline-flex;align-items:center;max-width:100%;height:22px;padding:0 8px;border-radius:999px;background:var(--panel-hi);
   color:var(--text-mute);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub-stats span.ok{color:var(--success)}
+.sub-stats span.warn{color:var(--warning)}
+.sub-times{display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--text-faint)}
 .sub-actions{margin-top:auto}
 .sub-actions .btn{white-space:nowrap}
+
+/* 详情页右栏：聚焦简介 + 扩展信息（不再重复左栏的标题/作者/章节） */
+.album-aside-panel{font-size:13px}
+.album-aside-head{font-weight:700;font-size:14px;color:var(--text);margin-bottom:10px}
+.album-aside-intro{color:var(--text-mute);font-size:12.5px;line-height:1.78;white-space:pre-wrap}
+.album-aside-empty{color:var(--text-faint);font-size:12.5px;padding:4px 0}
+.album-aside-fields{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:7px}
+.album-aside-field{display:flex;gap:10px;line-height:1.5}
+.album-aside-label{color:var(--text-faint);flex:0 0 3em}
+.album-aside-value{color:var(--text-mute);word-break:break-all}
 
 .cookie-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
 .cookie-card{min-width:0;gap:8px}

@@ -177,27 +177,28 @@ function SearchPage({app}) {
 }
 
 function AlbumInfoPanel({album}) {
+  // 不再重复左栏已有的标题/作者/章节，右栏聚焦「简介 + 扩展信息」
   const fields = [
-    ['作者', album.author || album.anchor],
     ['状态', album.status],
-    ['章节', album.episodes != null ? `${album.episodes} 章` : album.chapter_count != null ? `${album.chapter_count} 章` : album.track_count != null ? `${album.track_count} 章` : null],
     ['分类', album.category || album.classify],
     ['播放', album.play_count != null ? `${Number(album.play_count).toLocaleString()} 次` : null],
     ['评分', album.score || album.rating],
     ['更新', album.last_update || album.update_time],
   ].filter(([, v]) => v != null && v !== '');
   return (
-    <div style={{fontSize: 13, lineHeight: 2}}>
-      <div style={{fontWeight: 700, marginBottom: 8, fontSize: 14}}>{album.title || '专辑信息'}</div>
-      {fields.map(([label, value]) => (
-        <div key={label} style={{display: 'flex', gap: 8}}>
-          <span style={{color: 'var(--text-faint)', flex: '0 0 3em'}}>{label}</span>
-          <span style={{color: 'var(--text-mute)', wordBreak: 'break-all'}}>{String(value)}</span>
-        </div>
-      ))}
-      {album.intro && (
-        <div style={{marginTop: 10, color: 'var(--text-mute)', fontSize: 12.5, lineHeight: 1.7, display: '-webkit-box', WebkitLineClamp: 8, WebkitBoxOrient: 'vertical', overflow: 'hidden'}}>
-          {album.intro}
+    <div className="album-aside-panel">
+      <div className="album-aside-head">专辑简介</div>
+      {album.intro
+        ? <div className="album-aside-intro">{album.intro}</div>
+        : <div className="album-aside-empty">该专辑暂无简介</div>}
+      {fields.length > 0 && (
+        <div className="album-aside-fields">
+          {fields.map(([label, value]) => (
+            <div className="album-aside-field" key={label}>
+              <span className="album-aside-label">{label}</span>
+              <span className="album-aside-value">{String(value)}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

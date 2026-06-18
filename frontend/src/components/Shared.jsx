@@ -546,6 +546,7 @@ export function SubscriptionsPage({app}) {
   return (
     <>
       <div className="glass glass-pad subscription-controls">
+        <div className="sub-controls-settings">
         <div className="subscription-control-group">
           <span className="control-group-title">订阅检测</span>
           <label className="check-row"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>启用自动检测</span></label>
@@ -564,6 +565,8 @@ export function SubscriptionsPage({app}) {
             </select>
           </label>
         </div>
+        </div>
+        <div className="sub-controls-actions">
         <button className="btn btn-primary btn-sm" disabled={busy.subscriptionSettings} onClick={saveSettings}><BusyIcon busy={busy.subscriptionSettings} icon="i-check" />保存</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.runSubscriptions} onClick={actions.runSubscriptionsNow}><BusyIcon busy={busy.runSubscriptions} icon="i-refresh" />立即检测并补全</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.personalSubscriptionSync} onClick={actions.runPersonalSubscriptionSyncNow}><BusyIcon busy={busy.personalSubscriptionSync} icon="i-refresh" />立即同步个人订阅</button>
@@ -571,6 +574,7 @@ export function SubscriptionsPage({app}) {
         <button className="btn btn-ghost btn-sm" disabled={busy['subscriptionBatch:check']} onClick={() => actions.batchSubscriptions('check', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:check']} icon="i-refresh" />批量检测</button>
         <button className="btn btn-primary btn-sm" disabled={busy['subscriptionBatch:complete']} onClick={() => actions.batchSubscriptions('complete', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:complete']} icon="i-download" />批量补全</button>
         <button className="btn btn-danger btn-sm" disabled={busy['subscriptionBatch:cancel']} onClick={cancelAll}><BusyIcon busy={busy['subscriptionBatch:cancel']} icon="i-trash" />批量取消</button>
+        </div>
         <div className="subscription-scheduler">
           <span className={schedulerStarted ? 'ok' : 'muted'}>调度器：{schedulerRunning ? '检测中' : schedulerStarted ? '待命' : '未启动'}</span>
           <span>最近轮询：{schedulerLastRun}</span>
@@ -614,11 +618,13 @@ export function SubscriptionsPage({app}) {
                   <div className="sub-progress"><span style={{width: `${progress}%`}} /></div>
                   <div className="sub-stats">
                     <span>共 {total || 0} 章</span>
-                    <span>已下载 {downloaded}</span>
-                    <span>缺失 {missing}</span>
+                    <span className="ok">已下载 {downloaded}</span>
+                    {missing > 0 && <span className="warn">缺失 {missing}</span>}
                     {restricted > 0 && <span>受限 {restricted}</span>}
-                    <span>上次检测：{lastCheck}</span>
-                    <span>下次检测：{nextCheck}</span>
+                  </div>
+                  <div className="sub-times">
+                    <span>上次检测 {lastCheck}</span>
+                    <span>下次检测 {nextCheck}</span>
                   </div>
                 </div>
                 <div className="sub-actions">
