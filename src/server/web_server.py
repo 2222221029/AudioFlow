@@ -2790,6 +2790,39 @@ def api_rebuild_subscription_index():
     return json_ok(index={"count": index.get("count", 0), "updated_at": index.get("updated_at"), "exists": index.get("exists")})
 
 
+@app.get("/api/subscriptions/export")
+def api_export_subscriptions():
+    items = subscription_manager.export_subscriptions()
+    return json_ok(subscriptions=items, count=len(items), settings=subscription_manager.settings())
+
+
+@app.post("/api/subscriptions/import")
+def api_import_subscriptions():
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("subscriptions")
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except Exception:
+            return json_error("导入文本不是合法的 JSON")
+    # 兼容直接整份导出对象 {subscriptions:[...]} 或纯列表
+    if isinstance(items, dict) and "subscriptions" in items:
+        items = items.get("subscriptions")
+    if not isinstance(items, list) or not items:
+        return json_error("导入数据应为订阅列表（导出的 JSON）")
+    # 旧设备的 download_dir 无意义，统一指向当前实际下载目录
+    dl = active_download_dir()
+    for rec in items:
+        if isinstance(rec, dict):
+            rec["download_dir"] = dl
+    count = subscription_manager.import_subscriptions(items)
+    try:
+        refresh_subscription_stats_async(min_interval=0)  # 导入后立即在后台刷新统计
+    except Exception:
+        pass
+    return json_ok(imported=count)
+
+
 @app.post("/api/downloads/organize-by-platform")
 def api_organize_downloads_by_platform():
     payload = request.get_json(silent=True) or {}

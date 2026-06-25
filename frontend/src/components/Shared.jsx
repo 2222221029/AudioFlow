@@ -543,6 +543,24 @@ export function SubscriptionsPage({app}) {
         : {personal_sync_interval_hours: syncValue}),
     });
   };
+  const doExportSubs = async () => {
+    try {
+      const data = await actions.exportSubscriptions();
+      const text = JSON.stringify(data, null, 2);
+      const blob = new Blob([text], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audioflow-subscriptions-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      actions.showToast(`已导出 ${(data.subscriptions || []).length} 个订阅`, 'ok');
+    } catch (error) {
+      actions.showToast('导出失败：' + error.message, 'err');
+    }
+  };
   return (
     <>
       <div className="glass glass-pad subscription-controls">
@@ -574,6 +592,8 @@ export function SubscriptionsPage({app}) {
         <button className="btn btn-ghost btn-sm" disabled={busy['subscriptionBatch:check']} onClick={() => actions.batchSubscriptions('check', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:check']} icon="i-refresh" />批量检测</button>
         <button className="btn btn-primary btn-sm" disabled={busy['subscriptionBatch:complete']} onClick={() => actions.batchSubscriptions('complete', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:complete']} icon="i-download" />批量补全</button>
         <button className="btn btn-danger btn-sm" disabled={busy['subscriptionBatch:cancel']} onClick={cancelAll}><BusyIcon busy={busy['subscriptionBatch:cancel']} icon="i-trash" />批量取消</button>
+        <button className="btn btn-ghost btn-sm" onClick={doExportSubs}><Icon id="i-download" className="icon icon-sm" />导出订阅</button>
+        <button className="btn btn-ghost btn-sm" disabled={busy.importSubscriptions} onClick={() => setModal({content: <SubscriptionImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入订阅</button>
         </div>
         <div className="subscription-scheduler">
           <span className={schedulerStarted ? 'ok' : 'muted'}>调度器：{schedulerRunning ? '检测中' : schedulerStarted ? '待命' : '未启动'}</span>
@@ -636,6 +656,49 @@ export function SubscriptionsPage({app}) {
             </div>
           );
         })}
+      </div>
+    </>
+  );
+}
+
+function SubscriptionImportModal({actions, onClose}) {
+  const [text, setText] = useState('');
+  const onFile = (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ''));
+    reader.readAsText(file);
+  };
+  const doImport = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      actions.showToast('内容不是合法的 JSON', 'err');
+      return;
+    }
+    try {
+      await actions.importSubscriptions(parsed);
+      onClose();
+    } catch (error) {
+      actions.showToast('导入失败：' + error.message, 'err');
+    }
+  };
+  return (
+    <>
+      <div className="modal-title"><Icon id="i-folder" />导入订阅</div>
+      <div className="modal-sub">上传导出的 .json 文件或粘贴 JSON。按订阅合并（同名覆盖），章节会在首次检测时自动重新拉取。</div>
+      <div className="modal-toolbar">
+        <label className="btn btn-ghost btn-sm" style={{cursor: 'pointer'}}>
+          <Icon id="i-folder" className="icon icon-sm" />选择文件
+          <input type="file" accept="application/json,.json" onChange={onFile} style={{display: 'none'}} />
+        </label>
+      </div>
+      <textarea className="cookie-modal-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder='{"subscriptions": [ ... ]}' style={{minHeight: 160}} />
+      <div className="modal-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
+        <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入</button>
       </div>
     </>
   );

@@ -774,6 +774,40 @@ class SubscriptionManager:
     def get(self, subscription_id):
         return self.data.get("subscriptions", {}).get(subscription_id)
 
+    def export_subscriptions(self):
+        """导出订阅用于备份/迁移：去掉体积最大的 chapters 章节快照（导入后首次检测会重新拉取），
+        保留 album 标识、下载状态(downloaded)、统计等，恢复后不必从头重下。"""
+        items = []
+        for item in (self.data.get("subscriptions") or {}).values():
+            items.append({k: v for k, v in item.items() if k != "chapters"})
+        return items
+
+    def import_subscriptions(self, items):
+        """从导出数据恢复订阅。按订阅 id 合并覆盖；章节快照留空，待首次检测重新拉取。"""
+        if not isinstance(items, list):
+            return 0
+        subs = self.data.setdefault("subscriptions", {})
+        now = utc_now_iso()
+        count = 0
+        for rec in items:
+            if not isinstance(rec, dict):
+                continue
+            sid = rec.get("id") or self.subscription_id(rec.get("album") or rec)
+            if not sid:
+                continue
+            rec = dict(rec)
+            rec["id"] = sid
+            rec["chapters"] = []  # 章节快照不随导入恢复，首次检测时重新拉取
+            rec.setdefault("downloaded", {})
+            rec.setdefault("status", "active")
+            rec.setdefault("created_at", now)
+            rec["updated_at"] = now
+            subs[sid] = rec
+            count += 1
+        if count:
+            self.save()
+        return count
+
     def interval_seconds(self):
         settings = self.settings()
         try:

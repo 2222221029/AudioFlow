@@ -285,6 +285,18 @@ export function useAudioFlowApp() {
     return activeItems;
   }, []);
 
+  const exportSubscriptions = useCallback(async () => {
+    const data = await api('/api/subscriptions/export');
+    return {subscriptions: data.subscriptions || [], settings: data.settings || {}};
+  }, []);
+
+  const importSubscriptions = useCallback(async (payload) => runBusy('importSubscriptions', async () => {
+    const data = await api('/api/subscriptions/import', {method: 'POST', body: payload});
+    showToast(`已导入 ${data.imported || 0} 个订阅`, 'ok');
+    await loadSubscriptions();
+    return data;
+  }), [runBusy, showToast, loadSubscriptions]);
+
   const loadSubscriptionScheduler = useCallback(async () => {
     const data = await api('/api/subscriptions/scheduler');
     setSubscriptionScheduler(data.scheduler || {});
@@ -964,6 +976,8 @@ export function useAudioFlowApp() {
       retryUnfinishedDownloads,
       loadDownloads,
       loadSubscriptions,
+      exportSubscriptions,
+      importSubscriptions,
       loadSubscriptionSettings,
       loadSubscriptionScheduler,
       saveSubscriptionSettings,
