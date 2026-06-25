@@ -297,6 +297,18 @@ export function useAudioFlowApp() {
     return data;
   }), [runBusy, showToast, loadSubscriptions]);
 
+  const exportBackup = useCallback(async () => {
+    const data = await api('/api/backup/export');
+    return data.backup || {};
+  }, []);
+
+  const importBackup = useCallback(async (backup) => runBusy('importBackup', async () => {
+    const data = await api('/api/backup/import', {method: 'POST', body: {backup}});
+    showToast(`恢复完成：Cookie ${data.cookies || 0} 个 · 订阅 ${data.subscriptions || 0} 个`, 'ok');
+    await Promise.all([loadCookies(), loadSubscriptions(), loadConfig()]);
+    return data;
+  }), [runBusy, showToast, loadCookies, loadSubscriptions, loadConfig]);
+
   const loadSubscriptionScheduler = useCallback(async () => {
     const data = await api('/api/subscriptions/scheduler');
     setSubscriptionScheduler(data.scheduler || {});
@@ -978,6 +990,8 @@ export function useAudioFlowApp() {
       loadSubscriptions,
       exportSubscriptions,
       importSubscriptions,
+      exportBackup,
+      importBackup,
       loadSubscriptionSettings,
       loadSubscriptionScheduler,
       saveSubscriptionSettings,

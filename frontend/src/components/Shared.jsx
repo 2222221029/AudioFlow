@@ -1288,6 +1288,49 @@ function NotificationChannelFields({type, config, onConfig}) {
   );
 }
 
+function BackupImportModal({actions, onClose}) {
+  const [text, setText] = useState('');
+  const onFile = (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ''));
+    reader.readAsText(file);
+  };
+  const doImport = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      actions.showToast('内容不是合法的 JSON', 'err');
+      return;
+    }
+    try {
+      await actions.importBackup(parsed);
+      onClose();
+    } catch (error) {
+      actions.showToast('导入失败：' + error.message, 'err');
+    }
+  };
+  return (
+    <>
+      <div className="modal-title"><Icon id="i-folder" />导入全量备份</div>
+      <div className="modal-sub">上传导出的备份 .json 文件或粘贴内容。会恢复 Cookie + 订阅 + 订阅设置（同名覆盖），章节首次检测时重新拉取。</div>
+      <div className="modal-toolbar">
+        <label className="btn btn-ghost btn-sm" style={{cursor: 'pointer'}}>
+          <Icon id="i-folder" className="icon icon-sm" />选择文件
+          <input type="file" accept="application/json,.json" onChange={onFile} style={{display: 'none'}} />
+        </label>
+      </div>
+      <textarea className="cookie-modal-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder="粘贴 audioflow-backup-*.json 的内容" style={{minHeight: 160}} />
+      <div className="modal-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
+        <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入恢复</button>
+      </div>
+    </>
+  );
+}
+
 export function SettingsPage({app}) {
   const {config, logs, events, actions, setModal, closeModal, busy, diagnostics} = app;
   const [downloadDir, setDownloadDir] = useState('');
@@ -1306,6 +1349,24 @@ export function SettingsPage({app}) {
   }, [config]);
   const openPassword = () => setModal({content: <PasswordModal onSubmit={actions.changePassword} onClose={closeModal} />});
   const confirmClear = () => setModal({content: <ConfirmModal icon="i-trash" title="清空服务端日志" message="会清空 logs 目录下的 .log 文件。服务端已启用日志轮转。" okText="清空日志" danger onClose={closeModal} onOk={() => { closeModal(); actions.clearLogs(); }} />});
+  const doExportBackup = async () => {
+    try {
+      const data = await actions.exportBackup();
+      const text = JSON.stringify(data, null, 2);
+      const blob = new Blob([text], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audioflow-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      actions.showToast(`已导出全量备份：Cookie ${Object.keys(data.cookies || {}).length} 个 · 订阅 ${(data.subscriptions || []).length} 个`, 'ok');
+    } catch (error) {
+      actions.showToast('导出失败：' + error.message, 'err');
+    }
+  };
   return (
     <>
       <div className="glass glass-pad settings-card">
@@ -1335,6 +1396,14 @@ export function SettingsPage({app}) {
         </div>
         <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
         <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
+      </div>
+      <div className="glass glass-pad settings-card">
+        <div className="panel-head"><h4>备份与恢复</h4></div>
+        <div className="cookie-desc">一个文件打包全部 Cookie + 订阅 + 订阅设置，换机/重装时一键恢复。文件含明文登录凭证，请妥善保管。</div>
+        <div className="cookie-toolbar" style={{marginTop: 10}}>
+          <button className="btn btn-ghost btn-sm" onClick={doExportBackup}><Icon id="i-download" className="icon icon-sm" />导出全量备份</button>
+          <button className="btn btn-primary btn-sm" disabled={busy.importBackup} onClick={() => setModal({content: <BackupImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入备份</button>
+        </div>
       </div>
       <DiagnosticsPanel config={config} diagnostics={diagnostics} loading={busy.diagnostics} onLoad={actions.loadDiagnostics} />
       <div className="glass glass-pad settings-log-card">

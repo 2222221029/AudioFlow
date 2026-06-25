@@ -3463,20 +3463,10 @@ def api_export_cookies():
     return json_ok(cookies=data, count=len(data))
 
 
-@app.post("/api/cookies/import")
-def api_import_cookies():
-    """批量导入 Cookie：接收 {平台: cookie} 的 JSON（cookies 可为对象或 JSON 字符串）。"""
-    payload = request.get_json(silent=True) or {}
-    incoming = payload.get("cookies")
-    if isinstance(incoming, str):
-        try:
-            incoming = json.loads(incoming)
-        except Exception:
-            return json_error("导入文本不是合法的 JSON")
-    if not isinstance(incoming, dict) or not incoming:
-        return json_error("导入数据应为 {平台: cookie} 的 JSON 对象")
+def _apply_cookie_import(incoming):
+    """把 {平台: cookie} 写入 cookie_manager + search_manager，返回 (imported, skipped)。"""
     imported, skipped = [], []
-    for platform, cookie in incoming.items():
+    for platform, cookie in (incoming or {}).items():
         platform = str(platform or "").strip()
         if not platform or not cookie:
             continue
@@ -3492,7 +3482,80 @@ def api_import_cookies():
         except Exception:
             pass
         imported.append(platform)
+    return imported, skipped
+
+
+@app.post("/api/cookies/import")
+def api_import_cookies():
+    """批量导入 Cookie：接收 {平台: cookie} 的 JSON（cookies 可为对象或 JSON 字符串）。"""
+    payload = request.get_json(silent=True) or {}
+    incoming = payload.get("cookies")
+    if isinstance(incoming, str):
+        try:
+            incoming = json.loads(incoming)
+        except Exception:
+            return json_error("导入文本不是合法的 JSON")
+    if not isinstance(incoming, dict) or not incoming:
+        return json_error("导入数据应为 {平台: cookie} 的 JSON 对象")
+    imported, skipped = _apply_cookie_import(incoming)
     return json_ok(imported=imported, skipped=skipped, count=len(imported))
+
+
+def _collect_export_cookies():
+    cookie_manager.load()
+    out = {}
+    for p in _COOKIE_EXPORT_PLATFORMS:
+        c = cookie_manager.get_cookie(p)
+        if c:
+            out[p] = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+    return out
+
+
+@app.get("/api/backup/export")
+def api_export_backup():
+    """一键全量备份：Cookie + 订阅 + 订阅设置 打包成一个 JSON。"""
+    backup = {
+        "version": 1,
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cookies": _collect_export_cookies(),
+        "subscriptions": subscription_manager.export_subscriptions(),
+        "subscription_settings": subscription_manager.settings(),
+    }
+    return json_ok(backup=backup)
+
+
+@app.post("/api/backup/import")
+def api_import_backup():
+    """从全量备份恢复 Cookie + 订阅 + 订阅设置（各部分按存在与否分别恢复）。"""
+    payload = request.get_json(silent=True) or {}
+    backup = payload.get("backup")
+    if isinstance(backup, str):
+        try:
+            backup = json.loads(backup)
+        except Exception:
+            return json_error("导入文本不是合法的 JSON")
+    if isinstance(backup, dict) and isinstance(backup.get("backup"), dict):
+        backup = backup["backup"]
+    if not isinstance(backup, dict):
+        return json_error("导入数据应为备份 JSON")
+    result = {"cookies": 0, "subscriptions": 0, "subscription_settings": False}
+    if isinstance(backup.get("cookies"), dict):
+        imported, _ = _apply_cookie_import(backup["cookies"])
+        result["cookies"] = len(imported)
+    if isinstance(backup.get("subscriptions"), list):
+        dl = active_download_dir()
+        for rec in backup["subscriptions"]:
+            if isinstance(rec, dict):
+                rec["download_dir"] = dl
+        result["subscriptions"] = subscription_manager.import_subscriptions(backup["subscriptions"])
+    if isinstance(backup.get("subscription_settings"), dict):
+        subscription_manager.update_settings(**backup["subscription_settings"])
+        result["subscription_settings"] = True
+    try:
+        refresh_subscription_stats_async(min_interval=0)
+    except Exception:
+        pass
+    return json_ok(**result)
 
 
 PERSONAL_COOKIE_KEYS = {
