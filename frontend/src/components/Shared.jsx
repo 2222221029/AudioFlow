@@ -643,10 +643,84 @@ export function SubscriptionsPage({app}) {
 
 export function CookiesPage({app}) {
   const {cookies, actions, setModal, closeModal, busy} = app;
+  const doExport = async (mode) => {
+    try {
+      const data = await actions.exportCookies();
+      if (!Object.keys(data || {}).length) { actions.showToast('当前没有可导出的 Cookie', 'err'); return; }
+      const text = JSON.stringify(data, null, 2);
+      if (mode === 'copy') {
+        await navigator.clipboard.writeText(text);
+        actions.showToast('已复制全部 Cookie 到剪贴板', 'ok');
+      } else {
+        const blob = new Blob([text], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `audioflow-cookies-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      actions.showToast('导出失败：' + error.message, 'err');
+    }
+  };
   return (
-    <div id="cookieList" className="cookie-grid">
-      {COOKIE_PLATFORMS.map((platform) => <CookieCard key={platform.key} platform={platform} info={cookies[platform.key] || {}} actions={actions} busy={busy} setModal={setModal} closeModal={closeModal} />)}
-    </div>
+    <>
+      <div className="glass glass-pad cookie-toolbar">
+        <span className="cookie-toolbar-tip"><Icon id="i-alert" className="icon icon-sm" />导出/导入全部平台登录凭证，文件含明文，请妥善保管</span>
+        <button className="btn btn-ghost btn-sm" onClick={() => doExport('file')}><Icon id="i-download" className="icon icon-sm" />导出文件</button>
+        <button className="btn btn-ghost btn-sm" onClick={() => doExport('copy')}><Icon id="i-copy" className="icon icon-sm" />复制 JSON</button>
+        <button className="btn btn-primary btn-sm" disabled={busy.importCookies} onClick={() => setModal({content: <CookieImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入</button>
+      </div>
+      <div id="cookieList" className="cookie-grid">
+        {COOKIE_PLATFORMS.map((platform) => <CookieCard key={platform.key} platform={platform} info={cookies[platform.key] || {}} actions={actions} busy={busy} setModal={setModal} closeModal={closeModal} />)}
+      </div>
+    </>
+  );
+}
+
+function CookieImportModal({actions, onClose}) {
+  const [text, setText] = useState('');
+  const onFile = (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setText(String(reader.result || ''));
+    reader.readAsText(file);
+  };
+  const doImport = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      actions.showToast('内容不是合法的 JSON', 'err');
+      return;
+    }
+    try {
+      await actions.importCookies(parsed);
+      onClose();
+    } catch (error) {
+      actions.showToast('导入失败：' + error.message, 'err');
+    }
+  };
+  return (
+    <>
+      <div className="modal-title"><Icon id="i-folder" />导入 Cookie</div>
+      <div className="modal-sub">上传之前导出的 .json 文件，或直接粘贴 JSON（格式：{'{ "xmly": "...", "lrts": "..." }'}）。导入会覆盖同名平台的现有 Cookie。</div>
+      <div className="modal-toolbar">
+        <label className="btn btn-ghost btn-sm" style={{cursor: 'pointer'}}>
+          <Icon id="i-folder" className="icon icon-sm" />选择文件
+          <input type="file" accept="application/json,.json" onChange={onFile} style={{display: 'none'}} />
+        </label>
+      </div>
+      <textarea className="cookie-modal-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder='{"xmly": "...", "lrts": "..."}' style={{minHeight: 160}} />
+      <div className="modal-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
+        <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入</button>
+      </div>
+    </>
   );
 }
 

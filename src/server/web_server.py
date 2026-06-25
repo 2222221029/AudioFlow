@@ -3415,6 +3415,53 @@ def api_delete_cookie(platform):
     return json_ok(deleted=True, platform=platform, config_file=str(cookie_manager.config_file))
 
 
+_COOKIE_EXPORT_PLATFORMS = ["xmly", "lrts", "qidian", "qtfm", "fanqie", "fanqie_tingshu", "qimao", "yuntu", "kuwo", "netease", "lizhi"]
+
+
+@app.get("/api/cookies/export")
+def api_export_cookies():
+    """导出所有平台的明文 Cookie（整个站点已需登录才能访问）。"""
+    cookie_manager.load()
+    data = {}
+    for p in _COOKIE_EXPORT_PLATFORMS:
+        cookie = cookie_manager.get_cookie(p)
+        if cookie:
+            data[p] = cookie if isinstance(cookie, str) else json.dumps(cookie, ensure_ascii=False)
+    return json_ok(cookies=data, count=len(data))
+
+
+@app.post("/api/cookies/import")
+def api_import_cookies():
+    """批量导入 Cookie：接收 {平台: cookie} 的 JSON（cookies 可为对象或 JSON 字符串）。"""
+    payload = request.get_json(silent=True) or {}
+    incoming = payload.get("cookies")
+    if isinstance(incoming, str):
+        try:
+            incoming = json.loads(incoming)
+        except Exception:
+            return json_error("导入文本不是合法的 JSON")
+    if not isinstance(incoming, dict) or not incoming:
+        return json_error("导入数据应为 {平台: cookie} 的 JSON 对象")
+    imported, skipped = [], []
+    for platform, cookie in incoming.items():
+        platform = str(platform or "").strip()
+        if not platform or not cookie:
+            continue
+        value = (cookie if isinstance(cookie, str) else json.dumps(cookie, ensure_ascii=False)).strip()
+        if platform in ("lrts", "懒人听书"):
+            value = normalize_lrts_credentials(value)
+            if not value:
+                skipped.append(platform)
+                continue
+        cookie_manager.set_cookie(platform, value)
+        try:
+            search_manager.set_cookie(platform, value)
+        except Exception:
+            pass
+        imported.append(platform)
+    return json_ok(imported=imported, skipped=skipped, count=len(imported))
+
+
 PERSONAL_COOKIE_KEYS = {
     "ximalaya": "personal_xmly",
     "xmly": "personal_xmly",

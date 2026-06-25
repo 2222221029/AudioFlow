@@ -533,6 +533,8 @@ html[data-theme-mode="light"] .ui-select-menu{background:#fff;box-shadow:0 20px 
 .sub-actions{display:flex;gap:6px;flex-wrap:wrap}
 
 /* Cookie 卡 */
+.cookie-toolbar{margin-bottom:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cookie-toolbar-tip{margin-right:auto;display:inline-flex;align-items:center;gap:6px;color:var(--text-mute);font-size:12px;min-width:0}
 .cookie-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:stretch}
 .cookie-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:var(--shadow-card);min-height:128px;display:flex;flex-direction:column}
 .cookie-card:not(.cookie-free){min-height:254px}

@@ -663,6 +663,9 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .sub-actions{justify-content:flex-start}
 .sub-actions .btn{height:32px;padding:0 11px;font-size:12px}
 
+.cookie-toolbar{margin-bottom:10px;display:flex;flex-direction:column;align-items:stretch;gap:8px}
+.cookie-toolbar .btn{width:100%}
+.cookie-toolbar-tip{display:inline-flex;align-items:center;gap:6px;color:var(--text-mute);font-size:12px}
 .cookie-grid{display:block}
 .cookie-card{min-width:0}
 .cookie-head{align-items:flex-start}

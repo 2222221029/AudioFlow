@@ -245,6 +245,18 @@ export function useAudioFlowApp() {
     setCookies(data.cookies || {});
   }, []);
 
+  const exportCookies = useCallback(async () => {
+    const data = await api('/api/cookies/export');
+    return data.cookies || {};
+  }, []);
+
+  const importCookies = useCallback(async (cookies) => runBusy('importCookies', async () => {
+    const data = await api('/api/cookies/import', {method: 'POST', body: {cookies}});
+    showToast(`已导入 ${data.count || 0} 个平台 Cookie` + ((data.skipped && data.skipped.length) ? `，跳过 ${data.skipped.length} 个` : ''), 'ok');
+    await loadCookies();
+    return data;
+  }), [runBusy, showToast, loadCookies]);
+
   const loadLogs = useCallback(async (limit = 160) => {
     const data = await api('/api/logs?limit=' + limit);
     setLogs(data.lines || []);
@@ -962,6 +974,8 @@ export function useAudioFlowApp() {
       cancelSubscription,
       batchSubscriptions,
       loadCookies,
+      exportCookies,
+      importCookies,
       saveCookie,
       deleteCookie,
       loadConfig,
