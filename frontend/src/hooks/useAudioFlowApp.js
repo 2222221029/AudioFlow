@@ -707,6 +707,11 @@ export function useAudioFlowApp() {
     splitChaptersEnabled,
     chaptersPerFolder,
     filenamePrefixFormat,
+    taskHistoryMaxKeep,
+    taskHistoryMaxAgeDays,
+    taskDetailRetentionDays,
+    taskFailureChapterLimit,
+    taskHistoryMaxMB,
   }) => {
     await runBusy('settings', async () => {
       await api('/api/config', {
@@ -719,6 +724,11 @@ export function useAudioFlowApp() {
           split_chapters_enabled: splitChaptersEnabled,
           chapters_per_folder: chaptersPerFolder,
           filename_prefix_format: filenamePrefixFormat,
+          task_history_max_keep: taskHistoryMaxKeep,
+          task_history_max_age_days: taskHistoryMaxAgeDays,
+          task_detail_retention_days: taskDetailRetentionDays,
+          task_failure_chapter_limit: taskFailureChapterLimit,
+          task_history_max_bytes: taskHistoryMaxMB * 1024 * 1024,
         },
       });
       showToast('设置已保存', 'ok');

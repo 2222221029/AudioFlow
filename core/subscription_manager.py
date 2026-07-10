@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import json
+import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,6 +36,7 @@ def sanitize_filename(filename):
 
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav"}
+RESTRICTED_CHAPTER_RETRY_SECONDS = 24 * 60 * 60
 
 
 def normalize_match_text(value):
@@ -66,6 +69,21 @@ KNOWN_PLATFORMS = (
     "七猫听书", "云听FM", "酷我听书", "网易云听书", "荔枝FM", "未知平台",
 )
 _PLATFORM_NORMS = {normalize_match_text(p) for p in KNOWN_PLATFORMS if normalize_match_text(p)}
+_SUBSCRIPTION_PLATFORM_ALIASES = {
+    "ximalaya": "\u559c\u9a6c\u62c9\u96c5",
+    "xmly": "\u559c\u9a6c\u62c9\u96c5",
+    "lrts": "\u61d2\u4eba\u542c\u4e66",
+    "qidian": "\u8d77\u70b9\u542c\u4e66",
+    "qtfm": "\u8702\u8713FM",
+    "fanqie": "\u756a\u8304\u542c\u4e66",
+    "fanqietingshu": "\u756a\u8304\u542c\u4e66",
+    "qimao": "\u4e03\u732b\u542c\u4e66",
+}
+
+
+def canonical_subscription_platform(value):
+    platform = str(value or "").strip()
+    return _SUBSCRIPTION_PLATFORM_ALIASES.get(normalize_match_text(platform), platform or "unknown")
 
 
 def album_platform_norm(album):
@@ -206,7 +224,7 @@ def collect_album_audio_files(album, download_dir, dir_cache=None, file_cache=No
                 files.append(path)
                 base_files.append(path)
         except Exception:
-            pass
+            logging.warning("scan album directory failed: %s", base, exc_info=True)
         if file_cache is not None:
             file_cache[cache_key] = base_files
     return files
@@ -342,6 +360,39 @@ def is_restricted_chapter(chapter):
     return any(token in text for token in ("白金", "会员", "VIP", "vip", "付费", "权限不足", "无权限"))
 
 
+def required_access_tier(chapter):
+    """Best-effort metadata tier for diagnostics; it is not an account check."""
+    if not isinstance(chapter, dict):
+        return "unknown"
+    for key in ("isSvip", "is_svip", "svipOnly", "svip_only", "superVip", "super_vip"):
+        if str(chapter.get(key)).lower() in ("1", "true", "yes"):
+            return "svip"
+    for key in ("isPlatinum", "is_platinum", "platinumOnly", "platinum_only"):
+        if str(chapter.get(key)).lower() in ("1", "true", "yes"):
+            return "platinum"
+    if is_restricted_chapter(chapter):
+        return "vip"
+    return "free"
+
+
+def is_permission_denied_failure(chapter):
+    """Only an actual download denial may suppress automatic retries.
+
+    API metadata such as ``isVip`` describes the chapter, not the current
+    account.  Treating it as a failed entitlement check made a white-gold user
+    permanently skip a chapter after an unrelated network failure.
+    """
+    if not isinstance(chapter, dict):
+        return False
+    if str(chapter.get("_error_type") or "").lower() in ("restricted", "permission", "forbidden"):
+        return True
+    text = " ".join(str(chapter.get(key) or "") for key in ("_error", "error", "message", "reason")).lower()
+    return any(token in text for token in (
+        "权限不足", "无权限", "无权", "需要vip", "需要会员", "会员专享", "白金专享",
+        "vip only", "forbidden", "not authorized", "permission denied",
+    ))
+
+
 def chapter_title(chapter):
     return str(chapter.get("title") or chapter.get("name") or chapter.get("chapter_title") or "unknown")
 
@@ -448,6 +499,7 @@ def is_chapter_file_complete(album, chapter, index, download_dir, local_files=No
 
 class SubscriptionManager:
     def __init__(self, config_dir=None):
+        self._lock = threading.RLock()
         self.config_dir = Path(config_dir) if config_dir else Path.home() / ".audioflow"
         self.config_file = self.config_dir / "subscriptions.json"
         self.db_file = self.config_dir / "subscriptions.db"
@@ -470,6 +522,11 @@ class SubscriptionManager:
         }
         self.init_db()
         self.load()
+        # JSON index data is strictly a cache and no longer used at runtime.
+        try:
+            self.index_file.unlink(missing_ok=True)
+        except OSError:
+            logging.warning("could not remove legacy audio index: %s", self.index_file, exc_info=True)
 
     def init_db(self):
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -481,6 +538,17 @@ class SubscriptionManager:
                 "updated_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS audio_index_meta ("
+                "root TEXT PRIMARY KEY, exists_flag INTEGER NOT NULL, updated_at REAL NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS audio_index_files ("
+                "root TEXT NOT NULL, relative_path TEXT NOT NULL, name TEXT NOT NULL, stem TEXT NOT NULL, "
+                "parent TEXT NOT NULL, norm_name TEXT NOT NULL, norm_parent TEXT NOT NULL, "
+                "size INTEGER NOT NULL, mtime REAL NOT NULL, PRIMARY KEY(root, relative_path))"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audio_index_files_root_parent ON audio_index_files(root, norm_parent)")
 
     def _db_has_data(self):
         try:
@@ -536,36 +604,67 @@ class SubscriptionManager:
     def load_audio_index(self):
         if self._audio_index_cache is not None:
             return self._audio_index_cache
-        try:
-            if self.index_file.exists():
-                with open(self.index_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    self._audio_index_cache = data
-                    return data
-        except Exception:
-            pass
-        self._audio_index_cache = {"version": 1, "roots": {}}
+        self._audio_index_cache = {"version": 2, "roots": {}}
         return self._audio_index_cache
 
     def save_audio_index(self, data):
+        # Index data now lives in SQLite; this only updates the in-process cache.
+        self._audio_index_cache = data
+
+    def _load_audio_index_root(self, root):
+        root_key = str(root)
+        with sqlite3.connect(self.db_file) as conn:
+            meta = conn.execute(
+                "SELECT exists_flag, updated_at FROM audio_index_meta WHERE root = ?", (root_key,)
+            ).fetchone()
+            if not meta:
+                return None
+            rows = conn.execute(
+                "SELECT relative_path, name, stem, parent, norm_name, norm_parent, size, mtime "
+                "FROM audio_index_files WHERE root = ?", (root_key,)
+            ).fetchall()
+        files = [
+            {
+                "path": str(root / row[0]), "name": row[1], "stem": row[2], "parent": row[3],
+                "norm_name": row[4], "norm_parent": row[5], "size": row[6], "mtime": row[7],
+            }
+            for row in rows
+        ]
+        return {"exists": bool(meta[0]), "files": files, "updated_at": float(meta[1]), "count": len(files)}
+
+    def _save_audio_index_root(self, root, current):
+        root_key = str(root)
+        rows = []
+        for item in current.get("files") or []:
+            try:
+                relative = str(Path(item["path"]).relative_to(root))
+            except Exception:
+                continue
+            rows.append((root_key, relative, item["name"], item["stem"], item["parent"], item["norm_name"], item["norm_parent"], item["size"], item["mtime"]))
+        with sqlite3.connect(self.db_file) as conn:
+            conn.execute("DELETE FROM audio_index_files WHERE root = ?", (root_key,))
+            conn.execute("DELETE FROM audio_index_meta WHERE root = ?", (root_key,))
+            conn.execute("INSERT INTO audio_index_meta(root, exists_flag, updated_at) VALUES(?, ?, ?)", (root_key, int(bool(current.get("exists"))), float(current.get("updated_at") or time.time())))
+            if rows:
+                conn.executemany(
+                    "INSERT INTO audio_index_files(root, relative_path, name, stem, parent, norm_name, norm_parent, size, mtime) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+        data = self.load_audio_index()
+        data.setdefault("roots", {})[root_key] = current
+        self.save_audio_index(data)
+        # The former JSON index is regenerable and can be safely reclaimed.
         try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            tmp_file = self.index_file.with_suffix(".tmp")
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            os.replace(tmp_file, self.index_file)
-            self._audio_index_cache = data
-        except Exception as exc:
-            print(f"Failed to save local audio index: {exc}")
+            self.index_file.unlink(missing_ok=True)
+        except OSError:
+            logging.warning("could not remove legacy audio index: %s", self.index_file, exc_info=True)
 
     def build_audio_index(self, download_dir, max_age=300, force=False):
         root = Path(download_dir)
-        data = self.load_audio_index()
-        roots = data.setdefault("roots", {})
         root_key = str(root)
         now = time.time()
-        current = roots.get(root_key) or {}
+        data = self.load_audio_index()
+        current = data.setdefault("roots", {}).get(root_key) or self._load_audio_index_root(root) or {}
         if (
             not force
             and current.get("exists") is True
@@ -576,27 +675,51 @@ class SubscriptionManager:
         exists = root.exists()
         if exists:
             try:
-                for path in root.rglob("*"):
-                    if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS and path.stat().st_size > 1024:
-                        files.append({
-                            "path": str(path),
-                            "name": path.name,
-                            "stem": path.stem,
-                            "parent": path.parent.name,
-                            "norm_name": normalize_match_text(path.name),
-                            "norm_parent": normalize_match_text(path.parent.name),
-                            "size": path.stat().st_size,
-                            "mtime": path.stat().st_mtime,
-                        })
+                # Index only folders belonging to active subscriptions.  The
+                # old JSON cache indexed every audio file under the download
+                # root, including unrelated media, and grew without bound.
+                bases = []
+                for subscription in self.all_subscriptions():
+                    album = subscription.get("album") or subscription
+                    bases.extend(album_dir_candidates(album, root))
+                seen_bases = set()
+                for base in bases:
+                    resolved = base.resolve()
+                    if resolved in seen_bases:
+                        continue
+                    seen_bases.add(resolved)
+                    for path in base.rglob("*"):
+                        if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS and path.stat().st_size > 1024:
+                            files.append({
+                                "path": str(path), "name": path.name, "stem": path.stem, "parent": path.parent.name,
+                                "norm_name": normalize_match_text(path.name), "norm_parent": normalize_match_text(path.parent.name),
+                                "size": path.stat().st_size, "mtime": path.stat().st_mtime,
+                            })
             except Exception as exc:
+                logging.exception("build local audio index failed: %s", exc)
                 current = {"exists": exists, "error": str(exc), "files": [], "updated_at": now, "count": 0}
-                roots[root_key] = current
-                self.save_audio_index(data)
+                self._save_audio_index_root(root, current)
                 return current
         current = {"exists": exists, "files": files, "updated_at": now, "count": len(files)}
-        roots[root_key] = current
-        self.save_audio_index(data)
+        self._save_audio_index_root(root, current)
         return current
+
+    def invalidate_audio_index(self, download_dir):
+        """Discard one download-root cache entry after a task changes files.
+
+        A completed download used to refresh this index asynchronously.  A new
+        subscription check could run before that refresh finished and trust an
+        empty, but still valid, cached index.  Dropping the entry makes the
+        next check rebuild it from disk instead of reporting every chapter as
+        missing.
+        """
+        root_key = str(Path(download_dir))
+        data = self.load_audio_index()
+        data.setdefault("roots", {}).pop(root_key, None)
+        with sqlite3.connect(self.db_file) as conn:
+            conn.execute("DELETE FROM audio_index_files WHERE root = ?", (root_key,))
+            conn.execute("DELETE FROM audio_index_meta WHERE root = ?", (root_key,))
+        self.save_audio_index(data)
 
     def index_album_file_count(self, album, download_dir, force=False):
         index = self.build_audio_index(download_dir, force=force)
@@ -638,9 +761,14 @@ class SubscriptionManager:
         if self._db_has_data():
             try:
                 self.load_from_db()
+                self._migrate_subscription_ids()
+                compacted = self._compact_stored_chapters()
+                self.save()
+                if compacted:
+                    self._vacuum_db()
                 return
             except Exception as exc:
-                print(f"Failed to load subscriptions database: {exc}")
+                logging.exception("load subscriptions database failed: %s", exc)
         if not self.config_file.exists():
             self.save()
             return
@@ -660,18 +788,76 @@ class SubscriptionManager:
                 self.data["subscriptions"] = loaded.get("subscriptions") or {}
                 self.save_to_db()
         except Exception as exc:
-            print(f"Failed to load subscriptions: {exc}")
+            logging.exception("load subscriptions failed: %s", exc)
+        self._migrate_subscription_ids()
+        compacted = self._compact_stored_chapters()
+        self.save()
+        if compacted:
+            self._vacuum_db()
 
     def save(self):
+        with self._lock:
+            try:
+                self.config_dir.mkdir(parents=True, exist_ok=True)
+                self.save_to_db()
+                # SQLite is the transactional source of truth.  The former
+                # full JSON mirror duplicated every chapter snapshot and can
+                # be recreated through the export endpoint when needed.
+                self.config_file.unlink(missing_ok=True)
+            except Exception as exc:
+                logging.exception("save subscriptions failed: %s", exc)
+
+    def locked(self):
+        return self._lock
+
+    def _migrate_subscription_ids(self):
+        """Merge legacy alias keys (for example Ximalaya -> 喜马拉雅)."""
+        subscriptions = self.data.setdefault("subscriptions", {})
+        migrated = {}
+        changed = False
+        for old_id, item in subscriptions.items():
+            record = dict(item or {})
+            target_id = self.subscription_id(record.get("album") or record)
+            record["id"] = target_id
+            if target_id != old_id:
+                changed = True
+            existing = migrated.get(target_id)
+            if existing:
+                changed = True
+                existing_downloaded = existing.setdefault("downloaded", {})
+                existing_downloaded.update(record.get("downloaded") or {})
+                existing_chapters = existing.setdefault("chapters", [])
+                known = {chapter_key(chapter) for chapter in existing_chapters if isinstance(chapter, dict)}
+                for chapter in record.get("chapters") or []:
+                    if isinstance(chapter, dict) and chapter_key(chapter) not in known:
+                        existing_chapters.append(chapter)
+                        known.add(chapter_key(chapter))
+                if record.get("updated_at", "") > existing.get("updated_at", ""):
+                    existing.update({key: value for key, value in record.items() if value not in (None, "", [], {})})
+                continue
+            migrated[target_id] = record
+        if changed:
+            self.data["subscriptions"] = migrated
+            self.save()
+
+    def _compact_stored_chapters(self):
+        """Migrate existing full API chapter snapshots to the compact format."""
+        changed = False
+        for item in (self.data.get("subscriptions") or {}).values():
+            chapters = item.get("chapters") or []
+            compact = self.snapshot_chapters(chapters)
+            if compact != chapters:
+                item["chapters"] = compact
+                changed = True
+        return changed
+
+    def _vacuum_db(self):
+        """Reclaim SQLite pages after one-time JSON/snapshot compaction."""
         try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            tmp_file = self.config_file.with_suffix(".tmp")
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_file, self.config_file)
-            self.save_to_db()
-        except Exception as exc:
-            print(f"Failed to save subscriptions: {exc}")
+            with sqlite3.connect(self.db_file) as conn:
+                conn.execute("VACUUM")
+        except Exception:
+            logging.warning("subscriptions database vacuum failed", exc_info=True)
 
     def settings(self):
         return dict(self.data.get("settings") or {})
@@ -684,7 +870,7 @@ class SubscriptionManager:
         self.save()
 
     def subscription_id(self, album):
-        platform = str(album.get("platform") or album.get("source") or "unknown").strip()
+        platform = canonical_subscription_platform(album.get("platform") or album.get("source"))
         album_id = str(album.get("id") or album.get("album_id") or album.get("book_id") or "").strip()
         if not album_id:
             album_id = sanitize_filename(album.get("title") or "unknown")
@@ -850,11 +1036,22 @@ class SubscriptionManager:
         self.save()
 
     def snapshot_chapters(self, chapters):
+        # Persist only fields required for identity, file matching, permission
+        # rechecks and a degraded API fallback.  Raw platform responses often
+        # carry nested artwork/metadata and were the main cause of an
+        # ever-growing subscriptions database.
+        fields = (
+            "id", "track_id", "trackId", "chapter_id", "chapterId", "program_id", "programId", "acid",
+            "title", "name", "chapter_title", "order_num", "order", "index", "sort", "episode",
+            "isVip", "is_vip", "vip", "vipOnly", "isPlatinum", "is_platinum", "platinumOnly",
+            "isSvip", "is_svip", "svipOnly", "isFree", "is_free", "isAuthorized", "is_authorized",
+            "url", "mediaUrl", "playUrlHigh", "playUrlLow", "downloadUrl", "qimao_book_id",
+        )
         result = []
         for idx, chapter in enumerate(chapters or [], start=1):
             if not isinstance(chapter, dict):
                 continue
-            data = dict(chapter)
+            data = {key: chapter[key] for key in fields if chapter.get(key) not in (None, "", [], {})}
             data["_subscription_key"] = chapter_key(data)
             data["_snapshot_order"] = chapter_order(data, idx)
             result.append(data)
@@ -873,7 +1070,11 @@ class SubscriptionManager:
         elif prefer_index:
             local_files, has_album_scope, index = self.indexed_album_files(album, download_dir)
             album_dirs = [Path("__indexed_album_scope__")] if has_album_scope else []
-            if not local_files and not index.get("exists"):
+            # An existing index can still be empty or stale (for example, it
+            # was created immediately before a download finished).  Fall back
+            # to the album-directory scan whenever it found no files, not only
+            # when the root directory itself is absent.
+            if not local_files:
                 album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
                 local_files = collect_album_audio_files(
                     album,
@@ -946,8 +1147,19 @@ class SubscriptionManager:
             # 重试一次：手动补全是用户明确意图(且其权限/会员可能已变化或之前是误判失败)，
             # 应尝试所有缺失；只有后台自动检测才保持克制、跳过 confirmed 受限避免反复建任务。
             if restricted_now and not local_ok and confirmed_restricted and not retry_restricted:
-                restricted_count += 1
-                continue
+                try:
+                    next_retry_at = float(state.get("next_retry_at") or 0)
+                except (TypeError, ValueError):
+                    next_retry_at = 0
+                # Existing installations have no retry timestamp.  Start the
+                # new daily probe window without suddenly queuing every old
+                # restricted chapter on upgrade.
+                if not next_retry_at:
+                    state["next_retry_at"] = time.time() + RESTRICTED_CHAPTER_RETRY_SECONDS
+                    next_retry_at = state["next_retry_at"]
+                if time.time() < next_retry_at:
+                    restricted_count += 1
+                    continue
             if is_new:
                 new_count += 1
             if not local_ok:
@@ -1043,15 +1255,17 @@ class SubscriptionManager:
         for chapter in success_chapters or []:
             downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now}
         for chapter in failed_chapters or []:
-            restricted = is_restricted_chapter(chapter)
+            restricted = is_permission_denied_failure(chapter)
             downloaded[chapter_key(chapter)] = {
                 "status": "restricted" if restricted else "failed",
                 "updated_at": now,
                 "error": chapter.get("_error", "") if isinstance(chapter, dict) else "",
-                "reason": "会员/白金专属章节，等待后续解锁" if restricted else "",
+                "reason": "账号权限不足，等待后续章节降级或账号升级" if restricted else "",
                 # confirmed=True 表示这是实际下载失败确认的受限（区别于订阅检测时仅凭元数据的预判）。
                 # diff_chapters 只跳过 confirmed 的受限章节，避免对真 VIP 无限重试。
                 "confirmed": bool(restricted),
+                "required_tier": required_access_tier(chapter) if restricted else "",
+                "next_retry_at": time.time() + RESTRICTED_CHAPTER_RETRY_SECONDS if restricted else 0,
             }
         item["updated_at"] = now
         self.save()
@@ -1064,7 +1278,7 @@ class SubscriptionManager:
         states = subscription.get("downloaded") or {}
         restricted_count = sum(1 for state in states.values() if (state or {}).get("status") == "restricted")
         local_files, has_album_scope, index = self.indexed_album_files(album, download_dir)
-        if not local_files and not index.get("exists"):
+        if not local_files:
             album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
             local_files = collect_album_audio_files(
                 album,

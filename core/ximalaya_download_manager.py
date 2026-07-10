@@ -37,6 +37,8 @@ class XimalayaDownloadManager:
             '64K': 1,   # 64k也映射到1 (约6MB)
             '96K': 96,   # 96k超高音质（VIP）(约12MB) - Level 96
         }
+        self.last_error = ""
+        self.last_error_type = ""
     
     def download_audio_by_quality(self, track_id: str, quality: str, save_path: str, 
                                  album_title: str = "", chapter_title: str = "", progress_callback=None) -> bool:
@@ -49,6 +51,8 @@ class XimalayaDownloadManager:
         :param chapter_title: 章节标题
         :return: 下载是否成功
         """
+        self.last_error = ""
+        self.last_error_type = ""
         print(f"🚀🚀🚀 新版下载方法被调用! 🚀🚀🚀")
         print(f"📥 开始下载音频: {chapter_title} ({quality})")
         
@@ -135,6 +139,8 @@ class XimalayaDownloadManager:
                                 error_data = json.loads(first_chunk.decode('utf-8'))
                                 if error_data.get('ret') == 130:
                                     print(f"❌ 权限不足: 需要VIP权限才能下载HQ音质")
+                                    self.last_error = "权限不足"
+                                    self.last_error_type = "restricted"
                                     return False
                                 else:
                                     print(f"❌ API返回错误: {error_data}")
@@ -182,6 +188,9 @@ class XimalayaDownloadManager:
                 return True
             else:
                 print(f"❌ 下载失败: HTTP {response.status_code}")
+                if response.status_code in (401, 403):
+                    self.last_error = f"HTTP {response.status_code}: 权限不足"
+                    self.last_error_type = "restricted"
                 return False
                 
         except Exception as e:

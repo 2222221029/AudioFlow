@@ -110,7 +110,30 @@ SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
 BACKGROUND_EVENTS_FILE = log_dir() / "events.jsonl"
 TASK_SAVE_INTERVAL = 1.0
+TASK_HISTORY_MAX_KEEP_DEFAULT = max(10, int(os.getenv("AUDIOFLOW_TASK_HISTORY_MAX_KEEP", "100") or "100"))
+TASK_HISTORY_MAX_AGE_DAYS_DEFAULT = max(1, int(os.getenv("AUDIOFLOW_TASK_HISTORY_MAX_AGE_DAYS", "30") or "30"))
+TASK_DETAIL_RETENTION_DAYS_DEFAULT = max(0, int(os.getenv("AUDIOFLOW_TASK_DETAIL_RETENTION_DAYS", "7") or "7"))
+TASK_FAILURE_CHAPTER_LIMIT_DEFAULT = max(1, int(os.getenv("AUDIOFLOW_TASK_FAILURE_CHAPTER_LIMIT", "20") or "20"))
+TASK_HISTORY_MAX_BYTES_DEFAULT = max(1024 * 1024, int(os.getenv("AUDIOFLOW_TASK_HISTORY_MAX_BYTES", str(10 * 1024 * 1024)) or 10 * 1024 * 1024))
 _last_task_save = 0.0
+
+
+def task_history_setting(key, default, minimum, maximum):
+    try:
+        value = int(cookie_manager.get_cookie(key) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def task_history_settings():
+    return {
+        "task_history_max_keep": task_history_setting("task_history_max_keep", TASK_HISTORY_MAX_KEEP_DEFAULT, 10, 10000),
+        "task_history_max_age_days": task_history_setting("task_history_max_age_days", TASK_HISTORY_MAX_AGE_DAYS_DEFAULT, 1, 3650),
+        "task_detail_retention_days": task_history_setting("task_detail_retention_days", TASK_DETAIL_RETENTION_DAYS_DEFAULT, 0, 3650),
+        "task_failure_chapter_limit": task_history_setting("task_failure_chapter_limit", TASK_FAILURE_CHAPTER_LIMIT_DEFAULT, 1, 1000),
+        "task_history_max_bytes": task_history_setting("task_history_max_bytes", TASK_HISTORY_MAX_BYTES_DEFAULT, 1024 * 1024, 1024 * 1024 * 1024),
+    }
 auth_manager = AuthManager(config_dir())
 MAX_JSON_BODY_BYTES = int(os.getenv("MAX_JSON_BODY_BYTES", str(16 * 1024 * 1024)))
 AUTH_COOKIE_NAME = "audioflow_session"
@@ -660,28 +683,40 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
             set_progress("合并历史章节", merged_extra=len(appended))
     set_progress("正在扫描本地文件", chapter_count=len(chapters))
     scan_cache = {}
-    diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False, retry_restricted=retry_restricted)
-    set_progress("正在更新订阅结果", missing_count=len(diff.get("missing") or []))
-    subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
-    item = subscription_manager.get(sid) or item
-    item["download_dir"] = active_download_dir()
-    stats = subscription_manager.stats_for(item, active_download_dir(), fast=True)
+    # Keep comparison and result persistence atomic with download-completion
+    # callbacks and the background statistics refresher.
+    with subscription_manager.locked():
+        diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False, retry_restricted=retry_restricted)
+        set_progress("正在更新订阅结果", missing_count=len(diff.get("missing") or []))
+        subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
+        item = subscription_manager.get(sid) or item
+        item["download_dir"] = active_download_dir()
+        stats = subscription_manager.stats_for(item, active_download_dir(), fast=True)
     queued_task_id = ""
+    queued_chapter_count = 0
+    already_queued_count = 0
     missing = diff.get("missing") or []
     if queue_missing and missing:
-        set_progress("正在创建下载任务", missing_count=len(missing))
+        pending_keys = active_task_chapter_keys(album)
+        chapters_to_queue = [chapter for chapter in missing if chapter_key(chapter) not in pending_keys]
+        already_queued_count = len(missing) - len(chapters_to_queue)
+        if already_queued_count:
+            set_progress("跳过正在下载的章节", skipped_count=already_queued_count)
+        set_progress("正在创建下载任务", missing_count=len(chapters_to_queue))
         if not voice:
             voices = get_album_voices(album)
             voice = voices[0] if voices else None
-        queued_task_id = f"sub-{uuid.uuid4().hex[:12]}"
-        options = {"download_dir": active_download_dir(), "quality": subscription_manager.settings().get("quality", "M4A 96K"), "voice": voice}
-        start_download_task(queued_task_id, album, missing, options, source=source)
-        notification_manager.notify(
-            "subscription_queued",
-            f"订阅发现新章节：{album.get('title') or '未知专辑'}",
-            f"平台：{platform}\n新增/缺失：{len(missing)} 章\n任务：{queued_task_id}",
-            {"album": album, "missing_count": len(missing), "task_id": queued_task_id, "source": source},
-        )
+        if chapters_to_queue:
+            queued_task_id = f"sub-{uuid.uuid4().hex[:12]}"
+            queued_chapter_count = len(chapters_to_queue)
+            options = {"download_dir": active_download_dir(), "quality": subscription_manager.settings().get("quality", "M4A 96K"), "voice": voice}
+            start_download_task(queued_task_id, album, chapters_to_queue, options, source=source)
+            notification_manager.notify(
+                "subscription_queued",
+                f"订阅发现新章节：{album.get('title') or '未知专辑'}",
+                f"平台：{platform}\n新增/缺失：{queued_chapter_count} 章\n任务：{queued_task_id}",
+                {"album": album, "missing_count": queued_chapter_count, "task_id": queued_task_id, "source": source},
+            )
     elif diff.get("missing") and not queue_missing:
         notification_manager.notify(
             "subscription_checked",
@@ -696,6 +731,8 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
         "chapter_count": len(chapters),
         "missing_count": len(missing),
         "queued": bool(queued_task_id),
+        "queued_chapter_count": queued_chapter_count,
+        "already_queued_count": already_queued_count,
         "task_id": queued_task_id,
         "title": album.get("title") or item.get("title") or sid,
     }
@@ -800,7 +837,6 @@ def start_subscription_job(sid, queue_missing=False, manual=False):
             if (
                 existing.get("sid") == sid
                 and existing.get("status") in ("queued", "running")
-                and bool(existing.get("queue_missing")) == bool(queue_missing)
             ):
                 return dict(existing)
         job_id = f"subjob-{uuid.uuid4().hex[:12]}"
@@ -1258,6 +1294,31 @@ def set_task(task_id, **updates):
         return dict(task)
 
 
+_ACTIVE_DOWNLOAD_STATUSES = {"queued", "running", "paused", "stopping"}
+
+
+def active_task_chapter_tasks(album):
+    """Map chapter IDs to live tasks already covering this album."""
+    target = subscription_manager.subscription_id(normalize_album(album))
+    chapters = {}
+    with task_lock:
+        for task in tasks.values():
+            if task.get("status") not in _ACTIVE_DOWNLOAD_STATUSES:
+                continue
+            task_album = task.get("album") or {}
+            if subscription_manager.subscription_id(normalize_album(task_album)) != target:
+                continue
+            for chapter in task.get("chapters") or []:
+                if isinstance(chapter, dict):
+                    chapters.setdefault(chapter_key(chapter), dict(task))
+    return chapters
+
+
+def active_task_chapter_keys(album):
+    """Return chapter IDs already covered by a live task for this album."""
+    return set(active_task_chapter_tasks(album))
+
+
 # 下载记录列表轻量化：列表页只需展示/操作用的小字段，绝不返回 album/chapters/
 # success_chapters/failed_chapters 等重字段（单任务可达几百 KB，任务一多前端会白屏卡顿）。
 def _download_list_item(task):
@@ -1333,22 +1394,79 @@ def paginate_downloads(snapshot, page=1, limit=20, status="all"):
     }
 
 
-def prune_tasks(max_keep=200):
-    """限制下载记录上限：终态任务超过 max_keep 时删最旧的（活跃任务永不删），防止无限堆积。"""
+def _compact_terminal_task(task, failure_limit=None):
+    """Keep an actionable task summary without retaining whole album payloads."""
+    if task.get("history_compacted"):
+        return False
+    failed = []
+    for chapter in task.get("failed_chapters") or []:
+        if not isinstance(chapter, dict):
+            continue
+        failed.append({key: chapter.get(key) for key in ("id", "track_id", "chapter_id", "title", "_error", "_error_type") if chapter.get(key) not in (None, "")})
+        if len(failed) >= (failure_limit or task_history_settings()["task_failure_chapter_limit"]):
+            break
+    task["chapter_count"] = task.get("total") or len(task.get("chapters") or [])
+    task["failed_chapters"] = failed
+    task.pop("chapters", None)
+    task.pop("success_chapters", None)
+    task.pop("task_info", None)
+    task["history_compacted"] = True
+    return True
+
+
+def prune_tasks(max_keep=None):
+    """Bound terminal task history by age, count, and retained detail size."""
+    settings = task_history_settings()
+    max_keep = settings["task_history_max_keep"] if max_keep is None else max_keep
     removed = 0
+    compacted = 0
+    now = time.time()
+    delete_before = now - settings["task_history_max_age_days"] * 86400
+    compact_before = now - settings["task_detail_retention_days"] * 86400
     with task_lock:
         terminal = [
             (tid, task) for tid, task in tasks.items()
             if task.get("status") in _DOWNLOAD_TERMINAL_STATUSES
         ]
+        for tid, task in terminal:
+            finished_at = float(task.get("finished_at") or task.get("created_at") or now)
+            if finished_at < delete_before:
+                tasks.pop(tid, None)
+                removed += 1
+            elif finished_at < compact_before and _compact_terminal_task(task, settings["task_failure_chapter_limit"]):
+                compacted += 1
+        terminal = [(tid, task) for tid, task in tasks.items() if task.get("status") in _DOWNLOAD_TERMINAL_STATUSES]
         if len(terminal) > max_keep:
             terminal.sort(key=lambda kv: kv[1].get("finished_at") or kv[1].get("created_at") or 0, reverse=True)
             for tid, _ in terminal[max_keep:]:
                 tasks.pop(tid, None)
                 removed += 1
-    if removed:
+        # A small number of very large albums can exceed the storage budget
+        # before the count limit is reached. Compact oldest terminal records
+        # first, then remove them only if summaries still exceed the cap.
+        def snapshot_size():
+            return len(json.dumps({"tasks": _json_safe(tasks)}, ensure_ascii=False).encode("utf-8"))
+
+        if snapshot_size() > settings["task_history_max_bytes"]:
+            terminal = sorted(
+                ((tid, task) for tid, task in tasks.items() if task.get("status") in _DOWNLOAD_TERMINAL_STATUSES),
+                key=lambda kv: kv[1].get("finished_at") or kv[1].get("created_at") or 0,
+            )
+            for _, task in terminal:
+                if _compact_terminal_task(task, settings["task_failure_chapter_limit"]):
+                    compacted += 1
+                if snapshot_size() <= settings["task_history_max_bytes"]:
+                    break
+            if snapshot_size() > settings["task_history_max_bytes"]:
+                for tid, _ in terminal:
+                    if tid in tasks:
+                        tasks.pop(tid, None)
+                        removed += 1
+                    if snapshot_size() <= settings["task_history_max_bytes"]:
+                        break
+    if removed or compacted:
         save_tasks(force=True)
-    return removed
+    return removed, compacted
 
 
 # 启动时清理一次历史积累（此处 tasks 已在模块加载时 load 完毕）
@@ -1362,6 +1480,15 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     album = normalize_album(album)
     chapters = list(chapters or [])
     options = dict(options or {})
+    active_chapters = active_task_chapter_tasks(album)
+    pending_chapters = [chapter for chapter in chapters if chapter_key(chapter) not in active_chapters]
+    if not pending_chapters and active_chapters:
+        existing = next(iter(active_chapters.values()))
+        existing["deduplicated"] = True
+        existing["skipped_active_chapter_count"] = len(chapters)
+        return existing
+    skipped_active_chapter_count = len(chapters) - len(pending_chapters)
+    chapters = pending_chapters
     if album.get("platform") == "懒人听书":
         sync_platform_cookie("懒人听书")
     options["download_dir"] = resolve_download_dir(options.get("download_dir"))
@@ -1383,6 +1510,7 @@ def start_download_task(task_id, album, chapters, options, source="web"):
         completed=0,
         percent=0,
         warning=warning,
+        skipped_active_chapter_count=skipped_active_chapter_count,
         created_at=time.time(),
     )
     thread = threading.Thread(
@@ -1395,10 +1523,12 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     return task_snapshot(task_id)
 
 
-def refresh_subscription_audio_index_async():
+def refresh_subscription_audio_index_async(download_dir=None):
+    target_dir = resolve_download_dir(download_dir or active_download_dir())
+
     def worker():
         try:
-            subscription_manager.build_audio_index(active_download_dir(), force=True)
+            subscription_manager.build_audio_index(target_dir, force=True)
         except Exception:
             logging.debug("refresh subscription audio index failed", exc_info=True)
 
@@ -1429,10 +1559,12 @@ def refresh_subscription_stats_async(min_interval=600):
             scan_cache = {}
             for item in subscription_manager.all_subscriptions():
                 try:
-                    subscription_manager.refresh_local_stats(item, dl, save=False, scan_cache=scan_cache)
+                    with subscription_manager.locked():
+                        subscription_manager.refresh_local_stats(item, dl, save=False, scan_cache=scan_cache)
                 except Exception:
                     logging.debug("refresh local stats failed for one subscription", exc_info=True)
-            subscription_manager.save()  # 批量持久化一次
+            with subscription_manager.locked():
+                subscription_manager.save()  # 批量持久化一次
         except Exception:
             logging.debug("refresh subscription stats failed", exc_info=True)
 
@@ -1445,8 +1577,13 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
     album = current.get("album") or {}
     failure_reason = classify_failure_reason(current.get("error", ""), failed_chapters) if failed else ""
     if album:
-        subscription_manager.mark_download_results(album, success_chapters, failed_chapters)
-        refresh_subscription_audio_index_async()
+        with subscription_manager.locked():
+            subscription_manager.mark_download_results(album, success_chapters, failed_chapters)
+            completed_dir = resolve_download_dir((current.get("options") or {}).get("download_dir"))
+            # Invalidate synchronously so a check that starts immediately after
+            # completion cannot reuse the pre-download empty index.
+            subscription_manager.invalidate_audio_index(completed_dir)
+        refresh_subscription_audio_index_async(completed_dir)
     task = set_task(
         task_id,
         status=status,
@@ -1573,6 +1710,7 @@ def api_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
+        **task_history_settings(),
     )
 
 
@@ -1604,6 +1742,23 @@ def api_set_config():
         fmt = str(payload.get("filename_prefix_format") or "0001-").strip()
         allowed = {"0001-", "001-", "01-", "1-", "0001.", "001.", "01.", "1.", "none"}
         cookie_manager.set_cookie("filename_prefix_format", fmt if fmt in allowed else "0001-")
+    task_setting_limits = {
+        "task_history_max_keep": (10, 10000),
+        "task_history_max_age_days": (1, 3650),
+        "task_detail_retention_days": (0, 3650),
+        "task_failure_chapter_limit": (1, 1000),
+        "task_history_max_bytes": (1024 * 1024, 1024 * 1024 * 1024),
+    }
+    if any(key in payload for key in task_setting_limits):
+        for key, (minimum, maximum) in task_setting_limits.items():
+            if key not in payload:
+                continue
+            try:
+                value = max(minimum, min(maximum, int(payload[key])))
+                cookie_manager.set_cookie(key, str(value))
+            except (TypeError, ValueError):
+                pass
+        prune_tasks()
     return json_ok(
         download_dir=str(active_download_dir()),
         download_threads=cookie_manager.get_download_threads(),
@@ -1612,6 +1767,7 @@ def api_set_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
+        **task_history_settings(),
     )
 
 
@@ -2548,7 +2704,7 @@ def api_download():
     if options.get("voice"):
         options["voice"] = resolve_voice_for_album(album, options.get("voice"))
     task = start_download_task(task_id, album, chapters, options, source="web")
-    return json_ok(task_id=task_id, task=task)
+    return json_ok(task_id=task.get("id") or task_id, task=task, deduplicated=bool(task.get("deduplicated")))
 
 
 @app.get("/api/downloads")
@@ -2650,7 +2806,7 @@ def api_download_resume(task_id):
     set_task(task_id, status="stopped", finished_at=time.time())
     new_task_id = f"resume-{uuid.uuid4().hex[:12]}"
     new_task = start_download_task(new_task_id, album, chapters, options, source=f"resume:{task_id}")
-    return json_ok(task_id=new_task_id, task=new_task, resumed=True)
+    return json_ok(task_id=new_task.get("id") or new_task_id, task=new_task, resumed=True, deduplicated=bool(new_task.get("deduplicated")))
 
 
 @app.post("/api/downloads/<task_id>/stop")
@@ -2687,7 +2843,7 @@ def api_download_retry_failed(task_id):
         options["voice"] = resolve_voice_for_album(album, options.get("voice"))
     new_task_id = f"retry-{uuid.uuid4().hex[:12]}"
     new_task = start_download_task(new_task_id, album, chapters, options, source=f"retry:{task_id}")
-    return json_ok(task_id=new_task_id, task=new_task)
+    return json_ok(task_id=new_task.get("id") or new_task_id, task=new_task, deduplicated=bool(new_task.get("deduplicated")))
 
 
 @app.delete("/api/downloads/<task_id>")

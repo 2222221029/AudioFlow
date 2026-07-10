@@ -1,4 +1,6 @@
 import tempfile
+import time
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -189,6 +191,90 @@ class SubscriptionManagerTest(unittest.TestCase):
 
             self.assertEqual(diff["missing"], [])
             self.assertEqual(diff["file_missing_count"], 0)
+
+    def test_diff_falls_back_when_existing_index_is_empty(self):
+        """A pre-download empty index must not hide files written afterwards."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1", "title": "ExampleAlbum", "platform": "Ximalaya"}
+            chapters = [{"id": "1", "title": "Episode1", "order_num": 1}]
+            subscription = manager.add_or_update(album, chapters, download_tmp)
+
+            # Simulate the index built by a check immediately before download.
+            manager.build_audio_index(download_tmp, force=True)
+            album_dir = Path(download_tmp) / "Ximalaya" / "ExampleAlbum"
+            album_dir.mkdir(parents=True)
+            (album_dir / "0001-Episode1.m4a").write_bytes(b"a" * 2048)
+
+            diff = manager.diff_chapters(subscription, chapters, download_tmp)
+
+            self.assertEqual(diff["missing"], [])
+            self.assertEqual(diff["file_missing_count"], 0)
+
+    def test_platform_aliases_share_one_subscription_id(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp:
+            manager = SubscriptionManager(config_tmp)
+            self.assertEqual(
+                manager.subscription_id({"id": "album-1", "platform": "Ximalaya"}),
+                manager.subscription_id({"id": "album-1", "platform": "喜马拉雅"}),
+            )
+
+    def test_platform_alias_migration_merges_existing_subscriptions(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp:
+            manager = SubscriptionManager(config_tmp)
+            manager.data["subscriptions"] = {
+                "Ximalaya:album-1": {"id": "Ximalaya:album-1", "album": {"id": "album-1", "platform": "Ximalaya"}, "chapters": [{"id": "1"}], "downloaded": {"1": {"status": "downloaded"}}},
+                "喜马拉雅:album-1": {"id": "喜马拉雅:album-1", "album": {"id": "album-1", "platform": "喜马拉雅"}, "chapters": [{"id": "2"}], "downloaded": {"2": {"status": "downloaded"}}},
+            }
+
+            manager._migrate_subscription_ids()
+
+            self.assertEqual(len(manager.data["subscriptions"]), 1)
+            record = next(iter(manager.data["subscriptions"].values()))
+            self.assertEqual({chapter["id"] for chapter in record["chapters"]}, {"1", "2"})
+            self.assertEqual(set(record["downloaded"]), {"1", "2"})
+
+    def test_permission_denial_uses_daily_retry_but_network_failure_does_not(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
+            chapter = {"id": "track-1", "title": "Episode1", "order_num": 1, "isVip": True}
+            subscription = manager.add_or_update(album, [chapter], download_tmp)
+
+            # A transient failure on a VIP-marked chapter must remain retryable.
+            failed = dict(chapter, _error="network timeout")
+            manager.mark_download_results(album, failed_chapters=[failed])
+            self.assertEqual(subscription["downloaded"]["track-1"]["status"], "failed")
+
+            denied = dict(chapter, _error="permission denied", _error_type="restricted")
+            manager.mark_download_results(album, failed_chapters=[denied])
+            state = subscription["downloaded"]["track-1"]
+            self.assertEqual(state["status"], "restricted")
+            self.assertEqual(state["required_tier"], "vip")
+
+            # VIP users do not retry every scheduler tick while the chapter is
+            # still white-gold-only, but a daily probe makes later downgrades
+            # to VIP downloadable automatically.
+            state["next_retry_at"] = time.time() + 3600
+            self.assertEqual(manager.diff_chapters(subscription, [chapter], download_tmp)["missing"], [])
+            state["next_retry_at"] = time.time() - 1
+            self.assertEqual([item["id"] for item in manager.diff_chapters(subscription, [chapter], download_tmp)["missing"]], ["track-1"])
+
+    def test_audio_index_is_stored_in_sqlite_not_json(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
+            manager.add_or_update(album, [{"id": "track-1", "title": "Episode1", "order_num": 1}], download_tmp)
+            target = Path(download_tmp) / "Ximalaya" / "Example"
+            target.mkdir(parents=True)
+            (target / "0001-Episode1.m4a").write_bytes(b"a" * 2048)
+
+            index = manager.build_audio_index(download_tmp, force=True)
+
+            self.assertEqual(index["count"], 1)
+            self.assertFalse(manager.index_file.exists())
+            with sqlite3.connect(manager.db_file) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM audio_index_files").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

@@ -4,11 +4,11 @@ services:
     container_name: audioflow
     restart: unless-stopped
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
       AUDIOFLOW_DEFAULT_USERNAME: ${AUDIOFLOW_DEFAULT_USERNAME:-admin}
       AUDIOFLOW_DEFAULT_PASSWORD: ${AUDIOFLOW_DEFAULT_PASSWORD:-admin}
       AUDIOFLOW_COOKIE_SECRET: ${AUDIOFLOW_COOKIE_SECRET:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY: ${AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY:-false}
     volumes:
       - ${AUDIOFLOW_DATA_DIR:-/vol1/1000/docker/audioflow/data}:/app/data
       - ${AUDIOFLOW_CONFIG_DIR:-/vol1/1000/docker/audioflow/config}:/app/config

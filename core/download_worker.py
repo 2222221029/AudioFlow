@@ -832,6 +832,16 @@ class DownloadWorker(QThread):
                             success = download_manager.download_audio(
                                 audio_url, file_path, self.quality, progress_callback=progress_callback
                             )
+                    if not success:
+                        # Preserve the downloader's explicit entitlement result.
+                        # Subscription logic must not infer account permission
+                        # merely from chapter metadata such as isVip.
+                        error = str(getattr(download_manager, "last_download_error", "") or "").strip()
+                        error_type = str(getattr(download_manager, "last_download_error_type", "") or "").strip()
+                        if error:
+                            chapter['_error'] = error[:200]
+                        if error_type:
+                            chapter['_error_type'] = error_type
                 elif self.platform == '番茄畅听':
                     print(f"🍅 番茄畅听下载（CENC管线优先）...")
                     voice_for_download = self.voice_config or '无损真人录制'

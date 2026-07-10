@@ -1340,6 +1340,11 @@ export function SettingsPage({app}) {
   const [splitChaptersEnabled, setSplitChaptersEnabled] = useState(false);
   const [chaptersPerFolder, setChaptersPerFolder] = useState(200);
   const [filenamePrefixFormat, setFilenamePrefixFormat] = useState('0001-');
+  const [taskHistoryMaxKeep, setTaskHistoryMaxKeep] = useState(100);
+  const [taskHistoryMaxAgeDays, setTaskHistoryMaxAgeDays] = useState(30);
+  const [taskDetailRetentionDays, setTaskDetailRetentionDays] = useState(7);
+  const [taskFailureChapterLimit, setTaskFailureChapterLimit] = useState(20);
+  const [taskHistoryMaxMB, setTaskHistoryMaxMB] = useState(10);
   useEffect(() => {
     setDownloadDir(config.download_dir || '');
     setQuality(config.quality || 'M4A 96K');
@@ -1348,6 +1353,11 @@ export function SettingsPage({app}) {
     setSplitChaptersEnabled(!!config.split_chapters_enabled);
     setChaptersPerFolder(config.chapters_per_folder || 200);
     setFilenamePrefixFormat(config.filename_prefix_format || '0001-');
+    setTaskHistoryMaxKeep(config.task_history_max_keep || 100);
+    setTaskHistoryMaxAgeDays(config.task_history_max_age_days || 30);
+    setTaskDetailRetentionDays(config.task_detail_retention_days ?? 7);
+    setTaskFailureChapterLimit(config.task_failure_chapter_limit || 20);
+    setTaskHistoryMaxMB(Math.max(1, Math.round((config.task_history_max_bytes || 10 * 1024 * 1024) / 1024 / 1024)));
   }, [config]);
   const openPassword = () => setModal({content: <PasswordModal onSubmit={actions.changePassword} onClose={closeModal} />});
   const confirmClear = () => setModal({content: <ConfirmModal icon="i-trash" title="清空服务端日志" message="会清空 logs 目录下的 .log 文件。服务端已启用日志轮转。" okText="清空日志" danger onClose={closeModal} onOk={() => { closeModal(); actions.clearLogs(); }} />});
@@ -1384,6 +1394,21 @@ export function SettingsPage({app}) {
           </div>
         </div>
         <div className="field-row">
+          <label className="field-label">下载记录保留</label>
+          <div className="field-row-inline">
+            <input className="field-input" type="number" min="10" max="10000" value={taskHistoryMaxKeep} onChange={(e) => setTaskHistoryMaxKeep(Math.max(10, Math.min(10000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span>
+            <input className="field-input" type="number" min="1" max="3650" value={taskHistoryMaxAgeDays} onChange={(e) => setTaskHistoryMaxAgeDays(Math.max(1, Math.min(3650, parseInt(e.target.value) || 1)))} /><span className="field-suffix">天</span>
+          </div>
+        </div>
+        <div className="field-row">
+          <label className="field-label">记录详情压缩</label>
+          <div className="field-row-inline">
+            <input className="field-input" type="number" min="0" max="3650" value={taskDetailRetentionDays} onChange={(e) => setTaskDetailRetentionDays(Math.max(0, Math.min(3650, parseInt(e.target.value) || 0)))} /><span className="field-suffix">天后压缩</span>
+            <input className="field-input" type="number" min="1" max="1000" value={taskFailureChapterLimit} onChange={(e) => setTaskFailureChapterLimit(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))} /><span className="field-suffix">条失败章节</span>
+          </div>
+        </div>
+        <div className="field-row"><label className="field-label">记录文件上限</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="1024" value={taskHistoryMaxMB} onChange={(e) => setTaskHistoryMaxMB(Math.max(1, Math.min(1024, parseInt(e.target.value) || 1)))} /><span className="field-suffix">MB（超出时优先压缩旧记录）</span></div></div>
+        <div className="field-row">
           <label className="field-label">下载文件名前缀</label>
           <select className="field-select" value={filenamePrefixFormat} onChange={(e) => setFilenamePrefixFormat(e.target.value)}>
             <option value="0001-">0001-章节名</option>
@@ -1398,7 +1423,7 @@ export function SettingsPage({app}) {
           </select>
         </div>
         <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
-        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
+        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
       </div>
       <div className="glass glass-pad settings-card">
         <div className="panel-head"><h4>备份与恢复</h4></div>
