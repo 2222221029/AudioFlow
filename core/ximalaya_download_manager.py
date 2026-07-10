@@ -39,6 +39,18 @@ class XimalayaDownloadManager:
         }
         self.last_error = ""
         self.last_error_type = ""
+
+    def _record_error(self, message, status_code=None):
+        """Expose a stable failure reason to subscription result handling."""
+        text = str(message or "download failed")
+        lowered = text.lower()
+        permission_words = (
+            "permission", "forbidden", "unauthorized", "vip", "svip", "platinum",
+            "会员", "权限", "无权", "付费", "购买", "白金",
+        )
+        restricted = status_code in (401, 403) or any(word in lowered for word in permission_words)
+        self.last_error = text
+        self.last_error_type = "restricted" if restricted else "download_failed"
     
     def download_audio_by_quality(self, track_id: str, quality: str, save_path: str, 
                                  album_title: str = "", chapter_title: str = "", progress_callback=None) -> bool:
@@ -139,14 +151,17 @@ class XimalayaDownloadManager:
                                 error_data = json.loads(first_chunk.decode('utf-8'))
                                 if error_data.get('ret') == 130:
                                     print(f"❌ 权限不足: 需要VIP权限才能下载HQ音质")
-                                    self.last_error = "权限不足"
-                                    self.last_error_type = "restricted"
+                                    self._record_error("权限不足")
                                     return False
                                 else:
                                     print(f"❌ API返回错误: {error_data}")
+                                    self._record_error(
+                                        f"API error ret={error_data.get('ret')}: {error_data.get('msg', 'unknown')}"
+                                    )
                                     return False
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                self._record_error(f"invalid API error response: {exc}")
+                                return False
                     except StopIteration:
                         first_chunk = b''
                 
@@ -188,13 +203,12 @@ class XimalayaDownloadManager:
                 return True
             else:
                 print(f"❌ 下载失败: HTTP {response.status_code}")
-                if response.status_code in (401, 403):
-                    self.last_error = f"HTTP {response.status_code}: 权限不足"
-                    self.last_error_type = "restricted"
+                self._record_error(f"HTTP {response.status_code}", response.status_code)
                 return False
                 
         except Exception as e:
             print(f"❌ 下载异常: {e}")
+            self._record_error(f"download exception: {e}")
             return False
     
     def _download_mp3_from_web(self, track_id: str, audio_quality: str, save_path: str, chapter_title: str, progress_callback=None) -> bool:
@@ -261,12 +275,14 @@ class XimalayaDownloadManager:
             
             if response.status_code != 200:
                 print(f"❌ API请求失败: HTTP {response.status_code}")
+                self._record_error(f"HTTP {response.status_code}", response.status_code)
                 return False
             
             data = response.json()
             
             if data.get('ret') != 0:
                 print(f"❌ API返回错误: ret={data.get('ret')}, msg={data.get('msg', 'Unknown')}")
+                self._record_error(f"API error ret={data.get('ret')}: {data.get('msg', 'unknown')}")
                 return False
             
             # 2. 提取playUrlList
@@ -276,6 +292,7 @@ class XimalayaDownloadManager:
             if not play_url_list:
                 print("❌ 未找到可用的音频URL列表")
                 print(f"   📊 trackInfo包含的字段: {list(track_info.keys())[:10] if track_info else 'None'}")
+                self._record_error("no playable audio URL returned")
                 return False
             
             print(f"   📋 找到 {len(play_url_list)} 个音频URL")
@@ -309,12 +326,14 @@ class XimalayaDownloadManager:
             
             if not mp3_url_info:
                 print("❌ 未找到MP3格式的URL")
+                self._record_error("no MP3 audio URL returned")
                 return False
             
             # 4. 解密URL
             encrypted_url = mp3_url_info.get('url', '')
             if not encrypted_url:
                 print("❌ 加密URL为空")
+                self._record_error("empty encrypted audio URL")
                 return False
             
             print(f"   🔐 加密URL: {encrypted_url[:80]}...")
@@ -324,6 +343,7 @@ class XimalayaDownloadManager:
             
             if not decrypted_url or not decrypted_url.startswith('http'):
                 print(f"❌ URL解密失败或格式错误")
+                self._record_error("unable to decrypt audio URL")
                 return False
             
             print(f"   🔓 解密URL: {decrypted_url[:100]}...")
@@ -339,6 +359,7 @@ class XimalayaDownloadManager:
             
             if audio_response.status_code != 200:
                 print(f"❌ 下载失败: HTTP {audio_response.status_code}")
+                self._record_error(f"HTTP {audio_response.status_code}", audio_response.status_code)
                 return False
             
             # 检查Content-Type
@@ -361,15 +382,18 @@ class XimalayaDownloadManager:
                     error_msg = error_data.get('msg', 'Unknown error')
                     error_ret = error_data.get('ret', 'Unknown')
                     print(f"   📋 错误详情: ret={error_ret}, msg={error_msg}")
+                    self._record_error(f"API error ret={error_ret}: {error_msg}")
                     
                     return False
                 except Exception:
                     print(f"   ❌ 无法解析错误响应")
+                    self._record_error("invalid JSON error response")
                     return False
             
             # 检查文件大小
             if content_length == '0' or int(content_length) < 1024:
                 print(f"   ⚠️ 文件太小 ({content_length} 字节)，可能是错误响应")
+                self._record_error(f"audio response too small ({content_length} bytes)")
                 return False
             
             # 确保保存目录存在
@@ -392,6 +416,7 @@ class XimalayaDownloadManager:
             # 检查文件大小是否合理
             if total_size < 1024:  # 小于1KB
                 print(f"   ❌ 文件太小 ({total_size} 字节)，可能是错误响应")
+                self._record_error(f"downloaded audio too small ({total_size} bytes)")
                 return False
             
             # Content-Type已经验证是audio/mpeg，文件大小合理，直接返回成功
@@ -402,6 +427,7 @@ class XimalayaDownloadManager:
             print(f"❌ MP3下载异常: {e}")
             import traceback
             traceback.print_exc()
+            self._record_error(f"MP3 download exception: {e}")
             return False
     
     def _decrypt_audio_url_clean(self, encrypted_url: str) -> str:

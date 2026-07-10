@@ -83,7 +83,7 @@ class SubscriptionManagerTest(unittest.TestCase):
             return manager.diff_chapters(sub, chapters, download_tmp)
 
         # 受限但仅 failed（非 confirmed）→ 应继续尝试下载（进 missing）
-        diff = build({"status": "failed"})
+        diff = build({"status": "failed", "next_retry_at": time.time() - 1})
         self.assertEqual([c["id"] for c in diff["missing"]], ["2"])
 
         # 受限且已确认(confirmed) → 防回归：仍跳过，不报缺失
@@ -275,6 +275,66 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertFalse(manager.index_file.exists())
             with sqlite3.connect(manager.db_file) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM audio_index_files").fetchone()[0], 1)
+
+    def test_transient_failure_uses_backoff_but_manual_retry_bypasses_it(self):
+        from core.subscription_manager import chapter_key
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
+            chapter = {"id": "track-1", "title": "Episode1", "order_num": 1}
+            subscription = manager.add_or_update(album, [chapter], download_tmp)
+
+            manager.mark_download_results(album, failed_chapters=[dict(chapter, _error="network timeout")])
+            state = subscription["downloaded"][chapter_key(chapter)]
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["failure_count"], 1)
+            self.assertGreater(state["next_retry_at"], time.time())
+
+            automatic = manager.diff_chapters(subscription, [chapter], download_tmp)
+            self.assertEqual(automatic["missing"], [])
+            self.assertEqual(automatic["deferred_failed_count"], 1)
+
+            manual = manager.diff_chapters(subscription, [chapter], download_tmp, retry_restricted=True)
+            self.assertEqual([item["id"] for item in manual["missing"]], ["track-1"])
+
+    def test_confirmed_permission_failure_without_metadata_is_deferred(self):
+        from core.subscription_manager import chapter_key
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
+            # Some API responses omit VIP/platinum flags although the audio
+            # endpoint still returns 401/403 for this account.
+            chapter = {"id": "track-1", "title": "Episode1", "order_num": 1}
+            subscription = manager.add_or_update(album, [chapter], download_tmp)
+            subscription["downloaded"][chapter_key(chapter)] = {
+                "status": "restricted", "confirmed": True,
+                "next_retry_at": time.time() + 3600,
+            }
+
+            diff = manager.diff_chapters(subscription, [chapter], download_tmp)
+            self.assertEqual(diff["missing"], [])
+            self.assertEqual(diff["restricted_count"], 1)
+
+    def test_source_missing_history_does_not_create_download_task(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
+            current = {"id": "track-1", "title": "Episode1", "order_num": 1}
+            stale = {"id": "track-old", "title": "Removed", "order_num": 2, "_source_missing": True}
+            subscription = manager.add_or_update(album, [current, stale], download_tmp)
+            album_dir = Path(download_tmp) / "Ximalaya" / "Example"
+            album_dir.mkdir(parents=True)
+            (album_dir / "0001-Episode1.m4a").write_bytes(b"a" * 2048)
+            manager.build_audio_index(download_tmp, force=True)
+
+            diff = manager.diff_chapters(subscription, [current, stale], download_tmp)
+            stats = manager.stats_for(subscription, download_tmp, fast=True)
+
+            self.assertEqual(diff["missing"], [])
+            self.assertEqual(diff["remote_total"], 1)
+            self.assertEqual(stats["total"], 1)
 
 
 if __name__ == "__main__":

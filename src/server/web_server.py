@@ -677,7 +677,11 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     saved_chapters = item.get("chapters") or []
     if saved_chapters and chapters:
         existing_keys = {chapter_key(ch) for ch in chapters if isinstance(ch, dict)}
-        appended = [ch for ch in saved_chapters if isinstance(ch, dict) and chapter_key(ch) not in existing_keys]
+        appended = [
+            {**ch, "_source_missing": True}
+            for ch in saved_chapters
+            if isinstance(ch, dict) and chapter_key(ch) not in existing_keys
+        ]
         if appended:
             chapters = chapters + appended
             set_progress("合并历史章节", merged_extra=len(appended))

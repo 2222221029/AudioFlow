@@ -37,6 +37,20 @@ def sanitize_filename(filename):
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav"}
 RESTRICTED_CHAPTER_RETRY_SECONDS = 24 * 60 * 60
+FAILED_CHAPTER_RETRY_BASE_SECONDS = 60 * 60
+FAILED_CHAPTER_RETRY_MAX_SECONDS = 24 * 60 * 60
+
+
+def failed_chapter_retry_seconds(failure_count):
+    """Return a bounded retry delay for a real, non-permission failure."""
+    try:
+        count = max(1, int(failure_count))
+    except (TypeError, ValueError):
+        count = 1
+    return min(
+        FAILED_CHAPTER_RETRY_MAX_SECONDS,
+        FAILED_CHAPTER_RETRY_BASE_SECONDS * (2 ** min(count - 1, 5)),
+    )
 
 
 def normalize_match_text(value):
@@ -1046,6 +1060,7 @@ class SubscriptionManager:
             "isVip", "is_vip", "vip", "vipOnly", "isPlatinum", "is_platinum", "platinumOnly",
             "isSvip", "is_svip", "svipOnly", "isFree", "is_free", "isAuthorized", "is_authorized",
             "url", "mediaUrl", "playUrlHigh", "playUrlLow", "downloadUrl", "qimao_book_id",
+            "_source_missing",
         )
         result = []
         for idx, chapter in enumerate(chapters or [], start=1):
@@ -1094,13 +1109,21 @@ class SubscriptionManager:
         missing = []
         matched_keys = set()
         restricted_count = 0
+        deferred_failed_count = 0
         new_count = 0
         file_missing_count = 0
         partial_count = 0
+        current_source_total = 0
         now = utc_now_iso()
         for idx, chapter in enumerate(remote_chapters or [], start=1):
             if not isinstance(chapter, dict):
                 continue
+            # A previous API response may have contained this chapter while
+            # the current source no longer does.  Keep it as history, but do
+            # not turn an unconfirmed stale entry into a download task.
+            if chapter.get("_source_missing"):
+                continue
+            current_source_total += 1
             key = chapter_key(chapter)
             is_new = key not in saved_keys
             state = downloaded.get(key, {})
@@ -1146,7 +1169,7 @@ class SubscriptionManager:
             # retry_restricted=True（用户手动点「补全缺失」）时，连已确认受限的章节也强制
             # 重试一次：手动补全是用户明确意图(且其权限/会员可能已变化或之前是误判失败)，
             # 应尝试所有缺失；只有后台自动检测才保持克制、跳过 confirmed 受限避免反复建任务。
-            if restricted_now and not local_ok and confirmed_restricted and not retry_restricted:
+            if not local_ok and confirmed_restricted and not retry_restricted:
                 try:
                     next_retry_at = float(state.get("next_retry_at") or 0)
                 except (TypeError, ValueError):
@@ -1159,6 +1182,21 @@ class SubscriptionManager:
                     next_retry_at = state["next_retry_at"]
                 if time.time() < next_retry_at:
                     restricted_count += 1
+                    continue
+            # A transient failure must not create a new task on every
+            # scheduler tick. This also covers unfamiliar platform permission
+            # errors until they can be explicitly classified.
+            if not local_ok and state.get("status") == "failed" and not retry_restricted:
+                try:
+                    next_retry_at = float(state.get("next_retry_at") or 0)
+                except (TypeError, ValueError):
+                    next_retry_at = 0
+                if not next_retry_at:
+                    failure_count = state.get("failure_count", 1)
+                    state["next_retry_at"] = time.time() + failed_chapter_retry_seconds(failure_count)
+                    next_retry_at = state["next_retry_at"]
+                if time.time() < next_retry_at:
+                    deferred_failed_count += 1
                     continue
             if is_new:
                 new_count += 1
@@ -1177,10 +1215,12 @@ class SubscriptionManager:
         # 「按数量推断」只在有标题级别的实际匹配（matched_keys 非空）时才生效，
         # 防止跨平台同名专辑（本地文件来自另一平台）让系统误以为已全部下载。
         if not saved_keys and file_count > len(matched_keys) and matched_keys:
-            known_local_count = min(len(remote_chapters or []), file_count)
+            known_local_count = min(current_source_total, file_count)
             assumed_keys = set()
             now = utc_now_iso()
             for idx, chapter in enumerate(remote_chapters or [], start=1):
+                if isinstance(chapter, dict) and chapter.get("_source_missing"):
+                    continue
                 if idx > known_local_count or not isinstance(chapter, dict):
                     break
                 key = chapter_key(chapter)
@@ -1188,15 +1228,17 @@ class SubscriptionManager:
                 downloaded[key] = {"status": "downloaded", "updated_at": now, "source": "local-count"}
             if assumed_keys:
                 missing = [chapter for chapter in missing if chapter_key(chapter) not in assumed_keys]
-                file_missing_count = max(0, len(remote_chapters or []) - known_local_count)
+                file_missing_count = max(0, current_source_total - known_local_count)
         # 文件数兜底：本地实际音频文件数已 >= 远端章节总数，说明文件其实都在
         # （常见于重命名/刮削后文件名与远端章节标题对不上，导致逐章匹配漏判大量章节）。
         # 此时不再报缺失，避免每次「补全缺失」都创建一个文件已存在、被全部跳过的无效下载任务。
-        remote_total_count = len(remote_chapters or [])
+        remote_total_count = current_source_total
         if not skip_local and remote_total_count > 0 and file_count >= remote_total_count and missing:
             now = utc_now_iso()
             for chapter in remote_chapters or []:
                 if not isinstance(chapter, dict):
+                    continue
+                if chapter.get("_source_missing"):
                     continue
                 k = chapter_key(chapter)
                 # 不覆盖「已确认受限」状态；其余按本地已存在标记为已下载
@@ -1210,7 +1252,8 @@ class SubscriptionManager:
             "file_missing_count": file_missing_count,
             "partial_count": partial_count,
             "restricted_count": restricted_count,
-            "remote_total": len(remote_chapters or []),
+            "deferred_failed_count": deferred_failed_count,
+            "remote_total": current_source_total,
             "saved_total": len(saved),
         }
 
@@ -1241,6 +1284,7 @@ class SubscriptionManager:
             "file_missing_count": diff.get("file_missing_count", 0),
             "partial_count": diff.get("partial_count", 0),
             "restricted_count": diff.get("restricted_count", 0),
+            "deferred_failed_count": diff.get("deferred_failed_count", 0),
             "remote_total": diff.get("remote_total", 0) or len(chapters),
         }
         self.save()
@@ -1256,7 +1300,13 @@ class SubscriptionManager:
             downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now}
         for chapter in failed_chapters or []:
             restricted = is_permission_denied_failure(chapter)
-            downloaded[chapter_key(chapter)] = {
+            key = chapter_key(chapter)
+            previous = downloaded.get(key) or {}
+            try:
+                failure_count = max(0, int(previous.get("failure_count") or 0)) + 1
+            except (TypeError, ValueError):
+                failure_count = 1
+            downloaded[key] = {
                 "status": "restricted" if restricted else "failed",
                 "updated_at": now,
                 "error": chapter.get("_error", "") if isinstance(chapter, dict) else "",
@@ -1265,7 +1315,11 @@ class SubscriptionManager:
                 # diff_chapters 只跳过 confirmed 的受限章节，避免对真 VIP 无限重试。
                 "confirmed": bool(restricted),
                 "required_tier": required_access_tier(chapter) if restricted else "",
-                "next_retry_at": time.time() + RESTRICTED_CHAPTER_RETRY_SECONDS if restricted else 0,
+                "failure_count": failure_count,
+                "next_retry_at": time.time() + (
+                    RESTRICTED_CHAPTER_RETRY_SECONDS if restricted
+                    else failed_chapter_retry_seconds(failure_count)
+                ),
             }
         item["updated_at"] = now
         self.save()
@@ -1273,7 +1327,8 @@ class SubscriptionManager:
     def refresh_local_stats(self, subscription, download_dir, save=True, scan_cache=None):
         scan_cache = scan_cache if isinstance(scan_cache, dict) else {}
         chapters = subscription.get("chapters") or []
-        total = len(chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
+        current_chapters = [chapter for chapter in chapters if isinstance(chapter, dict) and not chapter.get("_source_missing")]
+        total = len(current_chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
         album = subscription.get("album") or subscription
         states = subscription.get("downloaded") or {}
         restricted_count = sum(1 for state in states.values() if (state or {}).get("status") == "restricted")
@@ -1291,7 +1346,7 @@ class SubscriptionManager:
         matched = 0
         downloaded = subscription.setdefault("downloaded", {})
         now = utc_now_iso()
-        for idx, chapter in enumerate(chapters, start=1):
+        for idx, chapter in enumerate(current_chapters, start=1):
             if is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files, local_index=local_index):
                 matched += 1
                 downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now, "source": "local"}
@@ -1315,7 +1370,8 @@ class SubscriptionManager:
 
     def stats_for(self, subscription, download_dir, fast=False, scan_cache=None):
         chapters = subscription.get("chapters") or []
-        total = len(chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
+        current_chapters = [chapter for chapter in chapters if isinstance(chapter, dict) and not chapter.get("_source_missing")]
+        total = len(current_chapters) or int(subscription.get("episodes") or (subscription.get("album") or {}).get("episodes") or 0)
         downloaded = 0
         restricted = 0
         if fast:
