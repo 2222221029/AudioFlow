@@ -412,7 +412,7 @@ def chapter_title(chapter):
 
 
 def chapter_order(chapter, fallback):
-    for key in ("order_num", "order", "index", "sort", "episode", "chapter_index"):
+    for key in ("ui_display_index", "order_num", "order", "index", "sort", "episode", "chapter_index"):
         value = chapter.get(key)
         try:
             if value is not None and int(value) > 0:

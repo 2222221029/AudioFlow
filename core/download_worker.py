@@ -558,19 +558,22 @@ class DownloadWorker(QThread):
             increment_naming_enabled = cookie_manager.get_cookie('increment_naming_enabled') == 'true'
             fixed_naming_enabled = cookie_manager.get_cookie('fixed_naming_enabled') == 'true'
 
-            # Use the same order resolution as subscription manager's chapter_order()
-            # to keep filename prefix and file-matching consistent.
-            actual_order = None
-            for key in ("order_num", "order", "index", "sort", "episode", "chapter_index"):
-                value = chapter.get(key)
-                try:
-                    if value is not None and int(value) > 0:
-                        actual_order = int(value)
-                        self._dbg(f"    \u2714\ufe0f \u4f7f\u7528{key}: {actual_order}")
-                        break
-                except Exception:
-                    pass
-            if actual_order is None:
+            # Priority: ui_display_index (normalize_chapter list position) -> order_num -> chapter_order keys
+            order_num_value = chapter.get('ui_display_index') or chapter.get('order_num')
+            if order_num_value is not None and order_num_value > 0:
+                actual_order = order_num_value
+            else:
+                actual_order = None
+                for key in ("order", "index", "sort", "episode", "chapter_index"):
+                    value = chapter.get(key)
+                    try:
+                        if value is not None and int(value) > 0:
+                            actual_order = int(value)
+                            self._dbg(f"    fallback key: {key} = {actual_order}")
+                            break
+                    except Exception:
+                        pass
+            if actual_order is None or actual_order <= 0:
                 import re
                 patterns = [
                     r'第(\d+)[章节集]',
@@ -582,15 +585,9 @@ class DownloadWorker(QThread):
                     match = re.search(pattern, chapter_title)
                     if match:
                         actual_order = int(match.group(1))
-                        self._dbg(f"    \u2714\ufe0f \u4ece\u6807\u9898\u63d0\u53d6\u7ae0\u8282\u53f7: {actual_order} (\u4f7f\u7528\u6a21\u5f0f: {pattern})")
                         break
             if actual_order is None or actual_order <= 0:
                 actual_order = chapter_index
-                self._dbg(f"    \u26a0\ufe0f \u65e0\u6cd5\u63d0\u53d6\u5e8f\u53f7\uff0c\u4f7f\u7528\u4e0b\u8f7d\u961f\u5217\u5e8f\u6b21: {actual_order}")
-
-
-            self._dbg(f"   🎯 最终文件名前缀: {filename_prefix}")
-
             # ---- 文件扩展名 ----
             fanqie_audio_info = None
             if self.platform == '番茄畅听':
