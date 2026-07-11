@@ -573,10 +573,10 @@ class DownloadWorker(QThread):
             if actual_order is None:
                 import re
                 patterns = [
-                    r'\u7b2c(\\d+)[\u7ae0\u8282\u96c6]',
-                    r'(\\d+)[\u7ae0\u8282\u96c6]',
-                    r'\u7b2c(\\d+)',
-                    r'(\\d+)',
+                    r'第(\d+)[章节集]',
+                    r'(\d+)[章节集]',
+                    r'第(\d+)',
+                    r'(\d+)',
                 ]
                 for pattern in patterns:
                     match = re.search(pattern, chapter_title)
