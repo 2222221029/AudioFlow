@@ -40,15 +40,21 @@ async function requestJson(path, options = {}) {
   const headers = normalized.body && !(normalized.body instanceof FormData)
     ? {'Content-Type': 'application/json', ...(normalized.headers || {})}
     : (normalized.headers || {});
-  const response = await fetch(apiUrl(path), {...normalized, headers, credentials: 'same-origin'});
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.ok === false) {
-    const error = new Error(data.error || response.statusText || 'Request failed');
-    error.status = response.status;
-    error.data = data;
-    throw error;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(apiUrl(path), {...normalized, headers, credentials: 'same-origin', signal: controller.signal});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      const error = new Error(data.error || response.statusText || 'Request failed');
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  } finally {
+    clearTimeout(timeout);
   }
-  return data;
 }
 
 export async function api(path, options = {}) {

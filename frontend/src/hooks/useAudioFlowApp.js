@@ -488,6 +488,10 @@ export function useAudioFlowApp() {
 
   const subscribeAlbum = useCallback(async () => {
     if (!selectedAlbum) return;
+    if (!chapters || !chapters.length) {
+      showToast(chapters ? "章节列表未加载完成，请稍后再试" : "章节列表未加载，请先打开专辑详情", "err");
+      return;
+    }
     await runBusy('subscribe', async () => {
       const data = await api('/api/subscriptions', {
         method: 'POST',
