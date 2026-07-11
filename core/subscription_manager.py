@@ -943,6 +943,7 @@ class SubscriptionManager:
         if not item:
             return False
         item["status"] = "cancelled"
+        item["downloaded"] = {}
         item["updated_at"] = utc_now_iso()
         self.save()
         return True
