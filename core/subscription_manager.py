@@ -1216,7 +1216,7 @@ class SubscriptionManager:
             local_index, skip_local, current_source_total, download_dir,
             local_files, saved_keys, new_count, file_missing_count,
             partial_count, restricted_count, deferred_failed_count,
-            remote_total_count, saved_total
+            current_source_total, len(saved)
         )
         missing = result["missing"]
         file_missing_count = result["file_missing_count"]
