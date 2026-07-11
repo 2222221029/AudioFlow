@@ -255,7 +255,7 @@ class DownloadWorker(QThread):
                             self.success_chapters.append(chapter)
                         else:
                             self.failed_count += 1
-                            if '_error' not in chapter:
+                            if not chapter.get('_error'):
                                 chapter['_error'] = '下载失败'
                             self.failed_chapters.append(chapter)
                             print(f"   ❌ 章节下载失败: {chapter.get('title', '未知章节')} - "
@@ -558,36 +558,36 @@ class DownloadWorker(QThread):
             increment_naming_enabled = cookie_manager.get_cookie('increment_naming_enabled') == 'true'
             fixed_naming_enabled = cookie_manager.get_cookie('fixed_naming_enabled') == 'true'
 
-            # Priority: ui_display_index (normalize_chapter list position) -> order_num -> chapter_order keys
             order_num_value = chapter.get('ui_display_index') or chapter.get('order_num')
+
+            self._dbg(f"   🔍 调试: order_num={order_num_value} chapter_index={chapter_index} "
+                      f"递增命名={increment_naming_enabled} 固定命名={fixed_naming_enabled}")
+
             if order_num_value is not None and order_num_value > 0:
                 actual_order = order_num_value
+                self._dbg(f"   ✅ 使用order_num（UI序号）: {actual_order}")
             else:
-                actual_order = None
-                for key in ("order", "index", "sort", "episode", "chapter_index"):
-                    value = chapter.get(key)
-                    try:
-                        if value is not None and int(value) > 0:
-                            actual_order = int(value)
-                            self._dbg(f"    fallback key: {key} = {actual_order}")
-                            break
-                    except Exception:
-                        pass
-            if actual_order is None or actual_order <= 0:
                 import re
                 patterns = [
-                    r'第(\d+)[章节集]',
+                    r'第?(\d+)[章节集]',
                     r'(\d+)[章节集]',
                     r'第(\d+)',
                     r'(\d+)',
                 ]
+                actual_order = None
                 for pattern in patterns:
                     match = re.search(pattern, chapter_title)
                     if match:
                         actual_order = int(match.group(1))
+                        self._dbg(f"   ✅ 从标题提取章节号: {actual_order} (使用模式: {pattern})")
                         break
-            if actual_order is None or actual_order <= 0:
-                actual_order = chapter_index
+                if actual_order is None:
+                    actual_order = chapter_index
+                    self._dbg(f"   ⚠️ 无法提取序号，使用下载队列序号: {actual_order}")
+
+            filename_prefix = self._format_filename_prefix(actual_order)
+            self._dbg(f"   🎯 最终文件名前缀: {filename_prefix}")
+
             # ---- 文件扩展名 ----
             fanqie_audio_info = None
             if self.platform == '番茄畅听':

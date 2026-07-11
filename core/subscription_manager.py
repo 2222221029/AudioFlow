@@ -1211,60 +1211,9 @@ class SubscriptionManager:
                 item["_subscription_key"] = key
                 item["_missing_reason"] = "restricted_released" if state_restricted and not restricted_now else "new" if is_new else "missing_or_incomplete"
                 missing.append(item)
-        result = self._chapter_match_heuristic(
-            remote_chapters, missing, matched_keys, downloaded,
-            local_index, skip_local, current_source_total, download_dir,
-            local_files, saved_keys, new_count, file_missing_count,
-            partial_count, restricted_count, deferred_failed_count,
-            current_source_total, len(saved)
-        )
-        missing = result["missing"]
-        file_missing_count = result["file_missing_count"]
-        return {
-            "missing": self.dedupe_chapters(missing),
-            "new_count": new_count,
-            "file_missing_count": file_missing_count,
-            "partial_count": partial_count,
-            "restricted_count": restricted_count,
-            "deferred_failed_count": deferred_failed_count,
-            "remote_total": current_source_total,
-            "saved_total": len(saved),
-        }
-
-
-    def _chapter_match_heuristic(self, remote_chapters, missing, matched_keys, downloaded,
-                                  local_index, skip_local, current_source_total, download_dir,
-                                  local_files, saved_keys, new_count, file_missing_count,
-                                  partial_count, restricted_count, deferred_failed_count,
-                                  remote_total_count, saved_total):
-        """Apply heuristics to fill chapter matching gaps when title matching fails.
-
-        This handles three cases:
-        1. local-count: Few titles matched, but files exist -> assume sequential download
-        2. local-count-full: File count >= remote total -> mark all downloaded (high confidence only)
-        3. Stale index: Index reports 0 but disk has files -> invalidate & retry
-        """
-        if not local_files:
-            # Invalidate stale index entry when the index reports zero files but a full
-            # scan (done by collect_album_audio_files above) actually found files.
-            # This closes the gap where a just-completed download leaves an empty index
-            # that makes every chapter look missing.
-            if not skip_local and local_index.get("file_count", 0) == 0 and local_files:
-                logging.info(
-                    "diff_chapters: index stale ({} files on disk but index shows 0), rebuilding".format(len(local_files))
-                )
-                self.invalidate_audio_index(download_dir)
         file_count = 0 if skip_local else local_index.get("file_count", 0)
-        # Invalidate stale index entry when the index reports zero files but a full
-        # scan (done by collect_album_audio_files above) actually found files.
-        # This closes the gap where a just-completed download leaves an empty index
-        # that makes every chapter look missing.
-        if not skip_local and file_count == 0 and local_files:
-            logging.info(
-                "diff_chapters: index stale ({} files on disk but index shows 0), rebuilding".format(len(local_files))
-            )
-            self.invalidate_audio_index(download_dir)
-        # local-count: Only when no saved chapters exist and there are matched titles
+        # 「按数量推断」只在有标题级别的实际匹配（matched_keys 非空）时才生效，
+        # 防止跨平台同名专辑（本地文件来自另一平台）让系统误以为已全部下载。
         if not saved_keys and file_count > len(matched_keys) and matched_keys:
             known_local_count = min(current_source_total, file_count)
             assumed_keys = set()
@@ -1280,40 +1229,32 @@ class SubscriptionManager:
             if assumed_keys:
                 missing = [chapter for chapter in missing if chapter_key(chapter) not in assumed_keys]
                 file_missing_count = max(0, current_source_total - known_local_count)
-        # local-count-full: File count >= remote total
+        # 文件数兜底：本地实际音频文件数已 >= 远端章节总数，说明文件其实都在
+        # （常见于重命名/刮削后文件名与远端章节标题对不上，导致逐章匹配漏判大量章节）。
+        # 此时不再报缺失，避免每次「补全缺失」都创建一个文件已存在、被全部跳过的无效下载任务。
+        remote_total_count = current_source_total
         if not skip_local and remote_total_count > 0 and file_count >= remote_total_count and missing:
-            high_confidence = (len(matched_keys) >= remote_total_count * 0.7) if remote_total_count > 0 else False
-            if high_confidence:
-                now = utc_now_iso()
-                for chapter in remote_chapters or []:
-                    if not isinstance(chapter, dict):
-                        continue
-                    if chapter.get("_source_missing"):
-                        continue
-                    k = chapter_key(chapter)
-                    # 不覆盖「已确认受限」状态；其余按本地已存在标记为已下载
-                    if (downloaded.get(k) or {}).get("status") != "restricted":
-                        downloaded[k] = {"status": "downloaded", "updated_at": now, "source": "local-count-full"}
-                missing = []
-                file_missing_count = 0
-            else:
-                # 文件数足够但实际匹配率低：清理过往 local-count-full / local-count 标记
-                stale_keys = []
-                for k, state in list(downloaded.items()):
-                    source = str((state or {}).get("source") or "")
-                    if source in ("local-count-full", "local-count"):
-                        stale_keys.append(k)
-                for k in stale_keys:
-                    downloaded.pop(k, None)
-                if stale_keys:
-                    logging.info(
-                        "subscription diff: cleared {} stale local-count (matched={}/{} file_count={})".format(
-                            len(stale_keys), len(matched_keys), remote_total_count, file_count)
-                    )
+            now = utc_now_iso()
+            for chapter in remote_chapters or []:
+                if not isinstance(chapter, dict):
+                    continue
+                if chapter.get("_source_missing"):
+                    continue
+                k = chapter_key(chapter)
+                # 不覆盖「已确认受限」状态；其余按本地已存在标记为已下载
+                if (downloaded.get(k) or {}).get("status") != "restricted":
+                    downloaded[k] = {"status": "downloaded", "updated_at": now, "source": "local-count-full"}
+            missing = []
+            file_missing_count = 0
         return {
-            "missing": missing,
+            "missing": self.dedupe_chapters(missing),
+            "new_count": new_count,
             "file_missing_count": file_missing_count,
-            "file_count": file_count,
+            "partial_count": partial_count,
+            "restricted_count": restricted_count,
+            "deferred_failed_count": deferred_failed_count,
+            "remote_total": current_source_total,
+            "saved_total": len(saved),
         }
 
     def dedupe_chapters(self, chapters):
@@ -1410,24 +1351,8 @@ class SubscriptionManager:
                 matched += 1
                 downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now, "source": "local"}
         file_count = local_index.get("file_count", 0)
-        # downloaded_count: authenticated matched count only (no file_count floor).
-        # Using max(matched, file_count) over-counts when the album dir contains
-        # files from other sources, duplicates, or non-subscription content.
-        downloaded_count = min(total, matched)
+        downloaded_count = min(total, max(matched, file_count))
         restricted_count = sum(1 for state in downloaded.values() if (state or {}).get("status") == "restricted")
-        # Clean stale local-count entries for chapters that no longer have files on disk.
-        # After files are deleted, these entries would permanently hide missing chapters.
-        stale_cleared = 0
-        chapter_keys_set = {chapter_key(ch) for ch in current_chapters if isinstance(ch, dict)}
-        for state_key, state in list(downloaded.items()):
-            source = str((state or {}).get("source") or "")
-            if source in ("local-count-full", "local-count") and state_key in chapter_keys_set:
-                downloaded.pop(state_key, None)
-                stale_cleared += 1
-        if stale_cleared:
-            logging.info(
-                "refresh_local_stats: cleared {} stale local-count entries".format(stale_cleared)
-            )
         local_stats = {
             "total": total,
             "downloaded": downloaded_count,
@@ -1461,44 +1386,11 @@ class SubscriptionManager:
             # fast 模式严格不触碰磁盘（不扫描下载目录）：直接用持久化的 local_stats 与内存中的
             # 下载状态计数，保证 /api/subscriptions?fast=1 秒回。精确的本地文件数由后台异步刷新
             # （refresh_subscription_stats_async）写回 local_stats，下次打开即生效。
-            # 但若 state_count 远超上次文件计数（local_count），说明可能存在大量 stale
-            # local-count 标记：信任更保守的磁盘计数，避免假报「已下载 N/N」。
-            if local_count > 0 and state_count > local_count * 1.5:
-                downloaded = min(total, local_count)
-            else:
-                downloaded = min(total, max(state_count, local_count))
+            downloaded = min(total, max(state_count, local_count))
         else:
             refreshed = self.refresh_local_stats(subscription, download_dir, save=True, scan_cache=scan_cache)
             downloaded = refreshed["downloaded"]
             restricted = int(refreshed.get("restricted") or 0)
-            # Lightweight disk spot-check: verify the first and last claimed chapter
-            # files actually exist. If both are missing, the state is stale and we
-            # should return the conservative disk count instead.
-            if downloaded > 0 and total > 0 and not scan_cache:
-                try:
-                    album = subscription.get("album") or subscription
-                    current = [ch for ch in (subscription.get("chapters") or []) if isinstance(ch, dict) and not ch.get("_source_missing")]
-                    if current:
-                        first = current[0]
-                        last = current[-1] if len(current) > 1 else first
-                        from pathlib import Path as _Path
-                        has_first = any(
-                            p.exists() and p.stat().st_size > 1024
-                            for p in possible_chapter_files(album, first, 1, download_dir, local_files=None)[:4]
-                        ) if first else False
-                        has_last = any(
-                            p.exists() and p.stat().st_size > 1024
-                            for p in possible_chapter_files(album, last, len(current), download_dir, local_files=None)[:4]
-                        ) if last is not first else has_first
-                        if not has_first and not has_last and downloaded > total * 0.3:
-                            # High probability of stale state: clamp to disk count
-                            downloaded = min(total, local_count)
-                            logging.info(
-                                "stats_for fast: spot-check failed (first/last missing), using disk count={}".format(local_count)
-                            )
-                except Exception:
-                    pass  # disk check is advisory; never break the fast path
-
         missing = max(0, total - downloaded - restricted)
         # 已补齐：上次检查发现缺失后，本次实际已下载到本地的数量
         last_diff = subscription.get("last_diff") or {}
