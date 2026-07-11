@@ -375,6 +375,8 @@ def classify_failure_reason(error="", failed_chapters=None):
         return "音频地址失效"
     if any(token in text for token in ("permission", "denied", "no space", "磁盘", "写入", "目录")):
         return "本地文件/磁盘问题"
+    if any(token in text for token in ("下载失败", "failed", "error", "失败")):
+        return "下载失败"
     return "未知原因"
 
 
