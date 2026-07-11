@@ -1290,6 +1290,9 @@ class SubscriptionManager:
         self.save()
 
     def mark_download_results(self, album, success_chapters=None, failed_chapters=None):
+        print(f"[订阅管理] mark_download_results called: album_platform={album.get("platform")}, album_id={album.get("id")}, success={len(success_chapters or [])}, failed={len(failed_chapters or [])}")
+        sid = self.subscription_id(album)
+        print(f"[订阅管理]   sid={sid}, subscription_exists={bool(self.get(sid))}")
         sid = self.subscription_id(album)
         item = self.get(sid)
         if not item:
