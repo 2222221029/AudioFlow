@@ -926,7 +926,7 @@ class SubscriptionManager:
             "source_url": album.get("url") or album.get("link") or album.get("source_url") or old.get("source_url") or "",
             "album": dict(album or old.get("album") or {}),
             "chapters": self.snapshot_chapters(chapters or old.get("chapters") or []),
-            "downloaded": old.get("downloaded") or {},
+            "downloaded": {} if old.get("status") == "cancelled" else old.get("downloaded") or {},
             "created_at": old.get("created_at") or now,
             "updated_at": now,
             "last_check_at": old.get("last_check_at") or "",
@@ -1212,6 +1212,15 @@ class SubscriptionManager:
                 item["_missing_reason"] = "restricted_released" if state_restricted and not restricted_now else "new" if is_new else "missing_or_incomplete"
                 missing.append(item)
         file_count = 0 if skip_local else local_index.get("file_count", 0)
+        # Invalidate stale index when file_count dropped significantly from remote total
+        # (after manual file deletion). Without this, the cached index still shows
+        # deleted files and is_chapter_file_complete with the stale index may miss them.
+        if not skip_local and file_count > 0 and current_source_total > file_count * 1.1:
+            logging.info(
+                "diff_chapters: file_count={} < remote_total={}, index stale, invalidating".format(
+                    file_count, current_source_total)
+            )
+            self.invalidate_audio_index(download_dir)
         # 「按数量推断」只在有标题级别的实际匹配（matched_keys 非空）时才生效，
         # 防止跨平台同名专辑（本地文件来自另一平台）让系统误以为已全部下载。
         if not saved_keys and file_count > len(matched_keys) and matched_keys:
@@ -1232,8 +1241,8 @@ class SubscriptionManager:
         # 文件数兜底：本地实际音频文件数已 >= 远端章节总数，说明文件其实都在
         # （常见于重命名/刮削后文件名与远端章节标题对不上，导致逐章匹配漏判大量章节）。
         # 此时不再报缺失，避免每次「补全缺失」都创建一个文件已存在、被全部跳过的无效下载任务。
-        remote_total_count = current_source_total
-        if not skip_local and remote_total_count > 0 and file_count >= remote_total_count and missing:
+        current_source_total = current_source_total
+        if not skip_local and current_source_total > 0 and file_count >= current_source_total and missing:
             now = utc_now_iso()
             for chapter in remote_chapters or []:
                 if not isinstance(chapter, dict):
@@ -1290,9 +1299,7 @@ class SubscriptionManager:
         self.save()
 
     def mark_download_results(self, album, success_chapters=None, failed_chapters=None):
-        print(f"[订阅管理] mark_download_results called: album_platform={album.get("platform")}, album_id={album.get("id")}, success={len(success_chapters or [])}, failed={len(failed_chapters or [])}")
         sid = self.subscription_id(album)
-        print(f"[订阅管理]   sid={sid}, subscription_exists={bool(self.get(sid))}")
         sid = self.subscription_id(album)
         item = self.get(sid)
         if not item:
