@@ -290,6 +290,20 @@ def merge_subscription_file(source, target):
 merge_subscription_file(data_dir() / "subscriptions.json", SUBSCRIPTIONS_FILE)
 migrate_runtime_file(data_dir() / "tasks.json", TASKS_FILE)
 subscription_manager = SubscriptionManager(config_dir=config_dir())
+
+# Wire up FileManager subscription index hook: when files change,
+# invalidate the audio index so subscription checks see the truth.
+try:
+    from core.file_manager import set_subscription_index_hook
+    def _on_file_change(subscription_id, download_dir):
+        try:
+            if download_dir:
+                subscription_manager.invalidate_audio_index(download_dir)
+        except Exception:
+            pass
+    set_subscription_index_hook(_on_file_change)
+except Exception:
+    logging.debug("could not wire subscription index hook", exc_info=True)
 notification_manager = NotificationManager(config_dir() / "notifications.json")
 
 
@@ -582,6 +596,23 @@ def _scheduler_loop():
             _scheduler_status["running"] = False
             _scheduler_status["last_error"] = str(exc)
             print(f"[订阅调度] loop 异常：{exc}")
+        
+        # Weekly index rebuild: force a full rebuild every 7 days to catch
+        # stale entries from manual file deletions outside the app.
+        try:
+            now = time.time()
+            last_rebuild = float(_scheduler_status.get("last_index_rebuild_at") or 0)
+            if now - last_rebuild > 7 * 24 * 3600:
+                _scheduler_status["last_index_rebuild_at"] = now
+                _scheduler_status["last_index_rebuild_count"] = 0
+                dl_dir = active_download_dir()
+                if dl_dir:
+                    index = subscription_manager.build_audio_index(dl_dir, force=True)
+                    count = index.get("count", 0) if isinstance(index, dict) else 0
+                    _scheduler_status["last_index_rebuild_count"] = count
+                    logging.info("weekly index rebuild: {} files indexed".format(count))
+        except Exception:
+            pass  # rebuild is best-effort; never break the main loop
         _scheduler_event.wait(60)
         _scheduler_event.clear()
 
@@ -738,6 +769,8 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
         "queued_chapter_count": queued_chapter_count,
         "already_queued_count": already_queued_count,
         "task_id": queued_task_id,
+        "restricted_count": diff.get("restricted_count", 0),
+        "deferred_failed_count": diff.get("deferred_failed_count", 0),
         "title": album.get("title") or item.get("title") or sid,
     }
 
@@ -3177,7 +3210,14 @@ def api_subscribe():
     settings = subscription_manager.settings()
     if settings.get("enabled", True):
         ensure_subscription_scheduler()
-        job = start_subscription_job(item["id"], queue_missing=settings.get("auto_download_missing", True))
+        # Defer full check to avoid double-fetch: the search results already provided
+        # chapters. Only queue missing chapters for download if auto-download is on.
+        auto_dl = settings.get("auto_download_missing", True)
+        if auto_dl and chapters:
+            # Use provided chapters directly - no need to refetch from remote.
+            job = start_subscription_job(item["id"], queue_missing=True, manual=False)
+        else:
+            job = start_subscription_job(item["id"], queue_missing=False, manual=False)
     return json_ok(subscription=item, job=job)
 
 

@@ -21,6 +21,28 @@ FM_HISTORY_FILE   = config_dir() / "fm_history.json"
 
 ILLEGAL_CHARS = r'[/\\:*?"<>|]'
 
+
+# ---- Subscription awareness hook ----
+# Called after batch file operations (rename/move/delete) to invalidate
+# the subscription manager''s audio index so the next check reflects reality.
+_subscription_index_hook = None
+
+
+def set_subscription_index_hook(callback):
+    """Register a callback(subscription_id, download_dir) called after file changes."""
+    global _subscription_index_hook
+    _subscription_index_hook = callback
+
+
+def _notify_file_change():
+    """Notify subscription manager that files have changed in the download directory."""
+    try:
+        if _subscription_index_hook:
+            from core.platform_config import download_dir as _dl_func
+            _subscription_index_hook(None, str(_dl_func()))
+    except Exception:
+        pass  # best-effort; never break file operations
+
 AD_PATTERNS = [
     r'www\.\S+\.\S+',
     r'https?://\S+',
@@ -394,6 +416,7 @@ def apply_rename(previews: list, operation_note: str = "") -> dict:
     })
     save_history(history)
 
+    _notify_file_change()
     return {"success": success, "failed": failed, "history_id": history_id}
 
 
