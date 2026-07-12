@@ -724,6 +724,7 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     # callbacks and the background statistics refresher.
     with subscription_manager.locked():
         diff = subscription_manager.diff_chapters(item, chapters, active_download_dir(), scan_cache=scan_cache, skip_local=False, retry_restricted=retry_restricted)
+        print('[DIAG] diff missing=' + str(len(diff.get("missing") or [])) + ' remote_total=' + str(diff.get("remote_total", 0)) + ' restricted=' + str(diff.get("restricted_count", 0)))
         set_progress("正在更新订阅结果", missing_count=len(diff.get("missing") or []))
         subscription_manager.update_check_result(sid, chapters, diff, "自动检测完成" if queue_missing else "已检查", refresh_local=False)
         item = subscription_manager.get(sid) or item
