@@ -207,7 +207,7 @@ def collect_album_audio_files(album, download_dir, dir_cache=None, file_cache=No
         return []
     search_dirs = album_dir_candidates(album, download_dir, dir_cache=dir_cache)
     if not search_dirs:
-        search_dirs = [root]
+        return []
     files = []
     seen = set()
     for base in search_dirs:
@@ -1107,7 +1107,6 @@ class SubscriptionManager:
                 file_cache=scan_cache.setdefault("files", {}),
             )
         local_index = {} if skip_local else build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
-        print("[DIAG scan] local_files=" + str(len(local_files or [])) + " album_dirs=" + str(len(album_dirs)) + " has_scope=" + str(bool(album_dirs)) + " index_files=" + str(local_index.get("file_count", 0)) + " names=" + str(len(local_index.get("names", set()))))
         missing = []
         matched_keys = set()
         restricted_count = 0
