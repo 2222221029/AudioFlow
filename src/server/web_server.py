@@ -109,6 +109,11 @@ WECOM_SESSION_MAX_ITEMS = int(os.getenv("WECOM_SESSION_MAX_ITEMS", "500") or "50
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
 BACKGROUND_EVENTS_FILE = log_dir() / "events.jsonl"
+BACKGROUND_EVENTS_MAX_BYTES = max(
+    64 * 1024,
+    int(os.getenv("AUDIOFLOW_EVENTS_MAX_BYTES", str(2 * 1024 * 1024)) or 2 * 1024 * 1024),
+)
+background_events_lock = threading.Lock()
 TASK_SAVE_INTERVAL = 1.0
 TASK_HISTORY_MAX_KEEP_DEFAULT = max(10, int(os.getenv("AUDIOFLOW_TASK_HISTORY_MAX_KEEP", "100") or "100"))
 TASK_HISTORY_MAX_AGE_DAYS_DEFAULT = max(1, int(os.getenv("AUDIOFLOW_TASK_HISTORY_MAX_AGE_DAYS", "30") or "30"))
@@ -319,6 +324,50 @@ def _json_safe(value):
         return str(value)
 
 
+def _serialize_background_event(event):
+    line = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(line) <= BACKGROUND_EVENTS_MAX_BYTES:
+        return line
+
+    # A single pathological payload must not defeat the file size limit.
+    compact_event = dict(event)
+    compact_event["kind"] = str(event.get("kind") or "event")[:64]
+    compact_event["title"] = str(event.get("title") or "")[:512]
+    compact_event["detail"] = str(event.get("detail") or "")[:4096]
+    compact_event["payload"] = {"truncated": True, "reason": "event_too_large"}
+    return (json.dumps(compact_event, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _background_events_tail_bytes(byte_limit):
+    if byte_limit <= 0 or not BACKGROUND_EVENTS_FILE.exists():
+        return b""
+    with BACKGROUND_EVENTS_FILE.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        start = max(0, size - byte_limit)
+        handle.seek(start)
+        data = handle.read(byte_limit)
+    if start:
+        newline = data.find(b"\n")
+        data = data[newline + 1:] if newline >= 0 else b""
+    return data
+
+
+def _replace_background_events(content):
+    tmp = BACKGROUND_EVENTS_FILE.with_name(
+        f".{BACKGROUND_EVENTS_FILE.name}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(content)
+        os.replace(tmp, BACKGROUND_EVENTS_FILE)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def append_background_event(kind, title, detail="", payload=None):
     event = {
         "id": uuid.uuid4().hex[:12],
@@ -329,9 +378,16 @@ def append_background_event(kind, title, detail="", payload=None):
         "created_at": time.time(),
     }
     try:
-        BACKGROUND_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with BACKGROUND_EVENTS_FILE.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        line = _serialize_background_event(event)
+        with background_events_lock:
+            BACKGROUND_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            current_size = BACKGROUND_EVENTS_FILE.stat().st_size if BACKGROUND_EVENTS_FILE.exists() else 0
+            if current_size + len(line) > BACKGROUND_EVENTS_MAX_BYTES:
+                tail = _background_events_tail_bytes(BACKGROUND_EVENTS_MAX_BYTES - len(line))
+                _replace_background_events(tail + line)
+            else:
+                with BACKGROUND_EVENTS_FILE.open("ab") as handle:
+                    handle.write(line)
     except Exception:
         logging.exception("append background event failed")
     return event
@@ -345,11 +401,20 @@ def load_background_events(limit=120):
     if not BACKGROUND_EVENTS_FILE.exists():
         return []
     try:
-        lines = BACKGROUND_EVENTS_FILE.read_text(encoding="utf-8").splitlines()[-limit:]
+        with BACKGROUND_EVENTS_FILE.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            data = b""
+            while position > 0 and data.count(b"\n") <= limit:
+                read_size = min(64 * 1024, position)
+                position -= read_size
+                handle.seek(position)
+                data = handle.read(read_size) + data
+        lines = data.splitlines()[-limit:]
         events = []
         for line in lines:
             try:
-                events.append(json.loads(line))
+                events.append(json.loads(line.decode("utf-8")))
             except Exception:
                 pass
         return list(reversed(events))
@@ -3439,8 +3504,9 @@ def api_events():
 @app.delete("/api/events")
 def api_clear_events():
     try:
-        if BACKGROUND_EVENTS_FILE.exists():
-            BACKGROUND_EVENTS_FILE.unlink()
+        with background_events_lock:
+            if BACKGROUND_EVENTS_FILE.exists():
+                BACKGROUND_EVENTS_FILE.unlink()
         return json_ok(cleared=True)
     except Exception as exc:
         return json_error(str(exc), 500)
