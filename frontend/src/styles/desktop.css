@@ -851,6 +851,10 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 
 .voice-bar{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scrollbar-width:thin}
 .voice-bar .chip{height:30px;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto}
+.quality-bar{display:flex;align-items:center;gap:10px;padding:7px 0;color:var(--text-mute);font-size:12px}
+.quality-bar label{color:var(--text);font-weight:600;white-space:nowrap}
+.quality-bar select{height:32px;min-width:230px;padding:0 10px;border-radius:9px;background:var(--panel-hi);border:1px solid var(--border);color:var(--text);font:inherit;outline:none}
+.quality-bar select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
 .chapter-toolbar{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:9px 0}
 .chapter-toolbar .btn{white-space:nowrap}
 .chapter-toolbar .ch-summary{margin-left:auto;color:var(--text-mute);font-size:12px;font-variant-numeric:tabular-nums}
@@ -923,6 +927,9 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 .cookie-status{flex:0 0 auto;border-radius:999px;max-width:86px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cookie-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .cookie-actions .btn{white-space:nowrap}
+.xmly-credential-status{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:2px}
+.xmly-credential-pill{padding:3px 8px;border-radius:999px;background:var(--panel-hi);color:var(--text-faint);font-size:10.5px;font-weight:700;border:1px solid var(--border)}
+.xmly-credential-pill.ready{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.28);color:var(--success)}
 .cookie-card textarea{min-height:72px;max-height:140px}
 .cookie-card textarea:focus{min-height:96px}
 

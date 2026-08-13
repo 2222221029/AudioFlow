@@ -226,7 +226,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
   const loading = busy.album || busy.voice;
@@ -245,6 +245,19 @@ export function AlbumDetail({app, mobile = false}) {
           {voices.map((voice, index) => (
             <button key={voice.id || voice.name || index} disabled={busy.voice} className={`chip ${selectedVoice === voice ? 'active' : ''}`} onClick={() => actions.changeVoice(voice)}>{voice.category ? `${voice.category} · ` : ''}{voice.name || voice.title || `音色 ${index + 1}`}</button>
           ))}
+        </div>
+      )}
+      {selectedAlbum.platform === '喜马拉雅' && (
+        <div className={mobile ? 'detail-quality-bar' : 'quality-bar'}>
+          <label htmlFor="xmlyDownloadQuality">本次下载音质</label>
+          <select id="xmlyDownloadQuality" value={downloadQuality} onChange={(event) => setDownloadQuality(event.target.value)}>
+            <option value="M4A 48K">高清音质（48K）</option>
+            <option value="M4A 96K">超高音质（96K，需权限）</option>
+            <option value="无损真人录制">无损音质（level 3）</option>
+            <option value="杜比全景声">杜比全景声（level 12）</option>
+            <option value="Audio Vivid 菁彩声">Audio Vivid 菁彩声（level 13）</option>
+          </select>
+          <span>高级音质需要本人已登录 App 的 x-tk 和对应会员/专辑权限；不支持时不会降级。</span>
         </div>
       )}
       <ChapterToolbar
@@ -795,7 +808,9 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
   const saveText = platform.key === 'lrts' ? '保存手动凭证' : '保存粘贴的 Cookie';
   const textareaPlaceholder = platform.key === 'lrts'
     ? '粘贴懒人听书 App 凭证 JSON，或 token=...; imei=...'
-    : '粘贴 Cookie 字符串';
+    : platform.key === 'xmly'
+      ? '粘贴网页登录 Cookie；移动端无损/全景声可追加 xmly_x_tk=本人账号票据'
+      : '粘贴 Cookie 字符串';
   return (
     <div className="cookie-card">
       <div className="cookie-head">
@@ -820,6 +835,12 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
         </>
       ) : (
         <>
+          {platform.key === 'xmly' && (
+            <div className="xmly-credential-status" aria-label="喜马拉雅凭证状态">
+              <span className={`xmly-credential-pill ${info.has_web_cookie ? 'ready' : ''}`}>网页登录：{info.has_web_cookie ? '已设置' : '未设置'}</span>
+              <span className={`xmly-credential-pill ${info.has_mobile_ticket ? 'ready' : ''}`}>移动音质：{info.has_mobile_ticket ? '已设置' : '未设置'}</span>
+            </div>
+          )}
           <div className="cookie-actions">
             {platform.qr && <button className="btn btn-primary btn-tiny" onClick={() => setModal({content: <QrLoginModal platform={platform} onDone={actions.loadCookies} onClose={closeModal} />})}><Icon id="i-qr" className="icon icon-sm" />{scanText}</button>}
             {platform.key !== 'lrts' && <button className="btn btn-ghost btn-tiny" onClick={() => setModal({content: <CookieScriptModal platform={platform} onSave={(cookie) => actions.saveCookie(platform.key, cookie)} onClose={closeModal} />})}><Icon id="i-globe" className="icon icon-sm" />浏览器获取</button>}
@@ -830,6 +851,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
             onChange={(event) => setValue(event.target.value)}
             placeholder={textareaPlaceholder}
           />
+          {platform.key === 'xmly' && <div className="cookie-desc">扫码可自动刷新网页 Cookie，但扫码回调不会返回手机 App 的 <code>x-tk</code>。移动端高级音质凭证只需追加一次 <code>xmly_x_tk=本人账号票据</code>，以后扫码或更新网页 Cookie 都会自动保留。无损、全景声仍须账号已购买或具备会员权限。</div>}
           <button className="btn btn-primary btn-tiny" disabled={busy[`cookie:${platform.key}`]} onClick={() => { actions.saveCookie(platform.key, value); setValue(''); }}>
             <BusyIcon busy={busy[`cookie:${platform.key}`]} icon="i-check" />{saveText}
           </button>
@@ -1047,7 +1069,11 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
       <div className="qr-box">
         {qr ? <img className="qr-img" src={qr} alt="QR code" /> : <span className="loading" />}
       </div>
-      <div className="modal-sub modal-note">使用对应 App 扫码，登录成功后会自动保存 Cookie。{scope === 'personal' ? '此 Cookie 仅用于个人中心。' : ''}</div>
+      <div className="modal-sub modal-note">
+        使用对应 App 扫码，登录成功后会自动保存 Cookie。
+        {platform.key === 'xmly' && ' 喜马拉雅扫码只授权网页会话，不会导出手机 App 的 x-tk；此前保存的 x-tk 会自动保留。'}
+        {scope === 'personal' ? '此 Cookie 仅用于个人中心。' : ''}
+      </div>
     </>
   );
 }
@@ -1383,7 +1409,7 @@ export function SettingsPage({app}) {
     <>
       <div className="glass glass-pad settings-card">
         <div className="field-row"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
-        <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损真人录制（最高）</option></select></div>
+        <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option></select></div>
         <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64，默认16" style={{maxWidth:'120px'}} /></div>
         <div className="field-row"><label className="check-row"><input type="checkbox" checked={organizeByPlatformEnabled} onChange={(e) => setOrganizeByPlatformEnabled(e.target.checked)} /><span>按专辑平台创建文件夹</span></label><div className="cookie-desc">开启后下载路径为“下载目录/平台/专辑”；关闭后为“下载目录/专辑”。</div></div>
         <div className="field-row">

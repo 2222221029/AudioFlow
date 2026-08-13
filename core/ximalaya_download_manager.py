@@ -6,6 +6,7 @@
 实现根据音质选择不同API的下载逻辑
 """
 
+import base64
 import requests
 import os
 import time
@@ -15,6 +16,45 @@ from pathlib import Path
 
 class XimalayaDownloadManager:
     """喜马拉雅下载管理器"""
+
+    # Android 9.4.74.3 uses the v4 play-page API for premium qualities.  The
+    # numeric values are client enum values, not a linear bitrate ranking.
+    # The anonymous ticket identifies uid=0 only; it does not grant access and
+    # the server still enforces login, membership and per-track entitlement.
+    _MOBILE_V4_URL = "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/{timestamp}"
+    _MOBILE_V4_AES_KEY = bytes.fromhex("9e3B103bA2d2cb56e805B3cCeB2512E3")
+    _MOBILE_V4_IV_PREFIX = "M%6)W5F6@Jj~"
+    _MOBILE_V4_SIGN_SUFFIX = "0zpnlXAG"
+    _MOBILE_V4_ANONYMOUS_TICKET = (
+        "TACZSIZWgP4Xg5JsY96rjV_fF2Kb0TPw8YZgQRnpD_FmqF5ctPSIFVI5S6TcR7on"
+        "XT6TaMZFf_CgXXD7jILUvHcBWkiwb1jbG9zZSEwITAhYj10aWNrZXQmcz1jbG9zZSZ1aWQ9MA"
+    )
+    _MOBILE_TICKET_COOKIE_NAMES = {
+        "x-tk", "x_tk", "xmly_x_tk", "xmly-mobile-ticket", "xmly_mobile_ticket",
+    }
+    _MOBILE_QUALITY_PROFILES = {
+        3: {
+            "level": 3,
+            "key": "lossless",
+            "name": "无损音质",
+            "aliases": ("LOSSLESS", "FLAC", "无损"),
+            "accept": "audio/flac,audio/*;q=0.9,*/*;q=0.8",
+        },
+        12: {
+            "level": 12,
+            "key": "dolby_atmos",
+            "name": "杜比全景声",
+            "aliases": ("DOLBY", "ATMOS", "杜比", "全景声"),
+            "accept": "audio/mp4,audio/eac3,audio/*;q=0.9,*/*;q=0.8",
+        },
+        13: {
+            "level": 13,
+            "key": "audio_vivid",
+            "name": "Audio Vivid 菁彩声",
+            "aliases": ("AUDIO VIVID", "VIVID", "菁彩声"),
+            "accept": "audio/mp4,audio/*;q=0.9,*/*;q=0.8",
+        },
+    }
     
     def __init__(self, cookie_string: str = None):
         self.session = requests.Session()
@@ -39,6 +79,10 @@ class XimalayaDownloadManager:
         }
         self.last_error = ""
         self.last_error_type = ""
+        self.last_download_source = ""
+        self.last_download_size = 0
+        self.last_download_expected_size = 0
+        self.last_download_quality_label = ""
 
     def _record_error(self, message, status_code=None):
         """Expose a stable failure reason to subscription result handling."""
@@ -46,11 +90,340 @@ class XimalayaDownloadManager:
         lowered = text.lower()
         permission_words = (
             "permission", "forbidden", "unauthorized", "vip", "svip", "platinum",
-            "会员", "权限", "无权", "付费", "购买", "白金",
+            "login", "ximi", "drm", "encrypted", "会员", "权限", "无权", "付费", "购买", "白金",
+            "登录", "登陆", "喜米", "加密", "受保护",
         )
         restricted = status_code in (401, 403) or any(word in lowered for word in permission_words)
         self.last_error = text
         self.last_error_type = "restricted" if restricted else "download_failed"
+
+    @classmethod
+    def _mobile_quality_profile(cls, quality: str):
+        """Map UI labels to an exact Android quality enum."""
+        normalized = str(quality or "").strip().upper().replace("_", " ").replace("-", " ")
+        if "AUDIO VIVID" in normalized or "VIVID" in normalized or "菁彩声" in normalized:
+            return cls._MOBILE_QUALITY_PROFILES[13]
+        if "DOLBY" in normalized or "ATMOS" in normalized or "杜比" in normalized or "全景声" in normalized:
+            return cls._MOBILE_QUALITY_PROFILES[12]
+        if (
+            "无损" in normalized
+            or normalized in {"LOSSLESS", "FLAC", "XMLY LOSSLESS", "XIMALAYA LOSSLESS"}
+        ):
+            return cls._MOBILE_QUALITY_PROFILES[3]
+        return None
+
+    @classmethod
+    def _is_lossless_quality(cls, quality: str) -> bool:
+        profile = cls._mobile_quality_profile(quality)
+        return bool(profile and profile["key"] == "lossless")
+
+    @classmethod
+    def _is_mobile_premium_quality(cls, quality: str) -> bool:
+        return cls._mobile_quality_profile(quality) is not None
+
+    def _mobile_ticket(self) -> str:
+        """Read an optional user-specific Android x-tk from the cookie field."""
+        for item in str(self.cookie_string or "").split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name.strip().lower() in self._MOBILE_TICKET_COOKIE_NAMES:
+                ticket = value.strip()
+                if ticket:
+                    return ticket
+        return self._MOBILE_V4_ANONYMOUS_TICKET
+
+    def _mobile_cookie_header(self) -> str:
+        """Do not forward the local xmly_x_tk transport alias as a cookie."""
+        cookies = []
+        for item in str(self.cookie_string or "").split(";"):
+            stripped = item.strip()
+            if not stripped:
+                continue
+            name = stripped.partition("=")[0].strip().lower()
+            if name not in self._MOBILE_TICKET_COOKIE_NAMES:
+                cookies.append(stripped)
+        return "; ".join(cookies)
+
+    def _has_mobile_credentials(self) -> bool:
+        cookie = self._mobile_cookie_header()
+        ticket = self._mobile_ticket()
+        return bool(cookie or ticket != self._MOBILE_V4_ANONYMOUS_TICKET)
+
+    # Compatibility for callers/tests added with the initial level-3 support.
+    def _has_lossless_credentials(self) -> bool:
+        return self._has_mobile_credentials()
+
+    @classmethod
+    def _build_mobile_v4_sign(cls, track_id: str, timestamp: int, device: str = "android") -> str:
+        """Reproduce the request signature used by the official Android client."""
+        try:
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import pad
+        except ImportError as exc:
+            raise RuntimeError("缺少 pycryptodome，无法生成喜马拉雅移动端签名") from exc
+
+        tail = str(timestamp)[-4:]
+        plaintext = f"{track_id}{device}{tail}{cls._MOBILE_V4_SIGN_SUFFIX}".encode("utf-8")
+        iv = f"{cls._MOBILE_V4_IV_PREFIX}{tail}".encode("utf-8")
+        encrypted = AES.new(cls._MOBILE_V4_AES_KEY, AES.MODE_CBC, iv).encrypt(pad(plaintext, AES.block_size))
+        # Android Base64.URL_SAFE (flag 8) terminates encoded output with LF.
+        return base64.urlsafe_b64encode(encrypted).decode("ascii") + "\n"
+
+    def _mobile_v4_headers(self) -> Dict[str, str]:
+        headers = {
+            "User-Agent": "ting_9.4.74.3(com.ximalaya.ting.android,Android)",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "x-tk": self._mobile_ticket(),
+        }
+        cookie = self._mobile_cookie_header()
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
+
+    @staticmethod
+    def _walk_dicts(value):
+        if isinstance(value, dict):
+            yield value
+            for nested in value.values():
+                yield from XimalayaDownloadManager._walk_dicts(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from XimalayaDownloadManager._walk_dicts(nested)
+
+    @classmethod
+    def _extract_authorized_mobile_url(cls, data: Dict, level: int):
+        """Return only an authorized direct URL for the requested enum level."""
+        profile = cls._MOBILE_QUALITY_PROFILES[level]
+        encrypted_url_seen = False
+        unauthorized_seen = False
+        items = list(cls._walk_dicts(data))
+        # The level-3 entitlement has a dedicated track-level flag.  Do not
+        # apply it to Dolby/Vivid: those use independent capability checks.
+        if level == 3:
+            if any(
+                "isXimiUhqAuthorized" in item
+                and not cls._flag_enabled(item.get("isXimiUhqAuthorized"))
+                for item in items
+            ):
+                return None, False, True
+
+        for item in items:
+            level_values = (
+                item.get("qualityLevel"), item.get("downloadQualityLevel"),
+                item.get("trackQualityLevel"), item.get("quality_level"),
+            )
+            is_requested_level = any(str(value) == str(level) for value in level_values if value is not None)
+            quality_name = str(item.get("qualityName") or item.get("quality") or item.get("type") or "")
+            normalized_name = quality_name.upper()
+            is_requested_name = any(alias.upper() in normalized_name for alias in profile["aliases"])
+            if not (is_requested_level or is_requested_name):
+                continue
+
+            auth_fields = (
+                "hasAuthorized", "authorized", "isAuthorized", "canChoose",
+            )
+            if level == 3:
+                auth_fields += ("isXimiUhqAuthorized",)
+            if any(field in item and not cls._flag_enabled(item.get(field)) for field in auth_fields):
+                unauthorized_seen = True
+                continue
+
+            for field in ("decodeUrl", "downloadUrl", "playUrl", "url"):
+                candidate = str(item.get(field) or "").strip()
+                if not candidate:
+                    continue
+                if candidate.startswith(("http://", "https://")):
+                    size = item.get("fileSize") or item.get("downloadSize") or 0
+                    try:
+                        expected_size = int(size)
+                    except (TypeError, ValueError):
+                        expected_size = 0
+                    return (
+                        (candidate, expected_size, quality_name or profile["name"]),
+                        encrypted_url_seen,
+                        unauthorized_seen,
+                    )
+                encrypted_url_seen = True
+        return None, encrypted_url_seen, unauthorized_seen
+
+    @classmethod
+    def _extract_authorized_lossless_url(cls, data: Dict):
+        return cls._extract_authorized_mobile_url(data, 3)
+
+    @staticmethod
+    def _file_contains_any(path: str, markers) -> bool:
+        tail = b""
+        with open(path, "rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    return False
+                block = tail + chunk
+                if any(marker in block for marker in markers):
+                    return True
+                tail = block[-16:]
+
+    @classmethod
+    def _validate_mobile_media(cls, path: str, level: int, content_type: str):
+        with open(path, "rb") as source:
+            head = source.read(32)
+        stripped = head.lstrip().lower()
+        if "json" in content_type or "html" in content_type or stripped.startswith((b"{", b"<")):
+            return False, "文件地址返回了错误页面"
+        if level == 3:
+            if head.startswith(b"fLaC"):
+                return True, ""
+            return False, "level 3 文件不是可直接播放的 FLAC"
+
+        is_mp4 = len(head) >= 12 and head[4:8] == b"ftyp"
+        if not is_mp4:
+            return False, "全景声音轨不是受支持的 MP4/M4A 容器"
+        if level == 12:
+            # Dolby Atmos streaming normally uses E-AC-3 JOC (`ec-3`/`dec3`)
+            # and may also be delivered as Dolby AC-4 (`ac-4`/`dac4`).
+            markers = (b"ec-3", b"dec3", b"ac-4", b"dac4")
+            if not cls._file_contains_any(path, markers):
+                return False, "level 12 文件未检测到 Dolby EC-3/AC-4 音轨"
+        elif level == 13:
+            # `av3a` is the registered ISO BMFF sample entry for AVS3-P3.
+            if not cls._file_contains_any(path, (b"av3a",)):
+                return False, "level 13 文件未检测到 Audio Vivid/AVS3-P3 音轨"
+        return True, ""
+
+    def _download_mobile_quality(self, track_id: str, save_path: str, level: int,
+                                 chapter_title: str = "", progress_callback=None) -> bool:
+        """Download one exact, authorized Android quality without downgrading."""
+        profile = self._MOBILE_QUALITY_PROFILES[level]
+        if not self._has_mobile_credentials():
+            self._record_error(f"喜马拉雅{profile['name']}需要已登录且具备权限的账号凭证")
+            return False
+
+        timestamp = int(time.time() * 1000)
+        params = {
+            "device": "android",
+            "trackId": str(track_id),
+            "trackQualityLevel": level,
+            "sign": self._build_mobile_v4_sign(str(track_id), timestamp),
+        }
+        headers = self._mobile_v4_headers()
+        api_url = self._MOBILE_V4_URL.format(timestamp=timestamp)
+
+        try:
+            info_response = self.session.get(api_url, params=params, headers=headers, timeout=20)
+            if info_response.status_code != 200:
+                self._record_error(
+                    f"喜马拉雅{profile['name']}接口 HTTP {info_response.status_code}",
+                    info_response.status_code,
+                )
+                return False
+
+            data = info_response.json()
+            if not isinstance(data, dict):
+                self._record_error(f"喜马拉雅{profile['name']}接口返回格式无效")
+                return False
+            if data.get("ret") not in (None, 0, "0"):
+                message = str(data.get("msg") or data.get("message") or "未知错误")
+                self._record_error(f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})")
+                return False
+
+            candidate, encrypted_seen, unauthorized_seen = self._extract_authorized_mobile_url(data, level)
+            if not candidate:
+                if unauthorized_seen:
+                    reason = f"当前喜马拉雅账号没有该音频的{profile['name']}下载权限"
+                elif encrypted_seen:
+                    reason = f"移动端只返回了受保护的{profile['name']}地址，项目不会绕过加密或 DRM"
+                else:
+                    reason = f"该音频未返回可下载的{profile['name']}直链（不会回退到低码率）"
+                self._record_error(reason)
+                return False
+
+            audio_url, expected_size, quality_label = candidate
+            media_headers = dict(headers)
+            media_headers["Accept"] = profile["accept"]
+            media_response = self.session.get(
+                audio_url,
+                headers=media_headers,
+                stream=True,
+                allow_redirects=True,
+                timeout=90,
+            )
+            if media_response.status_code != 200:
+                self._record_error(
+                    f"喜马拉雅{profile['name']}文件 HTTP {media_response.status_code}",
+                    media_response.status_code,
+                )
+                return False
+
+            content_type = str(media_response.headers.get("content-type") or "").lower()
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            temp_path = f"{save_path}.part"
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            content_length = int(media_response.headers.get("content-length") or expected_size or 0)
+            total_size = 0
+            with open(temp_path, "wb") as output:
+                for chunk in media_response.iter_content(chunk_size=512000):
+                    if not chunk:
+                        continue
+                    output.write(chunk)
+                    total_size += len(chunk)
+                    if progress_callback:
+                        progress_callback(total_size, content_length)
+
+            if total_size <= 1024:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                self._record_error(f"喜马拉雅{profile['name']}文件过小: {total_size} 字节")
+                return False
+
+            if expected_size and total_size < int(expected_size * 0.8):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                self._record_error(
+                    f"喜马拉雅{profile['name']}文件不完整: {total_size}/{expected_size} 字节"
+                )
+                return False
+
+            valid, validation_error = self._validate_mobile_media(temp_path, level, content_type)
+            if not valid:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                self._record_error(f"移动端返回的{profile['name']}{validation_error}，已拒绝保存")
+                return False
+
+            os.replace(temp_path, save_path)
+
+            self.last_error = ""
+            self.last_error_type = ""
+            self.last_download_source = "mobile_v4_lossless" if level == 3 else f"mobile_v4_level_{level}"
+            self.last_download_size = total_size
+            self.last_download_expected_size = expected_size
+            self.last_download_quality_label = quality_label
+            print(f"✅ 喜马拉雅{profile['name']}下载成功: {chapter_title or track_id} ({total_size / 1024 / 1024:.2f}MB)")
+            return True
+        except Exception as exc:
+            temp_path = f"{save_path}.part"
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            self._record_error(f"喜马拉雅{profile['name']}下载异常: {exc}")
+            return False
+
+    def _download_mobile_lossless(self, track_id: str, save_path: str,
+                                  chapter_title: str = "", progress_callback=None) -> bool:
+        return self._download_mobile_quality(
+            track_id, save_path, 3, chapter_title, progress_callback=progress_callback
+        )
 
     @staticmethod
     def _flag_enabled(value) -> bool:
@@ -271,6 +644,18 @@ class XimalayaDownloadManager:
         self.last_error_type = ""
         print(f"🚀🚀🚀 新版下载方法被调用! 🚀🚀🚀")
         print(f"📥 开始下载音频: {chapter_title} ({quality})")
+
+        mobile_profile = self._mobile_quality_profile(quality)
+        if mobile_profile:
+            level = int(mobile_profile["level"])
+            print(f"🎼 使用喜马拉雅 Android V4 授权{mobile_profile['name']}接口（level {level}）")
+            return self._download_mobile_quality(
+                track_id,
+                save_path,
+                level,
+                chapter_title,
+                progress_callback=progress_callback,
+            )
         
         # 解析音质参数
         quality_upper = quality.replace(' ', '_').upper()

@@ -77,6 +77,17 @@ class DownloadWorkerTest(unittest.TestCase):
         worker.cookie_manager.set_cookie("filename_prefix_format", "none")
         self.assertEqual(worker._format_filename_prefix(7), "")
 
+    def test_ximalaya_lossless_extension_is_isolated(self):
+        worker = self.make_worker()
+        self.assertEqual(worker._ximalaya_extension_for_quality("无损真人录制"), ".flac")
+        self.assertEqual(worker._ximalaya_extension_for_quality("LOSSLESS"), ".flac")
+        self.assertEqual(worker._ximalaya_extension_for_quality("M4A 96K"), ".m4a")
+        self.assertEqual(worker._ximalaya_extension_for_quality("MP3 64K"), ".mp3")
+        self.assertEqual(worker._ximalaya_extension_for_quality("杜比全景声"), ".m4a")
+        self.assertEqual(worker._ximalaya_extension_for_quality("Audio Vivid 菁彩声"), ".m4a")
+        self.assertTrue(worker._is_ximalaya_mobile_premium_quality("DOLBY_ATMOS"))
+        self.assertTrue(worker._is_ximalaya_mobile_premium_quality("AUDIO_VIVID"))
+
 
 if __name__ == "__main__":
     unittest.main()

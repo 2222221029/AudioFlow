@@ -70,6 +70,9 @@ class XimalayaManager:
         # 根据实际测试，AAC_164(1.90MB) > AAC_224(0.96MB)，所以AAC_164音质更好
         # 修复后的优先级：AAC_296 > AAC_164 > AAC_224 > HQ
         self.ui_quality_mapping = {
+            "杜比全景声": ["DOLBY_ATMOS_LEVEL_12"],
+            "Audio Vivid 菁彩声": ["AUDIO_VIVID_LEVEL_13"],
+            "无损真人录制": ["LOSSLESS"],
             "M4A 96K": ["AAC_296", "HQ", "M4A_96k", "AAC_224", "AAC_164"],
             "M4A 48K": ["AAC_224", "AAC_164", "M4A_48k", "MP3_64"],
             "M4A 24K": ["M4A_24k", "AAC_224", "MP3_32", "M4A_32k"],  # 低音质，优先 M4A
@@ -1302,7 +1305,9 @@ class XimalayaManager:
                 if quality is None:
                     import os
                     file_extension = os.path.splitext(save_path)[1].lower()
-                    if file_extension == '.m4a':
+                    if file_extension == '.flac':
+                        quality = "无损真人录制"
+                    elif file_extension == '.m4a':
                         # 对于M4A文件，使用默认M4A音质
                         quality = "M4A_96K"  # 默认使用最高质量M4A音质
                     else:
@@ -1415,6 +1420,17 @@ class XimalayaManager:
     
     def get_audio_url_by_quality(self, track_id: str, quality: str) -> str:
         """Return the highest available URL for the requested UI quality."""
+        normalized_quality = str(quality or '').strip().upper()
+        if (
+            '无损' in normalized_quality
+            or normalized_quality in {'LOSSLESS', 'FLAC', 'XMLY_LOSSLESS'}
+            or any(marker in normalized_quality for marker in ('DOLBY', 'ATMOS', '杜比', '全景声', 'VIVID', '菁彩声'))
+        ):
+            # Premium mobile qualities are resolved and entitlement-checked by download_audio();
+            # returning an old API URL here would silently downgrade the file.
+            print("Premium Ximalaya requests are handled by the Android V4 downloader; no lower-quality URL fallback")
+            return ""
+
         audio_urls = self.get_audio_urls(track_id)
 
         if not audio_urls:

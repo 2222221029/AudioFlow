@@ -47,6 +47,11 @@ from core.platform_config import (
     pwa_enabled,
 )
 from core.subscription_manager import SubscriptionManager, chapter_key
+from core.ximalaya_credentials import (
+    has_ximalaya_mobile_ticket,
+    has_ximalaya_web_cookie,
+    merge_ximalaya_credentials,
+)
 from core.meta_scraper.state import META_STATE
 from core.meta_scraper import config_store as meta_config_store
 from core.meta_scraper import queue_store as meta_queue_store
@@ -1593,8 +1598,8 @@ def start_download_task(task_id, album, chapters, options, source="web"):
         return existing
     skipped_active_chapter_count = len(chapters) - len(pending_chapters)
     chapters = pending_chapters
-    if album.get("platform") == "懒人听书":
-        sync_platform_cookie("懒人听书")
+    if album.get("platform") in ("喜马拉雅", "懒人听书"):
+        sync_platform_cookie(album.get("platform"))
     options["download_dir"] = resolve_download_dir(options.get("download_dir"))
     _write_album_source_file(album, options, task_id)
     warning = str(options.get("warning") or "").strip()
@@ -3678,6 +3683,8 @@ def _cookie_account_display(platform, cookie):
             "account_id": _safe_account_label(account_id, allow_long=True),
             "is_vip": bool(acc.get("is_vip")),
             "vip_label": acc.get("vip_label", ""),
+            "has_web_cookie": has_ximalaya_web_cookie(cookie),
+            "has_mobile_ticket": has_ximalaya_mobile_ticket(cookie),
         }
     elif platform == "netease":
         name = _safe_account_label(name)
@@ -3698,6 +3705,8 @@ def api_set_cookie():
         cookie = normalize_lrts_credentials(cookie)
         if not cookie:
             return json_error("懒人听书已改用手机号验证码登录，请使用验证码方式获取凭证")
+    elif platform in ("xmly", "ximalaya", "喜马拉雅"):
+        cookie = merge_ximalaya_credentials(cookie_manager.get_cookie(platform), cookie)
     cookie_manager.set_cookie(platform, cookie)
     search_manager.set_cookie(platform, cookie)
     return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file))
@@ -3882,6 +3891,8 @@ def api_set_personal_cookie():
         cookie = normalize_lrts_credentials(cookie)
         if not cookie:
             return json_error("懒人听书个人中心需要 App 凭证，请使用验证码登录或粘贴 token/imei")
+    elif platform == "ximalaya":
+        cookie = merge_ximalaya_credentials(cookie_manager.get_cookie(key), cookie)
     cookie_manager.set_cookie(key, cookie)
     return json_ok(saved=True, platform=platform, key=key, info=_personal_cookie_status(platform), config_file=str(cookie_manager.config_file))
 
@@ -4036,6 +4047,8 @@ def api_qr_poll(sid):
         key = _PLATFORM_COOKIE_KEY.get(snap["platform"])
         if cookie_str and key:
             try:
+                if key == "xmly":
+                    cookie_str = merge_ximalaya_credentials(cookie_manager.get_cookie(key), cookie_str)
                 cookie_manager.set_cookie(key, cookie_str)
                 search_manager.set_cookie(key, cookie_str)
                 snap["saved_to"] = str(cookie_manager.config_file)
@@ -4056,6 +4069,8 @@ def api_personal_qr_poll(sid):
         key = PERSONAL_QR_COOKIE_KEYS.get(snap["platform"])
         if cookie_str and key:
             try:
+                if key == "personal_xmly":
+                    cookie_str = merge_ximalaya_credentials(cookie_manager.get_cookie(key), cookie_str)
                 cookie_manager.set_cookie(key, cookie_str)
                 snap["saved_to"] = str(cookie_manager.config_file)
             except Exception as exc:

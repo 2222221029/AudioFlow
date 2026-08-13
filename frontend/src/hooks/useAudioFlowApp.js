@@ -61,6 +61,17 @@ function sendBrowserNotification(title, body) {
 }
 
 const DEFAULT_QUALITY = 'M4A 96K';
+const XMLY_DOWNLOAD_QUALITIES = new Set([
+  'M4A 48K',
+  'M4A 96K',
+  '无损真人录制',
+  '杜比全景声',
+  'Audio Vivid 菁彩声',
+]);
+
+function ximalayaDownloadQuality(value) {
+  return XMLY_DOWNLOAD_QUALITIES.has(value) ? value : DEFAULT_QUALITY;
+}
 
 function initialMobileView() {
   try {
@@ -135,6 +146,7 @@ export function useAudioFlowApp() {
   const [selectedChapters, setSelectedChapters] = useState(new Set());
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
+  const [downloadQuality, setDownloadQuality] = useState(DEFAULT_QUALITY);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
   const [downloadPagination, setDownloadPagination] = useState({page: 1, limit: 20, total: 0, total_pages: 1});
   const [downloadSummary, setDownloadSummary] = useState({total: 0, active_count: 0, completed_count: 0, failed_count: 0, interrupted_count: 0});
@@ -369,6 +381,7 @@ export function useAudioFlowApp() {
     setSelectedChapters(new Set());
     setVoices([]);
     setSelectedVoice(null);
+    setDownloadQuality(ximalayaDownloadQuality(config.quality));
     await runBusy('album', async () => {
       const voiceData = await api('/api/album/voices', {method: 'POST', body: {album}}).catch(() => ({voices: []}));
       const nextVoices = voiceData.voices || [];
@@ -384,7 +397,7 @@ export function useAudioFlowApp() {
     }).catch((error) => {
       showToast('加载详情失败：' + error.message, 'err');
     });
-  }, [runBusy, showToast]);
+  }, [config.quality, runBusy, showToast]);
 
   const changeVoice = useCallback(async (voice) => {
     if (!selectedAlbum) return;
@@ -451,7 +464,7 @@ export function useAudioFlowApp() {
         body: {
           album: selectedAlbum,
           chapters: slimChapters,
-          options: {quality: config.quality || DEFAULT_QUALITY, voice: selectedVoice || undefined, warning: selectedAlbum.catalog_warning || undefined},
+          options: {quality: selectedAlbum.platform === '喜马拉雅' ? (downloadQuality || DEFAULT_QUALITY) : (config.quality || DEFAULT_QUALITY), voice: selectedVoice || undefined, warning: selectedAlbum.catalog_warning || undefined},
         },
       });
       showToast('已加入下载 ' + items.length + ' 章', 'ok');
@@ -461,7 +474,7 @@ export function useAudioFlowApp() {
     }).catch((error) => {
       showToast(error.message, 'err');
     });
-  }, [config.quality, loadDownloads, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast]);
+  }, [config.quality, downloadQuality, loadDownloads, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast]);
 
   const applyDownloadRange = useCallback((mode = 'select') => {
     const items = parseChapterRange(downloadRange, displayChapters);
@@ -942,6 +955,8 @@ export function useAudioFlowApp() {
     selectedChapterList,
     voices,
     selectedVoice,
+    downloadQuality,
+    setDownloadQuality,
     downloads,
     downloadPagination,
     downloadSummary,

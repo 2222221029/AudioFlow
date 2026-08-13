@@ -63,6 +63,28 @@ class DownloadWorker(QThread):
         if self._verbose:
             print(msg)
 
+    @staticmethod
+    def _is_ximalaya_lossless_quality(quality):
+        text = str(quality or '').strip()
+        return '无损' in text or text.upper() in {'LOSSLESS', 'FLAC', 'XMLY_LOSSLESS', 'XIMALAYA_LOSSLESS'}
+
+    @staticmethod
+    def _is_ximalaya_spatial_quality(quality):
+        text = str(quality or '').strip().upper().replace('_', ' ')
+        return any(marker in text for marker in ('DOLBY', 'ATMOS', '杜比', '全景声', 'AUDIO VIVID', '菁彩声'))
+
+    @classmethod
+    def _is_ximalaya_mobile_premium_quality(cls, quality):
+        return cls._is_ximalaya_lossless_quality(quality) or cls._is_ximalaya_spatial_quality(quality)
+
+    @classmethod
+    def _ximalaya_extension_for_quality(cls, quality):
+        if cls._is_ximalaya_lossless_quality(quality):
+            return '.flac'
+        if cls._is_ximalaya_spatial_quality(quality):
+            return '.m4a'
+        return '.m4a' if str(quality or '').startswith('M4A') else '.mp3'
+
     def _setting_enabled(self, key, default=False):
         value = self.cookie_manager.get_cookie(key)
         if value in ("", None):
@@ -601,7 +623,7 @@ class DownloadWorker(QThread):
                 file_extension = '.mp3' if str(self.quality or '').upper().startswith('MP3') else '.m4a'
                 print(f"   🎵 番茄实际格式: {fanqie_audio_info.get('format')}{file_extension}")
             elif self.platform == '喜马拉雅':
-                file_extension = '.m4a' if self.quality.startswith('M4A') else '.mp3'
+                file_extension = self._ximalaya_extension_for_quality(self.quality)
             elif self.platform == '懒人听书':
                 file_extension = '.m4a'
             elif self.platform == '云听FM':
@@ -825,7 +847,8 @@ class DownloadWorker(QThread):
                         str(chapter_id), file_path, self.quality, progress_callback=progress_callback
                     )
                     if not success and audio_url:
-                        if str(self.quality).startswith('M4A 96'):
+                        xmly_quality = str(self.quality or '')
+                        if xmly_quality.startswith('M4A 96') or self._is_ximalaya_mobile_premium_quality(xmly_quality):
                             print("WARN: high-quality Ximalaya path failed; skip low-bitrate URL fallback")
                         else:
                             print("WARN: track_id download failed; falling back to resolved URL")
