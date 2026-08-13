@@ -42,6 +42,9 @@ SALT = "vYCmm+6CFVykQk5w0wiUDliCQRA="
 _LRTS_AUDIO_DEBUG_DONE = False
 READ_HOST = "https://dapis.mting.info"
 API_HOST = "https://dapi.mting.info"
+BOOK_ENTITY_TYPE = 1
+ALBUM_ENTITY_TYPE = 2
+WEB_BOOK_SHARE_TYPE = 4
 RSA_PUB_B64 = (
     "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCTa5IO+9A0L6eIX+KtvM4o3zCRE0QXX/63Pdcp+"
     "ME4Px8LIpfNSHqhSMJW2jUsO6eCRGxbsvOnUqxM7uG4hbQfSqSSmaReaInT5DIlWpSzUtdm+"
@@ -456,7 +459,7 @@ class LRTSManager:
                 print(f"[lrts] guest token failed: {exc}")
         return self._client
 
-    def _parse_entity_ref(self, value, fallback_type=0) -> tuple[int, int]:
+    def _parse_entity_ref(self, value, fallback_type=BOOK_ENTITY_TYPE) -> tuple[int, int]:
         text = str(value or "").strip()
         if text.startswith(("http://", "https://")):
             parsed = urlparse(text)
@@ -466,12 +469,14 @@ class LRTSManager:
             if not book_id and match:
                 book_id = match.group(1)
             if book_id:
-                # Web book pages use player-info type=2 even when share.do carries type=4.
-                return 2, _to_int(book_id)
+                # Website player types are not App API entity types.  A /book/
+                # resource is entityType=1 for getListenPath; treating the web
+                # player type (2/4) as an App album makes free chapters look paid.
+                return BOOK_ENTITY_TYPE, _to_int(book_id)
         if ":" in text:
             left, right = text.split(":", 1)
-            if str(left).strip() == "4":
-                left = "2"
+            if _to_int(left) == WEB_BOOK_SHARE_TYPE:
+                left = str(BOOK_ENTITY_TYPE)
             return _to_int(left, fallback_type), _to_int(right)
         return fallback_type, _to_int(text)
 
@@ -494,8 +499,17 @@ class LRTSManager:
             yield from data["data"]
 
     def _item_entity(self, item: dict) -> tuple[int, int]:
-        entity_type = _to_int(_first(item, "baseEntityType", "entityType", "type"), 0)
-        entity_id = _first(item, "baseEntityId", "entityId", "bookId", "ablumnId", "id", "parentId")
+        raw_type = _first(item, "baseEntityType", "entityType", "type")
+        if raw_type in (None, ""):
+            entity_type = ALBUM_ENTITY_TYPE if _first(item, "ablumnId", "albumId") else BOOK_ENTITY_TYPE
+        else:
+            entity_type = _to_int(raw_type, BOOK_ENTITY_TYPE)
+            if entity_type == WEB_BOOK_SHARE_TYPE:
+                entity_type = BOOK_ENTITY_TYPE
+        entity_id = _first(
+            item,
+            "baseEntityId", "entityId", "bookId", "ablumnId", "albumId", "id", "parentId",
+        )
         return entity_type, _to_int(entity_id)
 
     def search_books(self, keyword):
@@ -569,15 +583,25 @@ class LRTSManager:
 
     def get_book_detail(self, book_id):
         client = self._client_or_guest()
-        entity_type, entity_id = self._parse_entity_ref(book_id, fallback_type=0)
+        entity_type, entity_id = self._parse_entity_ref(book_id, fallback_type=BOOK_ENTITY_TYPE)
         try:
-            data = client.album_detail(entity_id) if entity_type == 2 else client.book_detail(entity_id)
+            data = client.album_detail(entity_id) if entity_type == ALBUM_ENTITY_TYPE else client.book_detail(entity_id)
         except Exception as exc:
             print(f"[lrts] detail failed: {exc}")
             return self._fetch_web_book_detail(entity_id)
         info = data.get("data") if isinstance(data.get("data"), dict) else data
         if not isinstance(info, dict):
             return self._fetch_web_book_detail(entity_id)
+        detail_keys = (
+            ("ablumnDetail", "albumDetail", "detail")
+            if entity_type == ALBUM_ENTITY_TYPE
+            else ("bookDetail", "detail")
+        )
+        for key in detail_keys:
+            nested = info.get(key)
+            if isinstance(nested, dict):
+                info = nested
+                break
         title = _first(info, "name", "bookName", "ablumnName", "entityName", "title") or f"book_{entity_id}"
         detail = {
             "id": self._entity_ref(entity_type, entity_id),
@@ -625,7 +649,7 @@ class LRTSManager:
         if match:
             cover = match.group(1)
         return {
-            "id": self._entity_ref(2, book_id),
+            "id": self._entity_ref(BOOK_ENTITY_TYPE, book_id),
             "title": title or f"懒人听书 {book_id}",
             "author": "懒人听书",
             "platform": "懒人听书",
@@ -642,7 +666,7 @@ class LRTSManager:
 
     def get_chapters(self, book_id, max_chapters=None):
         client = self._client_or_guest()
-        entity_type, entity_id = self._parse_entity_ref(book_id, fallback_type=0)
+        entity_type, entity_id = self._parse_entity_ref(book_id, fallback_type=BOOK_ENTITY_TYPE)
         self.last_chapter_warning = ""
         max_chapters = max(1000, min(200000, _to_int(max_chapters or os.getenv("LRTS_MAX_CHAPTERS"), 50000)))
         try:
@@ -652,7 +676,7 @@ class LRTSManager:
             print(f"[lrts] chapters failed: {exc}")
             items = self._fetch_web_book_chapters(entity_id) if entity_id else []
             if items:
-                entity_type = 2
+                entity_type = BOOK_ENTITY_TYPE
                 self.last_chapter_warning = ""
             else:
                 return []
@@ -660,7 +684,7 @@ class LRTSManager:
             web_items = self._fetch_web_book_chapters(entity_id)
             if web_items:
                 items = web_items
-                entity_type = 2
+                entity_type = BOOK_ENTITY_TYPE
         if len(items) > max_chapters:
             self.last_chapter_warning = f"懒人听书章节达到本地上限 {max_chapters} 章，可设置 LRTS_MAX_CHAPTERS 调整。"
             items = items[:max_chapters]
@@ -715,9 +739,11 @@ class LRTSManager:
                 if not isinstance(item, dict):
                     continue
                 section = _to_int(item.get("section"), len(items) + 1)
+                chapter_id = _to_int(item.get("resId"), section)
                 items.append({
-                    "id": section,
-                    "chapterId": section,
+                    "id": chapter_id,
+                    "chapterId": chapter_id,
+                    "sectionId": chapter_id,
                     "section": section,
                     "chapterName": html.unescape(str(item.get("resName") or f"第{section}章")).strip(),
                     "fatherResId": item.get("fatherResId") or book_id,
@@ -739,7 +765,10 @@ class LRTSManager:
                 chapter_data = {**chapter_data, **nested}
         else:
             chapter_data = {}
-        entity_type, entity_id = self._parse_entity_ref(book_id, fallback_type=_to_int(chapter_data.get("entity_type"), 0))
+        entity_type, entity_id = self._parse_entity_ref(
+            book_id,
+            fallback_type=_to_int(chapter_data.get("entity_type"), BOOK_ENTITY_TYPE),
+        )
         entity_type = _to_int(chapter_data.get("entity_type"), entity_type)
         entity_id = _to_int(chapter_data.get("entity_id"), entity_id)
         chapter = _to_int(chapter_data.get("id") or chapter_data.get("chapter_id") or chapter_id)
