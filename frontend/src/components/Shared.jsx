@@ -866,7 +866,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               <textarea
                 value={mobileTicket}
                 onChange={(event) => setMobileTicket(event.target.value)}
-                placeholder={'从 Stream 复制同一次 mobile.ximalaya.com 请求的完整请求头，至少包含：\nx-tk: ...\nCookie: ...\nUser-Agent: ...'}
+                placeholder={'从 Stream 复制同一次 /mobile-playpage/track/v4/baseInfo 请求的完整请求头，至少包含：\nx-tk: ...\nCookie: ...\nUser-Agent: ...\n注意：URL 查询参数 sign 不是 x-tk'}
                 autoComplete="off"
                 spellCheck="false"
               />
@@ -889,7 +889,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               {mobileCredential.message && mobileCredential.state !== 'missing_ticket' && (
                 <div className={`cookie-note ${info.has_mobile_ticket ? 'ok' : 'warn'}`}>{mobileCredential.message}</div>
               )}
-              <div className="cookie-desc">请在 Stream 中打开一条 <code>mobile.ximalaya.com</code> 的播放请求，复制包含 <code>x-tk</code>、<code>Cookie</code>、<code>User-Agent</code> 的完整请求头并一次粘贴。不能混用网页 Cookie，也不能拼接不同请求的字段。保存后不会回显或写入日志；扫码刷新网页登录不会覆盖它。</div>
+              <div className="cookie-desc">请在 Stream 中打开一条路径含 <code>/mobile-playpage/track/v4/baseInfo</code> 的播放请求，在“请求头”里复制 <code>x-tk</code>、<code>Cookie</code>、<code>User-Agent</code> 并一次粘贴。URL 中的 <code>sign</code> 是临时查询参数，不能当作 <code>x-tk</code>。不能混用网页 Cookie，也不能拼接不同请求的字段。保存后不会回显或写入日志；扫码刷新网页登录不会覆盖它。</div>
             </div>
           )}
         </>

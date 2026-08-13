@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from typing import Any, Dict
@@ -79,13 +80,65 @@ def extract_ximalaya_mobile_ticket(value):
 
 def is_anonymous_ximalaya_mobile_ticket(value) -> bool:
     ticket = extract_ximalaya_mobile_ticket(value)
-    return bool(ticket and ticket == MOBILE_V4_ANONYMOUS_TICKET)
+    return bool(
+        ticket
+        and (
+            ticket == MOBILE_V4_ANONYMOUS_TICKET
+            or ximalaya_mobile_ticket_uid(ticket) == "0"
+        )
+    )
+
+
+def ximalaya_mobile_ticket_uid(value) -> str:
+    """Read the non-secret uid marker carried by a baseInfo x-tk, if present.
+
+    Ximalaya prefixes its URL-safe Base64 ticket with three transport bytes.
+    Trying each Base64 alignment also keeps this compatible with tickets whose
+    prefix changes, without logging or exposing the ticket itself.
+    """
+    ticket = extract_ximalaya_mobile_ticket(value)
+    if not ticket and isinstance(value, str):
+        standalone = value.strip()
+        if ";" not in standalone and ":" not in standalone and " " not in standalone:
+            ticket = standalone
+    if not ticket:
+        return ""
+
+    compact = ticket.rstrip("=")
+    for offset in range(min(8, len(compact))):
+        candidate = compact[offset:]
+        if not candidate or not re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
+            continue
+        try:
+            decoded = base64.urlsafe_b64decode(candidate + "=" * (-len(candidate) % 4))
+        except (TypeError, ValueError):
+            continue
+        matches = re.findall(rb"(?:^|[&!?])uid=(\d+)(?:$|[&!?])", decoded)
+        if matches:
+            return matches[-1].decode("ascii")
+    return ""
+
+
+def _looks_like_mobile_v4_sign(value) -> bool:
+    """Detect the common mistake of pasting the 32-byte AES sign as x-tk."""
+    ticket = extract_ximalaya_mobile_ticket(value)
+    if not ticket and isinstance(value, str):
+        standalone = value.strip()
+        if ";" not in standalone and ":" not in standalone and " " not in standalone:
+            ticket = standalone
+    if not re.fullmatch(r"[A-Za-z0-9_-]{42,44}={0,2}", ticket or ""):
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(ticket + "=" * (-len(ticket) % 4))
+    except (TypeError, ValueError):
+        return False
+    return len(decoded) == 32
 
 
 def has_ximalaya_mobile_ticket(value):
     """Return whether a non-empty, non-anonymous x-tk is present."""
     ticket = extract_ximalaya_mobile_ticket(value)
-    return bool(ticket and ticket != MOBILE_V4_ANONYMOUS_TICKET)
+    return bool(ticket and not is_anonymous_ximalaya_mobile_ticket(ticket))
 
 
 def save_ximalaya_mobile_ticket(existing, incoming):
@@ -245,13 +298,17 @@ def normalize_ximalaya_mobile_credentials(value: Any) -> Dict[str, str]:
 
 
 def _mobile_cookie_has_login(cookie: str) -> bool:
+    return bool(_mobile_cookie_uid(cookie))
+
+
+def _mobile_cookie_uid(cookie: str) -> str:
     for key, val in _segments(cookie):
         name = key.strip().lower()
         if name.endswith("&*token") or name.endswith("&_token") or name in {"*token", "access_token"}:
             uid = str(val).split("&", 1)[0].strip()
             if val and uid not in {"", "0"}:
-                return True
-    return False
+                return uid
+    return ""
 
 
 def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
@@ -261,16 +318,23 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
     cookie = credential.get("cookie", "")
     user_agent = credential.get("user_agent", "")
     anonymous = is_anonymous_ximalaya_mobile_ticket(ticket)
-    has_login_cookie = _mobile_cookie_has_login(cookie)
+    ticket_uid = ximalaya_mobile_ticket_uid(ticket)
+    cookie_uid = _mobile_cookie_uid(cookie)
+    has_login_cookie = bool(cookie_uid)
+    account_match = bool(ticket_uid and cookie_uid and ticket_uid == cookie_uid)
 
     if not ticket:
         state, message = "missing_ticket", "缺少已登录 App 实际请求头中的 x-tk"
+    elif _looks_like_mobile_v4_sign(ticket):
+        state, message = "sign_as_ticket", "当前值看起来是 URL 查询参数 sign，不是请求头 x-tk"
     elif anonymous:
         state, message = "anonymous_ticket", "x-tk 是 uid=0 的匿名票据，请重新抓取登录账号的请求"
     elif not cookie:
         state, message = "missing_cookie", "缺少同一次移动端请求中的 Cookie，x-tk 不能单独使用"
     elif not has_login_cookie:
         state, message = "not_logged_in", "移动端 Cookie 中没有检测到已登录账号 token"
+    elif ticket_uid and ticket_uid != cookie_uid:
+        state, message = "account_mismatch", "x-tk 与移动端 Cookie 属于不同账号，请从同一次 baseInfo 请求重新复制"
     elif not user_agent:
         state, message = "missing_user_agent", "缺少同一次移动端请求中的 User-Agent"
     else:
@@ -285,6 +349,8 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
         "has_login_cookie": has_login_cookie,
         "has_user_agent": bool(user_agent),
         "device": credential.get("device", "android"),
+        "ticket_has_account": bool(ticket_uid and ticket_uid != "0"),
+        "account_match": account_match if ticket_uid and cookie_uid else None,
     }
 
 

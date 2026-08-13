@@ -245,6 +245,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertTrue(api_call.kwargs["params"]["sign"].endswith("\n"))
         self.assertEqual(api_call.kwargs["headers"]["x-tk"], "member-mobile-ticket")
         self.assertEqual(api_call.kwargs["headers"]["Cookie"], "1&*token=123456&mobile-session")
+        self.assertEqual(api_call.kwargs["headers"]["Accept"], "*/*")
+        self.assertEqual(api_call.kwargs["headers"]["Cookie2"], "$version=1")
         self.assertNotIn("xmly_x_tk", api_call.kwargs["headers"]["Cookie"])
         self.assertEqual(get.call_args_list[1].args[0], "https://audio.example/member-lossless.flac")
         self.assertEqual(manager.last_download_source, "mobile_v4_lossless")

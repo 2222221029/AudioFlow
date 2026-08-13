@@ -159,7 +159,11 @@ class XimalayaDownloadManager:
             "User-Agent": self.mobile_credentials.get(
                 "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
             ),
-            "Accept": "application/json, text/plain, */*",
+            # CommonRequestM.addHeader in Android 9.4.52.3 sets both of these
+            # headers for baseInfo V4.  Ret=1001 is returned before entitlement
+            # checks when the mobile request protocol is incomplete.
+            "Accept": "*/*",
+            "Cookie2": "$version=1",
             "Accept-Language": self.mobile_credentials.get("accept_language", "zh-CN,zh;q=0.9"),
             "x-tk": self._mobile_ticket(),
         }
@@ -319,7 +323,11 @@ class XimalayaDownloadManager:
                 if str(data.get("ret")) == "50":
                     message = "移动端登录凭证已失效或请求头不完整，请从已登录 App 重新抓取同一次请求的完整请求头"
                 elif str(data.get("ret")) == "1001":
-                    message = "移动端 x-tk、Cookie 或设备信息不匹配，请勿混用网页 Cookie 和不同请求的凭证"
+                    message = (
+                        "V4 请求协议校验失败；请确认 x-tk 来自同一次 "
+                        "/mobile-playpage/track/v4/baseInfo 请求（不要把查询参数 sign 当成 x-tk），"
+                        "并同时复制该请求的 Cookie 与 User-Agent"
+                    )
                 self._record_error(f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})")
                 return False
 
