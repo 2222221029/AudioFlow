@@ -1,10 +1,14 @@
 from core.ximalaya_credentials import (
+    MOBILE_V4_ANONYMOUS_TICKET,
     extract_ximalaya_mobile_ticket,
+    has_ximalaya_mobile_credentials,
     has_ximalaya_mobile_ticket,
     has_ximalaya_web_cookie,
     merge_ximalaya_credentials,
+    normalize_ximalaya_mobile_credentials,
     remove_ximalaya_mobile_ticket,
     save_ximalaya_mobile_ticket,
+    ximalaya_mobile_credential_status,
 )
 
 
@@ -36,6 +40,13 @@ def test_explicit_combined_credentials_replace_both_parts():
 def test_mobile_ticket_status_is_case_insensitive_and_never_requires_value_access():
     assert has_ximalaya_mobile_ticket("_token=user-token; XMLY_X_TK=mobile-ticket") is True
     assert has_ximalaya_mobile_ticket("_token=user-token") is False
+
+
+def test_anonymous_uid_zero_ticket_is_never_reported_as_ready():
+    assert has_ximalaya_mobile_ticket({"x_tk": MOBILE_V4_ANONYMOUS_TICKET}) is False
+    status = ximalaya_mobile_credential_status({"x_tk": MOBILE_V4_ANONYMOUS_TICKET})
+    assert status["state"] == "anonymous_ticket"
+    assert status["complete"] is False
 
 
 def test_web_cookie_status_does_not_treat_a_standalone_mobile_ticket_as_browser_login():
@@ -70,3 +81,29 @@ def test_removing_mobile_ticket_preserves_web_cookie():
     remaining = remove_ximalaya_mobile_ticket(existing)
 
     assert remaining == "_token=user-token; device_id=browser-device"
+
+
+def test_stream_full_headers_are_parsed_as_one_mobile_bundle():
+    captured = """Host: mobile.ximalaya.com
+Accept: */*
+Cookie: channel=ios-b1; 1&_device=iPhone&example-device&9.4.94; 1&*token=123456&example-session
+User-Agent: ting_v9.4.94_c5(CFNetwork, iOS 26.1, iPhone15,2)
+x-tk: signed-mobile-ticket
+Accept-Language: zh-CN,zh-Hans;q=0.9
+"""
+
+    credential = normalize_ximalaya_mobile_credentials(captured)
+
+    assert credential["x_tk"] == "signed-mobile-ticket"
+    assert credential["cookie"].startswith("channel=ios-b1;")
+    assert credential["user_agent"].startswith("ting_v9.4.94")
+    assert credential["device"] == "ios"
+    assert has_ximalaya_mobile_credentials(credential) is True
+    assert ximalaya_mobile_credential_status(credential)["state"] == "complete"
+
+
+def test_x_tk_alone_and_web_cookie_are_not_mobile_credentials():
+    assert normalize_ximalaya_mobile_credentials("") == {}
+    assert has_ximalaya_mobile_credentials("x-tk: signed-mobile-ticket") is False
+    assert has_ximalaya_mobile_credentials("_token=browser-user") is False
+    assert ximalaya_mobile_credential_status("x-tk: signed-mobile-ticket")["state"] == "missing_cookie"

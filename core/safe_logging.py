@@ -7,7 +7,7 @@ import re
 
 
 SENSITIVE_PATTERNS = [
-    re.compile(r"((?:access[_-]?token|csrf[_-]?token|token|cookie|secret[_-]?key|signature|sign)\s*[:=]\s*)([^,;&\s'\"]+)", re.I),
+    re.compile(r"((?:x[-_]?tk|access[_-]?token|csrf[_-]?token|token|cookie|secret[_-]?key|signature|sign)\s*[:=]\s*)([^,;&\s'\"]+)", re.I),
     re.compile(r"((?:https?://)[^\s'\"]{24,})", re.I),
 ]
 

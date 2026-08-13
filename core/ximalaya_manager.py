@@ -22,6 +22,7 @@ class XimalayaManager:
         self.mobwsa_url = "https://mobwsa.ximalaya.com"
         self.api_url = "https://www.ximalaya.com"
         self.cookie_string = ""
+        self.mobile_credentials = {}
         self.session = requests.Session()
         self.user_id = None
         self.user_token = None
@@ -156,6 +157,14 @@ class XimalayaManager:
             
             # 从Cookie中提取用户ID用于API请求
             self._extract_user_info_from_cookie(cleaned_cookie)
+
+    def set_mobile_credentials(self, credentials):
+        """Set App request headers used only by premium mobile qualities."""
+        from .ximalaya_credentials import normalize_ximalaya_mobile_credentials
+
+        self.mobile_credentials = normalize_ximalaya_mobile_credentials(credentials)
+        if self.mobile_credentials:
+            print("📱 喜马拉雅移动端音质凭证已更新")
     
     def clear_server_cookie(self):
         """清空服务器Cookie（只清空服务器获取的Cookie，保留本地Cookie）"""
@@ -1299,7 +1308,10 @@ class XimalayaManager:
                 print(f"🔄 使用增强版下载管理器下载 track_id: {track_id}")
                 
                 # 创建下载管理器实例，传入Cookie
-                downloader = XimalayaDownloadManager(cookie_string=self.cookie_string)
+                downloader = XimalayaDownloadManager(
+                    cookie_string=self.cookie_string,
+                    mobile_credentials=self.mobile_credentials,
+                )
                 
                 # 如果没有提供音质参数，从保存路径推断用户选择的音质
                 if quality is None:

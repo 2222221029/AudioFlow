@@ -48,11 +48,14 @@ from core.platform_config import (
 )
 from core.subscription_manager import SubscriptionManager, chapter_key
 from core.ximalaya_credentials import (
+    MOBILE_CREDENTIAL_PLATFORM,
+    extract_ximalaya_mobile_ticket,
     has_ximalaya_mobile_ticket,
     has_ximalaya_web_cookie,
     merge_ximalaya_credentials,
+    normalize_ximalaya_mobile_credentials,
     remove_ximalaya_mobile_ticket,
-    save_ximalaya_mobile_ticket,
+    ximalaya_mobile_credential_status,
 )
 from core.meta_scraper.state import META_STATE
 from core.meta_scraper import config_store as meta_config_store
@@ -101,6 +104,29 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 install_safe_print()
 
 cookie_manager = CookieManager()
+
+
+def _migrate_legacy_ximalaya_mobile_ticket():
+    """Move old x-tk aliases out of the browser Cookie without mixing sessions."""
+    legacy = cookie_manager.get_cookie("xmly")
+    if not isinstance(legacy, str) or not legacy:
+        return
+    clean_web_cookie = remove_ximalaya_mobile_ticket(legacy)
+    ticket = extract_ximalaya_mobile_ticket(legacy)
+    if clean_web_cookie != legacy:
+        if clean_web_cookie:
+            cookie_manager.set_cookie("xmly", clean_web_cookie)
+        else:
+            cookie_manager.delete_cookie("xmly")
+    if ticket and not cookie_manager.get_cookie(MOBILE_CREDENTIAL_PLATFORM):
+        # Preserve a legacy user ticket as incomplete migration data. It will
+        # never be considered ready until a full App request is pasted.
+        credential = normalize_ximalaya_mobile_credentials(ticket)
+        if has_ximalaya_mobile_ticket(credential):
+            cookie_manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, credential)
+
+
+_migrate_legacy_ximalaya_mobile_ticket()
 search_manager = EnhancedSearchManager(cookie_manager)
 task_lock = threading.Lock()
 task_workers = {}
@@ -3570,6 +3596,15 @@ def api_get_cookies():
             "length": len(str(cookie)) if cookie else 0,
             **_cookie_account_display(p, cookie),
         }
+        if p == "xmly":
+            mobile_status = ximalaya_mobile_credential_status(
+                cookie_manager.get_cookie(MOBILE_CREDENTIAL_PLATFORM)
+            )
+            result[p].update(
+                has_web_cookie=has_ximalaya_web_cookie(cookie),
+                has_mobile_ticket=mobile_status["complete"],
+                mobile_credential=mobile_status,
+            )
     return json_ok(cookies=result, config_file=str(cookie_manager.config_file))
 
 
@@ -3687,7 +3722,6 @@ def _cookie_account_display(platform, cookie):
             "is_vip": bool(acc.get("is_vip")),
             "vip_label": acc.get("vip_label", ""),
             "has_web_cookie": has_ximalaya_web_cookie(cookie),
-            "has_mobile_ticket": has_ximalaya_mobile_ticket(cookie),
         }
     elif platform == "netease":
         name = _safe_account_label(name)
@@ -3709,7 +3743,10 @@ def api_set_cookie():
         if not cookie:
             return json_error("懒人听书已改用手机号验证码登录，请使用验证码方式获取凭证")
     elif platform in ("xmly", "ximalaya", "喜马拉雅"):
-        cookie = merge_ximalaya_credentials(cookie_manager.get_cookie(platform), cookie)
+        # The browser field must never overwrite or carry App credentials.
+        cookie = remove_ximalaya_mobile_ticket(cookie)
+        if not cookie:
+            return json_error("请输入喜马拉雅网页登录 Cookie；移动端请求头请保存到下方独立凭证")
     cookie_manager.set_cookie(platform, cookie)
     search_manager.set_cookie(platform, cookie)
     return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file))
@@ -3717,32 +3754,31 @@ def api_set_cookie():
 
 @app.post("/api/cookies/xmly/mobile-ticket")
 def api_set_ximalaya_mobile_ticket():
-    """Save an x-tk independently without replacing the browser login cookie."""
+    """Save a complete captured App request independently from browser Cookie."""
     payload = request.get_json(silent=True) or {}
-    incoming = payload.get("ticket", "")
-    cookie = save_ximalaya_mobile_ticket(cookie_manager.get_cookie("xmly"), incoming)
-    if not cookie:
-        return json_error("请输入有效的 x-tk；支持原始值、x-tk: 值或 xmly_x_tk=值")
-    cookie_manager.set_cookie("xmly", cookie)
-    search_manager.set_cookie("xmly", cookie)
+    incoming = payload.get("credentials", payload.get("ticket", ""))
+    credential = normalize_ximalaya_mobile_credentials(incoming)
+    status = ximalaya_mobile_credential_status(credential)
+    if not status["complete"]:
+        return json_error(status["message"])
+    cookie_manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, credential)
+    search_manager.set_ximalaya_mobile_credentials(credential)
     return json_ok(
         saved=True,
         platform="xmly",
-        has_web_cookie=has_ximalaya_web_cookie(cookie),
-        has_mobile_ticket=has_ximalaya_mobile_ticket(cookie),
+        has_web_cookie=has_ximalaya_web_cookie(cookie_manager.get_cookie("xmly")),
+        has_mobile_ticket=True,
+        mobile_credential=status,
         config_file=str(cookie_manager.config_file),
     )
 
 
 @app.delete("/api/cookies/xmly/mobile-ticket")
 def api_delete_ximalaya_mobile_ticket():
-    """Delete only x-tk and retain the browser login cookie."""
-    cookie = remove_ximalaya_mobile_ticket(cookie_manager.get_cookie("xmly"))
-    if cookie:
-        cookie_manager.set_cookie("xmly", cookie)
-    else:
-        cookie_manager.delete_cookie("xmly")
-    search_manager.set_cookie("xmly", cookie)
+    """Delete only the App credential bundle and retain browser login."""
+    cookie_manager.delete_cookie(MOBILE_CREDENTIAL_PLATFORM)
+    search_manager.set_ximalaya_mobile_credentials({})
+    cookie = cookie_manager.get_cookie("xmly")
     return json_ok(
         deleted=True,
         platform="xmly",
@@ -3790,6 +3826,16 @@ def _apply_cookie_import(incoming):
         value = (cookie if isinstance(cookie, str) else json.dumps(cookie, ensure_ascii=False)).strip()
         if platform in ("lrts", "懒人听书"):
             value = normalize_lrts_credentials(value)
+            if not value:
+                skipped.append(platform)
+                continue
+        elif platform == MOBILE_CREDENTIAL_PLATFORM:
+            # Mobile request headers are deliberately excluded from normal
+            # Cookie backup/import. They must pass the dedicated validator.
+            skipped.append(platform)
+            continue
+        elif platform in ("xmly", "ximalaya", "喜马拉雅"):
+            value = remove_ximalaya_mobile_ticket(value)
             if not value:
                 skipped.append(platform)
                 continue
@@ -4088,7 +4134,7 @@ def api_qr_poll(sid):
         if cookie_str and key:
             try:
                 if key == "xmly":
-                    cookie_str = merge_ximalaya_credentials(cookie_manager.get_cookie(key), cookie_str)
+                    cookie_str = remove_ximalaya_mobile_ticket(cookie_str)
                 cookie_manager.set_cookie(key, cookie_str)
                 search_manager.set_cookie(key, cookie_str)
                 snap["saved_to"] = str(cookie_manager.config_file)

@@ -706,15 +706,15 @@ export function useAudioFlowApp() {
     });
   }, [loadCookies, runBusy, showToast]);
 
-  const saveXimalayaMobileTicket = useCallback(async (ticket) => {
-    if (!ticket || !ticket.trim()) {
-      showToast('x-tk 不能为空', 'err');
+  const saveXimalayaMobileTicket = useCallback(async (credentials) => {
+    if (!credentials || !credentials.trim()) {
+      showToast('移动端请求头不能为空', 'err');
       return false;
     }
     try {
       await runBusy('xmlyMobileTicket', async () => {
-        await api('/api/cookies/xmly/mobile-ticket', {method: 'POST', body: {ticket: ticket.trim()}});
-        showToast('喜马拉雅移动音质凭证已单独保存', 'ok');
+        await api('/api/cookies/xmly/mobile-ticket', {method: 'POST', body: {credentials: credentials.trim()}});
+        showToast('移动端完整请求头已独立保存', 'ok');
         await loadCookies();
       });
       return true;
@@ -728,7 +728,7 @@ export function useAudioFlowApp() {
     try {
       await runBusy('xmlyMobileTicketDelete', async () => {
         await api('/api/cookies/xmly/mobile-ticket', {method: 'DELETE'});
-        showToast('已删除移动音质凭证，网页登录保留', 'ok');
+        showToast('已删除移动端请求头，网页登录保留', 'ok');
         await loadCookies();
       });
       return true;

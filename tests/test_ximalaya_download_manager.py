@@ -25,6 +25,15 @@ class FakeResponse:
 
 class XimalayaDownloadManagerTest(unittest.TestCase):
     @staticmethod
+    def _mobile_credentials(ticket="member-mobile-ticket"):
+        return {
+            "x_tk": ticket,
+            "cookie": "1&*token=123456&mobile-session",
+            "user_agent": "ting_9.4.74.3(com.ximalaya.ting.android,Android)",
+            "device": "android",
+        }
+
+    @staticmethod
     def _spatial_info(level, name, url, size):
         return FakeResponse(json_data={
             "ret": 0,
@@ -59,7 +68,10 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         )
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="_token=member; xmly_x_tk=mobile-ticket")
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member",
+                mobile_credentials=self._mobile_credentials("mobile-ticket"),
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.m4a"
                 with mock.patch.object(manager.session, "get", side_effect=[info, audio]) as get:
@@ -80,7 +92,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         audio = FakeResponse(headers={"content-type": "audio/mp4"}, body=body)
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="xmly_x_tk=mobile-ticket")
+            manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials("mobile-ticket"))
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.m4a"
                 with mock.patch.object(manager.session, "get", side_effect=[info, audio]) as get:
@@ -102,7 +114,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         })
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="xmly_x_tk=mobile-ticket")
+            manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials("mobile-ticket"))
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.m4a"
                 with mock.patch.object(manager.session, "get", return_value=info) as get:
@@ -119,7 +131,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         audio = FakeResponse(headers={"content-type": "audio/mp4"}, body=body)
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="xmly_x_tk=mobile-ticket")
+            manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials("mobile-ticket"))
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.m4a"
                 with mock.patch.object(manager.session, "get", side_effect=[info, audio]):
@@ -144,6 +156,48 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertIn("登录", manager.last_error)
         get.assert_not_called()
 
+    def test_web_cookie_never_impersonates_mobile_credentials(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member; device_id=browser")
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(manager.session, "get") as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                    )
+
+        self.assertFalse(ok)
+        self.assertIn("x-tk", manager.last_error)
+        get.assert_not_called()
+
+    def test_ios_request_uses_captured_mobile_headers_not_web_cookie(self):
+        captured = """Cookie: channel=ios-b1; 1&*token=123456&mobile-session
+User-Agent: ting_v9.4.94_c5(CFNetwork, iOS 26.1, iPhone15,2)
+x-tk: ios-member-ticket
+Accept-Language: zh-CN,zh-Hans;q=0.9
+"""
+        denied = FakeResponse(json_data={"ret": 50, "msg": "未登陆"})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=browser-member; device_id=browser",
+                mobile_credentials=captured,
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(manager, "_build_mobile_v4_sign", return_value="signed"):
+                    with mock.patch.object(manager.session, "get", return_value=denied) as get:
+                        ok = manager.download_audio_by_quality(
+                            "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                        )
+
+        self.assertFalse(ok)
+        request = get.call_args
+        self.assertEqual(request.kwargs["params"]["device"], "ios")
+        self.assertEqual(request.kwargs["headers"]["x-tk"], "ios-member-ticket")
+        self.assertEqual(request.kwargs["headers"]["Cookie"], "channel=ios-b1; 1&*token=123456&mobile-session")
+        self.assertNotIn("browser-member", request.kwargs["headers"]["Cookie"])
+        self.assertTrue(request.kwargs["headers"]["User-Agent"].startswith("ting_v9.4.94"))
+        self.assertIn("重新抓取", manager.last_error)
+
     def test_lossless_uses_android_v4_level_three_and_direct_flac(self):
         lossless_size = 5004
         info = FakeResponse(json_data={
@@ -167,9 +221,12 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             body=b"fLaC" + (b"audio" * 1000),
         )
 
-        cookie = "_token=member; xmly_x_tk=member-mobile-ticket"
+        cookie = "_token=member"
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string=cookie)
+            manager = XimalayaDownloadManager(
+                cookie_string=cookie,
+                mobile_credentials=self._mobile_credentials(),
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.flac"
                 with mock.patch.object(manager.session, "get", side_effect=[info, audio]) as get:
@@ -187,7 +244,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(api_call.kwargs["params"]["trackId"], "539592153")
         self.assertTrue(api_call.kwargs["params"]["sign"].endswith("\n"))
         self.assertEqual(api_call.kwargs["headers"]["x-tk"], "member-mobile-ticket")
-        self.assertEqual(api_call.kwargs["headers"]["Cookie"], "_token=member")
+        self.assertEqual(api_call.kwargs["headers"]["Cookie"], "1&*token=123456&mobile-session")
         self.assertNotIn("xmly_x_tk", api_call.kwargs["headers"]["Cookie"])
         self.assertEqual(get.call_args_list[1].args[0], "https://audio.example/member-lossless.flac")
         self.assertEqual(manager.last_download_source, "mobile_v4_lossless")
@@ -204,7 +261,9 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         })
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.flac"
                 with mock.patch.object(manager.session, "get", return_value=info) as get:
@@ -229,7 +288,9 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         })
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 with mock.patch.object(manager.session, "get", return_value=info) as get:
                     ok = manager.download_audio_by_quality(
@@ -254,7 +315,9 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         })
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 with mock.patch.object(manager.session, "get", return_value=info) as get:
                     ok = manager.download_audio_by_quality(
@@ -281,7 +344,9 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         )
 
         with contextlib.redirect_stdout(io.StringIO()):
-            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.flac"
                 with mock.patch.object(manager.session, "get", side_effect=[info, fake_audio]):

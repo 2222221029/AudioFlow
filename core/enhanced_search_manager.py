@@ -84,6 +84,9 @@ class EnhancedSearchManager:
                     xmly_cookie = '; '.join([f"{name}={value}" for name, value in xmly_cookie.items()])
                 self.ximalaya_manager.set_cookie(xmly_cookie, is_server_cookie=bool(xmly_server_cookie))
                 print("🍪 喜马拉雅Cookie已设置")
+            xmly_mobile = self.cookie_manager.get_cookie('xmly_mobile')
+            if xmly_mobile:
+                self.set_ximalaya_mobile_credentials(xmly_mobile)
             
             # 设置懒人听书Cookie
             lrts_cookie = self.cookie_manager.get_cookie('lrts')
@@ -313,6 +316,13 @@ class EnhancedSearchManager:
             print(f"🍪 已更新网易云听书Cookie: {len(str(cookie))} 字符")
         elif platform == '荔枝FM' or platform == 'lizhi':
             print("🍥 荔枝FM公开播客无需设置Cookie")
+
+    def set_ximalaya_mobile_credentials(self, credentials):
+        """Update premium-audio credentials without touching browser sessions."""
+        self.ximalaya_manager.set_mobile_credentials(credentials)
+        nested = getattr(self, 'search_manager', None)
+        if nested and hasattr(nested, 'set_ximalaya_mobile_credentials'):
+            nested.set_ximalaya_mobile_credentials(credentials)
     
     def search_books(self, keyword: str, platform: str = 'all') -> List[Dict]:
         """搜索书籍（支持关键词搜索和ID搜索）"""

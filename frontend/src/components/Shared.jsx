@@ -257,7 +257,7 @@ export function AlbumDetail({app, mobile = false}) {
             <option value="杜比全景声">杜比全景声（level 12）</option>
             <option value="Audio Vivid 菁彩声">Audio Vivid 菁彩声（level 13）</option>
           </select>
-          <span>高级音质需要本人已登录 App 的 x-tk 和对应会员/专辑权限；不支持时不会降级。</span>
+          <span>高级音质需要同一次 App 请求中的完整请求头和对应会员/专辑权限；不支持时不会降级。</span>
         </div>
       )}
       <ChapterToolbar
@@ -812,6 +812,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
     : platform.key === 'xmly'
       ? '粘贴喜马拉雅网页登录 Cookie'
       : '粘贴 Cookie 字符串';
+  const mobileCredential = info.mobile_credential || {};
   return (
     <div className="cookie-card">
       <div className="cookie-head">
@@ -839,7 +840,10 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           {platform.key === 'xmly' && (
             <div className="xmly-credential-status" aria-label="喜马拉雅凭证状态">
               <span className={`xmly-credential-pill ${info.has_web_cookie ? 'ready' : ''}`}>网页登录：{info.has_web_cookie ? '已设置' : '未设置'}</span>
-              <span className={`xmly-credential-pill ${info.has_mobile_ticket ? 'ready' : ''}`}>移动音质：{info.has_mobile_ticket ? '已设置' : '未设置'}</span>
+              <span
+                className={`xmly-credential-pill ${info.has_mobile_ticket ? 'ready' : (mobileCredential.has_ticket ? 'warning' : '')}`}
+                title={mobileCredential.message || ''}
+              >移动音质：{info.has_mobile_ticket ? '格式完整' : (mobileCredential.has_ticket ? '凭证不完整' : '未设置')}</span>
             </div>
           )}
           <div className="cookie-actions">
@@ -858,12 +862,11 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           </button>
           {platform.key === 'xmly' && (
             <div className="xmly-ticket-editor">
-              <div className="xmly-ticket-label">移动端音质凭证（独立保存）</div>
-              <input
-                type="password"
+              <div className="xmly-ticket-label">移动端完整请求头（独立保存、不回显）</div>
+              <textarea
                 value={mobileTicket}
                 onChange={(event) => setMobileTicket(event.target.value)}
-                placeholder="粘贴原始 x-tk，也支持 x-tk: ... 或 xmly_x_tk=..."
+                placeholder={'从 Stream 复制同一次 mobile.ximalaya.com 请求的完整请求头，至少包含：\nx-tk: ...\nCookie: ...\nUser-Agent: ...'}
                 autoComplete="off"
                 spellCheck="false"
               />
@@ -875,15 +878,18 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
                     if (await actions.saveXimalayaMobileTicket(mobileTicket)) setMobileTicket('');
                   }}
                 >
-                  <BusyIcon busy={busy.xmlyMobileTicket} icon="i-key" />保存移动端凭证
+                  <BusyIcon busy={busy.xmlyMobileTicket} icon="i-key" />解析并保存请求头
                 </button>
-                {info.has_mobile_ticket && (
+                {(info.has_mobile_ticket || mobileCredential.has_ticket || mobileCredential.has_mobile_cookie) && (
                   <button className="btn btn-danger btn-tiny" disabled={busy.xmlyMobileTicketDelete} onClick={actions.deleteXimalayaMobileTicket}>
-                    <BusyIcon busy={busy.xmlyMobileTicketDelete} icon="i-trash" />仅删除 x-tk
+                    <BusyIcon busy={busy.xmlyMobileTicketDelete} icon="i-trash" />删除移动端凭证
                   </button>
                 )}
               </div>
-              <div className="cookie-desc">扫码只刷新网页 Cookie，不会返回手机 App 的 <code>x-tk</code>。这里保存的移动凭证不会显示、不会写入日志，之后重新扫码也会自动保留。无损、全景声仍须该移动凭证所属账号具备权限。</div>
+              {mobileCredential.message && mobileCredential.state !== 'missing_ticket' && (
+                <div className={`cookie-note ${info.has_mobile_ticket ? 'ok' : 'warn'}`}>{mobileCredential.message}</div>
+              )}
+              <div className="cookie-desc">请在 Stream 中打开一条 <code>mobile.ximalaya.com</code> 的播放请求，复制包含 <code>x-tk</code>、<code>Cookie</code>、<code>User-Agent</code> 的完整请求头并一次粘贴。不能混用网页 Cookie，也不能拼接不同请求的字段。保存后不会回显或写入日志；扫码刷新网页登录不会覆盖它。</div>
             </div>
           )}
         </>
@@ -1102,7 +1108,7 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
       </div>
       <div className="modal-sub modal-note">
         使用对应 App 扫码，登录成功后会自动保存 Cookie。
-        {platform.key === 'xmly' && ' 喜马拉雅扫码只授权网页会话，不会导出手机 App 的 x-tk；此前保存的 x-tk 会自动保留。'}
+        {platform.key === 'xmly' && ' 喜马拉雅扫码只授权网页会话，不会导出手机 App 请求头；此前单独保存的移动端凭证会保留。'}
         {scope === 'personal' ? '此 Cookie 仅用于个人中心。' : ''}
       </div>
     </>

@@ -38,6 +38,9 @@ class SearchManager:
                 if isinstance(xmly_cookie, dict):
                     xmly_cookie = '; '.join([f"{name}={value}" for name, value in xmly_cookie.items()])
                 self.ximalaya_manager.set_cookie(xmly_cookie, is_server_cookie=bool(xmly_server_cookie))
+            xmly_mobile = cookie_manager.get_cookie('xmly_mobile')
+            if xmly_mobile:
+                self.ximalaya_manager.set_mobile_credentials(xmly_mobile)
             
             lrts_cookie = cookie_manager.get_cookie('lrts')
             if lrts_cookie:
@@ -110,6 +113,10 @@ class SearchManager:
             'YwKey': self.qidian_cookies.get('ywkey', ''),
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
         }
+
+    def set_ximalaya_mobile_credentials(self, credentials):
+        """Update premium mobile credentials independently from web Cookie."""
+        self.ximalaya_manager.set_mobile_credentials(credentials)
     
     def check_vip_status(self) -> bool:
         """兼容旧调用：自用版不做授权或额度校验。"""

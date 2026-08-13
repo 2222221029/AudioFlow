@@ -13,6 +13,13 @@ import time
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
+from .ximalaya_credentials import (
+    MOBILE_V4_ANONYMOUS_TICKET,
+    has_ximalaya_mobile_credentials,
+    normalize_ximalaya_mobile_credentials,
+    ximalaya_mobile_credential_status,
+)
+
 
 class XimalayaDownloadManager:
     """喜马拉雅下载管理器"""
@@ -25,13 +32,7 @@ class XimalayaDownloadManager:
     _MOBILE_V4_AES_KEY = bytes.fromhex("9e3B103bA2d2cb56e805B3cCeB2512E3")
     _MOBILE_V4_IV_PREFIX = "M%6)W5F6@Jj~"
     _MOBILE_V4_SIGN_SUFFIX = "0zpnlXAG"
-    _MOBILE_V4_ANONYMOUS_TICKET = (
-        "TACZSIZWgP4Xg5JsY96rjV_fF2Kb0TPw8YZgQRnpD_FmqF5ctPSIFVI5S6TcR7on"
-        "XT6TaMZFf_CgXXD7jILUvHcBWkiwb1jbG9zZSEwITAhYj10aWNrZXQmcz1jbG9zZSZ1aWQ9MA"
-    )
-    _MOBILE_TICKET_COOKIE_NAMES = {
-        "x-tk", "x_tk", "xmly_x_tk", "xmly-mobile-ticket", "xmly_mobile_ticket",
-    }
+    _MOBILE_V4_ANONYMOUS_TICKET = MOBILE_V4_ANONYMOUS_TICKET
     _MOBILE_QUALITY_PROFILES = {
         3: {
             "level": 3,
@@ -56,7 +57,7 @@ class XimalayaDownloadManager:
         },
     }
     
-    def __init__(self, cookie_string: str = None):
+    def __init__(self, cookie_string: str = None, mobile_credentials=None):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
@@ -66,6 +67,7 @@ class XimalayaDownloadManager:
         
         # 保存Cookie字符串
         self.cookie_string = cookie_string
+        self.mobile_credentials = normalize_ximalaya_mobile_credentials(mobile_credentials)
         if cookie_string:
             print(f"🍪 XimalayaDownloadManager已设置Cookie")
     
@@ -122,31 +124,15 @@ class XimalayaDownloadManager:
         return cls._mobile_quality_profile(quality) is not None
 
     def _mobile_ticket(self) -> str:
-        """Read an optional user-specific Android x-tk from the cookie field."""
-        for item in str(self.cookie_string or "").split(";"):
-            name, separator, value = item.strip().partition("=")
-            if separator and name.strip().lower() in self._MOBILE_TICKET_COOKIE_NAMES:
-                ticket = value.strip()
-                if ticket:
-                    return ticket
-        return self._MOBILE_V4_ANONYMOUS_TICKET
+        """Return only the ticket captured from the mobile App request."""
+        return self.mobile_credentials.get("x_tk", "")
 
     def _mobile_cookie_header(self) -> str:
-        """Do not forward the local xmly_x_tk transport alias as a cookie."""
-        cookies = []
-        for item in str(self.cookie_string or "").split(";"):
-            stripped = item.strip()
-            if not stripped:
-                continue
-            name = stripped.partition("=")[0].strip().lower()
-            if name not in self._MOBILE_TICKET_COOKIE_NAMES:
-                cookies.append(stripped)
-        return "; ".join(cookies)
+        """Return the captured App Cookie; never substitute the web Cookie."""
+        return self.mobile_credentials.get("cookie", "")
 
     def _has_mobile_credentials(self) -> bool:
-        cookie = self._mobile_cookie_header()
-        ticket = self._mobile_ticket()
-        return bool(cookie or ticket != self._MOBILE_V4_ANONYMOUS_TICKET)
+        return has_ximalaya_mobile_credentials(self.mobile_credentials)
 
     # Compatibility for callers/tests added with the initial level-3 support.
     def _has_lossless_credentials(self) -> bool:
@@ -170,9 +156,11 @@ class XimalayaDownloadManager:
 
     def _mobile_v4_headers(self) -> Dict[str, str]:
         headers = {
-            "User-Agent": "ting_9.4.74.3(com.ximalaya.ting.android,Android)",
+            "User-Agent": self.mobile_credentials.get(
+                "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
+            ),
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Language": self.mobile_credentials.get("accept_language", "zh-CN,zh;q=0.9"),
             "x-tk": self._mobile_ticket(),
         }
         cookie = self._mobile_cookie_header()
@@ -292,18 +280,23 @@ class XimalayaDownloadManager:
 
     def _download_mobile_quality(self, track_id: str, save_path: str, level: int,
                                  chapter_title: str = "", progress_callback=None) -> bool:
-        """Download one exact, authorized Android quality without downgrading."""
+        """Download one exact, authorized mobile-App quality without downgrading."""
         profile = self._MOBILE_QUALITY_PROFILES[level]
         if not self._has_mobile_credentials():
-            self._record_error(f"喜马拉雅{profile['name']}需要已登录且具备权限的账号凭证")
+            status = ximalaya_mobile_credential_status(self.mobile_credentials)
+            self._record_error(
+                f"喜马拉雅{profile['name']}移动端凭证不可用：{status['message']}",
+                status_code=401,
+            )
             return False
 
         timestamp = int(time.time() * 1000)
+        device = self.mobile_credentials.get("device", "android")
         params = {
-            "device": "android",
+            "device": device,
             "trackId": str(track_id),
             "trackQualityLevel": level,
-            "sign": self._build_mobile_v4_sign(str(track_id), timestamp),
+            "sign": self._build_mobile_v4_sign(str(track_id), timestamp, device=device),
         }
         headers = self._mobile_v4_headers()
         api_url = self._MOBILE_V4_URL.format(timestamp=timestamp)
@@ -323,6 +316,10 @@ class XimalayaDownloadManager:
                 return False
             if data.get("ret") not in (None, 0, "0"):
                 message = str(data.get("msg") or data.get("message") or "未知错误")
+                if str(data.get("ret")) == "50":
+                    message = "移动端登录凭证已失效或请求头不完整，请从已登录 App 重新抓取同一次请求的完整请求头"
+                elif str(data.get("ret")) == "1001":
+                    message = "移动端 x-tk、Cookie 或设备信息不匹配，请勿混用网页 Cookie 和不同请求的凭证"
                 self._record_error(f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})")
                 return False
 
