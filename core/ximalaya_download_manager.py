@@ -51,6 +51,210 @@ class XimalayaDownloadManager:
         restricted = status_code in (401, 403) or any(word in lowered for word in permission_words)
         self.last_error = text
         self.last_error_type = "restricted" if restricted else "download_failed"
+
+    @staticmethod
+    def _flag_enabled(value) -> bool:
+        """Normalize the mixed bool/int/string flags returned by Ximalaya."""
+        if isinstance(value, str):
+            return value.strip().lower() not in ('', '0', 'false', 'none', 'null', 'no')
+        return bool(value)
+
+    def _is_confirmed_public_free_track(self, data: Dict) -> bool:
+        """Fail closed unless anonymous baseInfo proves the track is public and free.
+
+        Some old free tracks return ``ret=130`` from ``redirect/free/play`` even
+        though the current web player can still play their public CDN URL.  This
+        check deliberately excludes every known VIP/paid/sample marker so the
+        fallback cannot become an alternate path for protected content.
+        """
+        if not isinstance(data, dict) or data.get('ret') != 0:
+            return False
+        if not self._flag_enabled(data.get('isPublic')):
+            return False
+
+        restricted_flags = (
+            'isPaid', 'isVip', 'isVipFree', 'hqNeedVip', 'needVip',
+            'vipOnly', 'isSample', 'isSampleAlbumTimeLimited',
+        )
+        if any(self._flag_enabled(data.get(key)) for key in restricted_flags):
+            return False
+
+        restricted_levels = (
+            'paidType', 'priceTypeId', 'priceTypeEnum', 'vipFreeType',
+            'vipFirstStatus', 'sampleDuration',
+        )
+        for key in restricted_levels:
+            value = data.get(key)
+            if value in (None, '', False):
+                continue
+            try:
+                if int(value) != 0:
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+        if data.get('priceTypes'):
+            return False
+
+        return any(
+            str(data.get(key) or '').startswith(('http://', 'https://'))
+            for key in (
+                'playPathHq', 'playPathAacv224', 'playPathAacv164',
+                'playUrl64', 'playUrl32', 'downloadAacUrl', 'downloadUrl',
+            )
+        )
+
+    def _fetch_anonymous_public_track_info(self, track_id: str) -> Optional[Dict]:
+        """Read public track metadata without touching logged-in paid/VIP APIs."""
+        headers = {
+            'User-Agent': 'ting_9.4.2_iPhone_2210132C_1170x2532',
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip',
+            'Connection': 'keep-alive',
+            'Host': 'mobile.ximalaya.com',
+        }
+        for device in ('ios', 'www2'):
+            url = (
+                'http://mobile.ximalaya.com/v1/track/baseInfo'
+                f'?device={device}&trackId={track_id}&_={int(time.time() * 1000)}'
+            )
+            try:
+                response = self.session.get(url, headers=headers, timeout=10)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                # A successful response has authoritative entitlement flags.
+                # Do not try another device to hunt for a more permissive result.
+                if isinstance(data, dict) and data.get('ret') == 0:
+                    return data if self._is_confirmed_public_free_track(data) else None
+            except Exception as exc:
+                print(f"   ⚠️ 免费声音信息检查失败 (device={device}): {exc}")
+        return None
+
+    @staticmethod
+    def _public_fallback_candidates(data: Dict, audio_quality: str) -> List[Tuple[str, str, int]]:
+        """Return public CDN candidates in requested-quality order."""
+        quality = str(audio_quality or '').upper()
+        if quality in ('96K', '128K', '192K'):
+            fields = (
+                ('playPathHq', 'playHqSize'),
+                ('playPathAacv224', 'playPathAacv224Size'),
+                ('playPathAacv164', 'playPathAacv164Size'),
+                ('playUrl64', 'playUrl64Size'),
+                ('playUrl32', 'playUrl32Size'),
+                ('downloadAacUrl', 'downloadAacSize'),
+                ('downloadUrl', 'downloadSize'),
+            )
+        elif quality in ('64K', '48K'):
+            fields = (
+                ('playPathAacv224', 'playPathAacv224Size'),
+                ('playPathAacv164', 'playPathAacv164Size'),
+                ('playUrl64', 'playUrl64Size'),
+                ('playUrl32', 'playUrl32Size'),
+                ('downloadAacUrl', 'downloadAacSize'),
+                ('downloadUrl', 'downloadSize'),
+            )
+        else:
+            fields = (
+                ('playUrl32', 'playUrl32Size'),
+                ('playUrl64', 'playUrl64Size'),
+                ('downloadAacUrl', 'downloadAacSize'),
+                ('downloadUrl', 'downloadSize'),
+            )
+
+        candidates = []
+        seen = set()
+        for url_field, size_field in fields:
+            url = str(data.get(url_field) or '').strip()
+            if not url.startswith(('http://', 'https://')) or url in seen:
+                continue
+            seen.add(url)
+            try:
+                expected_size = int(data.get(size_field) or 0)
+            except (TypeError, ValueError):
+                expected_size = 0
+            candidates.append((url_field, url, expected_size))
+        return candidates
+
+    def _download_confirmed_public_fallback(self, track_id: str, audio_quality: str,
+                                            save_path: str, progress_callback=None) -> bool:
+        """Download only an anonymously confirmed public/free track URL."""
+        data = self._fetch_anonymous_public_track_info(track_id)
+        if not data:
+            return False
+
+        candidates = self._public_fallback_candidates(data, audio_quality)
+        print(f"   ℹ️ 免费重定向不可用；已确认是公开免费声音，尝试 {len(candidates)} 个公开直链")
+        headers = {
+            'User-Agent': 'XimalayaFM/8.6.93 (iPhone; iOS 16.6; Scale/3.00)',
+            'Accept': '*/*',
+            'Referer': 'https://www.ximalaya.com/',
+        }
+
+        for source_field, public_url, expected_size in candidates:
+            try:
+                response = self.session.get(
+                    public_url, headers=headers, stream=True,
+                    allow_redirects=True, timeout=60,
+                )
+                if response.status_code != 200:
+                    print(f"   ⚠️ 公开直链 {source_field} 返回 HTTP {response.status_code}")
+                    continue
+
+                iterator = response.iter_content(chunk_size=512000)
+                first_chunk = next(iterator, b'')
+                content_type = str(response.headers.get('content-type', '')).lower()
+                prefix = first_chunk.lstrip()[:16].lower()
+                if (
+                    'application/json' in content_type
+                    or 'text/html' in content_type
+                    or prefix.startswith((b'{', b'<html', b'<!doctype'))
+                ):
+                    print(f"   ⚠️ 公开直链 {source_field} 返回的不是音频")
+                    continue
+
+                Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+                total_size = 0
+                content_length = int(response.headers.get('content-length') or expected_size or 0)
+                with open(save_path, 'wb') as output:
+                    if first_chunk:
+                        output.write(first_chunk)
+                        total_size += len(first_chunk)
+                        if progress_callback:
+                            progress_callback(total_size, content_length)
+                    for chunk in iterator:
+                        if not chunk:
+                            continue
+                        output.write(chunk)
+                        total_size += len(chunk)
+                        if progress_callback:
+                            progress_callback(total_size, content_length)
+
+                if total_size <= 1024:
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                    print(f"   ⚠️ 公开直链 {source_field} 文件过小: {total_size} 字节")
+                    continue
+
+                self.last_error = ''
+                self.last_error_type = ''
+                self.last_download_source = f'public_base_info:{source_field}'
+                self.last_download_size = total_size
+                self.last_download_expected_size = expected_size
+                self.last_download_quality_label = source_field
+                print(f"✅ 公开免费声音下载成功 ({source_field}, {total_size / 1024 / 1024:.2f}MB)")
+                return True
+            except Exception as exc:
+                if os.path.exists(save_path):
+                    try:
+                        os.remove(save_path)
+                    except OSError:
+                        pass
+                print(f"   ⚠️ 公开直链 {source_field} 下载失败: {exc}")
+
+        self._record_error('公开免费声音直链下载失败')
+        return False
     
     def download_audio_by_quality(self, track_id: str, quality: str, save_path: str, 
                                  album_title: str = "", chapter_title: str = "", progress_callback=None) -> bool:
@@ -150,6 +354,18 @@ class XimalayaDownloadManager:
                                 import json
                                 error_data = json.loads(first_chunk.decode('utf-8'))
                                 if error_data.get('ret') == 130:
+                                    # ret=130 is overloaded: for some old, still-public
+                                    # free tracks it only means the requested redirect
+                                    # quality is unavailable.  Fall back only after an
+                                    # anonymous endpoint proves the track is neither
+                                    # VIP, paid nor a sample.
+                                    if self._download_confirmed_public_fallback(
+                                        track_id, audio_quality, save_path,
+                                        progress_callback=progress_callback,
+                                    ):
+                                        return True
+                                    if self.last_error_type == 'download_failed':
+                                        return False
                                     print(f"❌ 权限不足: 需要VIP权限才能下载HQ音质")
                                     self._record_error("权限不足")
                                     return False
