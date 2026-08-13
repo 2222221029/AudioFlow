@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 from core.ximalaya_download_manager import XimalayaDownloadManager
 
@@ -63,7 +64,21 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             "559285269", 1786632464075, device="android2"
         )
 
-        self.assertEqual(sign.rstrip("\n"), "oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI=")
+        self.assertEqual(sign, "oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI=")
+        self.assertFalse(any(char.isspace() for char in sign))
+
+    def test_android2_request_url_exactly_matches_captured_official_request(self):
+        url = XimalayaDownloadManager._mobile_v4_request_url(
+            "559285269", 1786632464075, "android2", 1
+        )
+
+        self.assertEqual(
+            url,
+            "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/1786632464075"
+            "?device=android2&sign=oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI="
+            "&trackId=559285269&trackQualityLevel=1",
+        )
+        self.assertNotIn("%0A", url.upper())
 
     def test_dolby_atmos_uses_level_twelve_and_validates_ec3_container(self):
         body = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom" + b"ec-3" + (b"audio" * 1000)
@@ -87,7 +102,8 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
                 self.assertFalse(Path(str(save_path) + ".part").exists())
 
         self.assertTrue(ok)
-        self.assertEqual(get.call_args_list[0].kwargs["params"]["trackQualityLevel"], 12)
+        query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
+        self.assertEqual(query["trackQualityLevel"], ["12"])
         self.assertEqual(get.call_args_list[1].args[0], "https://audio.example/atmos.m4a")
         self.assertEqual(manager.last_download_source, "mobile_v4_level_12")
         self.assertEqual(manager.last_download_quality_label, "杜比全景声")
@@ -107,7 +123,8 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
                 self.assertTrue(save_path.exists())
 
         self.assertTrue(ok)
-        self.assertEqual(get.call_args_list[0].kwargs["params"]["trackQualityLevel"], 13)
+        query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
+        self.assertEqual(query["trackQualityLevel"], ["13"])
         self.assertEqual(manager.last_download_source, "mobile_v4_level_13")
 
     def test_dolby_never_accepts_lower_level_or_calls_media_url(self):
@@ -198,7 +215,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
 
         self.assertFalse(ok)
         request = get.call_args
-        self.assertEqual(request.kwargs["params"]["device"], "ios")
+        query = parse_qs(urlparse(request.args[0]).query)
+        self.assertEqual(query["device"], ["ios"])
         self.assertEqual(request.kwargs["headers"]["x-tk"], "ios-member-ticket")
         self.assertEqual(request.kwargs["headers"]["Cookie"], "channel=ios-b1; 1&*token=123456&mobile-session")
         self.assertNotIn("browser-member", request.kwargs["headers"]["Cookie"])
@@ -247,9 +265,11 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(get.call_count, 2)
         api_call = get.call_args_list[0]
         self.assertIn("/mobile-playpage/track/v4/baseInfo/", api_call.args[0])
-        self.assertEqual(api_call.kwargs["params"]["trackQualityLevel"], 3)
-        self.assertEqual(api_call.kwargs["params"]["trackId"], "539592153")
-        self.assertTrue(api_call.kwargs["params"]["sign"].endswith("\n"))
+        api_query = parse_qs(urlparse(api_call.args[0]).query)
+        self.assertEqual(api_query["trackQualityLevel"], ["3"])
+        self.assertEqual(api_query["trackId"], ["539592153"])
+        self.assertFalse(any(char.isspace() for char in api_query["sign"][0]))
+        self.assertNotIn("%0A", api_call.args[0].upper())
         self.assertEqual(api_call.kwargs["headers"]["x-tk"], "member-mobile-ticket")
         self.assertEqual(api_call.kwargs["headers"]["Cookie"], "1&*token=123456&mobile-session")
         self.assertEqual(api_call.kwargs["headers"]["Accept"], "*/*")
@@ -280,11 +300,13 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                     )
 
         self.assertTrue(ok)
-        self.assertEqual(get.call_args_list[0].kwargs["params"]["device"], "android")
-        self.assertEqual(get.call_args_list[1].kwargs["params"]["device"], "android2")
+        first_query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
+        second_query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)
+        self.assertEqual(first_query["device"], ["android"])
+        self.assertEqual(second_query["device"], ["android2"])
         self.assertNotEqual(
-            get.call_args_list[0].kwargs["params"]["sign"],
-            get.call_args_list[1].kwargs["params"]["sign"],
+            first_query["sign"],
+            second_query["sign"],
         )
 
     def test_captured_android2_request_uses_android2_first(self):
@@ -302,7 +324,9 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
 
         self.assertFalse(ok)
         self.assertEqual(get.call_count, 1)
-        self.assertEqual(get.call_args.kwargs["params"]["device"], "android2")
+        query = parse_qs(urlparse(get.call_args.args[0]).query)
+        self.assertEqual(query["device"], ["android2"])
+        self.assertEqual(manager.last_error_type, "restricted")
 
     def test_lossless_rejects_lower_quality_response_without_fallback(self):
         info = FakeResponse(json_data={

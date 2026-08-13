@@ -151,8 +151,29 @@ class XimalayaDownloadManager:
         plaintext = f"{track_id}{device}{tail}{cls._MOBILE_V4_SIGN_SUFFIX}".encode("utf-8")
         iv = f"{cls._MOBILE_V4_IV_PREFIX}{tail}".encode("utf-8")
         encrypted = AES.new(cls._MOBILE_V4_AES_KEY, AES.MODE_CBC, iv).encrypt(pad(plaintext, AES.block_size))
-        # Android Base64.URL_SAFE (flag 8) terminates encoded output with LF.
-        return base64.urlsafe_b64encode(encrypted).decode("ascii") + "\n"
+        # The value visible in the official HTTP request has no trailing LF.
+        # Passing Base64.encodeToString(..., URL_SAFE)'s formatting newline to
+        # requests changes the wire query to ``sign=...%0A`` and V4 rejects it
+        # with ret=1001 before checking account entitlement.
+        return base64.urlsafe_b64encode(encrypted).decode("ascii")
+
+    @classmethod
+    def _mobile_v4_request_url(cls, track_id: str, timestamp: int, device: str, level: int) -> str:
+        """Build the same query order and unwrapped sign sent by the App."""
+        track = str(track_id).strip()
+        if not track.isdigit():
+            raise ValueError("invalid Ximalaya track id")
+        if device not in {"android", "android2", "ios"}:
+            raise ValueError("invalid Ximalaya mobile device")
+        quality_level = int(level)
+        sign = cls._build_mobile_v4_sign(track, int(timestamp), device=device).strip()
+        if not sign or any(char.isspace() for char in sign):
+            raise ValueError("invalid Ximalaya V4 sign")
+        return (
+            f"{cls._MOBILE_V4_URL.format(timestamp=int(timestamp))}"
+            f"?device={device}&sign={sign}&trackId={track}"
+            f"&trackQualityLevel={quality_level}"
+        )
 
     def _mobile_v4_headers(self) -> Dict[str, str]:
         headers = {
@@ -313,15 +334,9 @@ class XimalayaDownloadManager:
             device_candidates = self._mobile_v4_device_candidates()
             for index, device in enumerate(device_candidates):
                 timestamp = int(time.time() * 1000)
-                params = {
-                    "device": device,
-                    "trackId": str(track_id),
-                    "trackQualityLevel": level,
-                    "sign": self._build_mobile_v4_sign(str(track_id), timestamp, device=device),
-                }
-                api_url = self._MOBILE_V4_URL.format(timestamp=timestamp)
+                api_url = self._mobile_v4_request_url(track_id, timestamp, device, level)
                 attempted_devices.append(device)
-                info_response = self.session.get(api_url, params=params, headers=headers, timeout=20)
+                info_response = self.session.get(api_url, headers=headers, timeout=20)
                 if info_response.status_code != 200:
                     self._record_error(
                         f"喜马拉雅{profile['name']}接口 HTTP {info_response.status_code}",
@@ -347,7 +362,11 @@ class XimalayaDownloadManager:
                         f"V4 请求协议校验失败（已尝试 device={','.join(attempted_devices)}）；"
                         "请把同一次 baseInfo 的 GET 请求行、Cookie、x-tk 与 User-Agent 一起保存"
                     )
-                self._record_error(f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})")
+                protocol_denial = str(data.get("ret")) in {"50", "1001"}
+                self._record_error(
+                    f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})",
+                    status_code=401 if protocol_denial else None,
+                )
                 return False
 
             candidate, encrypted_seen, unauthorized_seen = self._extract_authorized_mobile_url(data, level)
