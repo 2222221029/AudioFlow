@@ -58,6 +58,13 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(manager._mobile_quality_profile("Audio Vivid 菁彩声")["key"], "audio_vivid")
         self.assertIsNone(manager._mobile_quality_profile("M4A 96K"))
 
+    def test_android2_sign_matches_captured_official_request(self):
+        sign = XimalayaDownloadManager._build_mobile_v4_sign(
+            "559285269", 1786632464075, device="android2"
+        )
+
+        self.assertEqual(sign.rstrip("\n"), "oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI=")
+
     def test_dolby_atmos_uses_level_twelve_and_validates_ec3_container(self):
         body = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom" + b"ec-3" + (b"audio" * 1000)
         size = len(body)
@@ -251,6 +258,51 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(get.call_args_list[1].args[0], "https://audio.example/member-lossless.flac")
         self.assertEqual(manager.last_download_source, "mobile_v4_lossless")
         self.assertEqual(manager.last_download_expected_size, lossless_size)
+
+    def test_android_v4_retries_android2_when_android_sign_branch_is_rejected(self):
+        body = b"fLaC" + (b"audio" * 1000)
+        rejected = FakeResponse(json_data={"ret": 1001, "msg": "系统繁忙"})
+        info = self._spatial_info(
+            3, "无损音质", "https://audio.example/member-lossless.flac", len(body)
+        )
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": str(len(body))},
+            body=body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.flac"
+                with mock.patch.object(manager.session, "get", side_effect=[rejected, info, audio]) as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(save_path)
+                    )
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_args_list[0].kwargs["params"]["device"], "android")
+        self.assertEqual(get.call_args_list[1].kwargs["params"]["device"], "android2")
+        self.assertNotEqual(
+            get.call_args_list[0].kwargs["params"]["sign"],
+            get.call_args_list[1].kwargs["params"]["sign"],
+        )
+
+    def test_captured_android2_request_uses_android2_first(self):
+        credentials = self._mobile_credentials()
+        credentials["api_device"] = "android2"
+        denied = FakeResponse(json_data={"ret": 50, "msg": "未登录"})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(mobile_credentials=credentials)
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(manager.session, "get", return_value=denied) as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                    )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.kwargs["params"]["device"], "android2")
 
     def test_lossless_rejects_lower_quality_response_without_fallback(self):
         info = FakeResponse(json_data={

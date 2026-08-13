@@ -866,7 +866,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               <textarea
                 value={mobileTicket}
                 onChange={(event) => setMobileTicket(event.target.value)}
-                placeholder={'从 Stream 复制同一次 /mobile-playpage/track/v4/baseInfo 请求的完整请求头，至少包含：\nx-tk: ...\nCookie: ...\nUser-Agent: ...\n注意：URL 查询参数 sign 不是 x-tk'}
+                placeholder={'请连同第一行 GET /mobile-playpage/track/v4/baseInfo/...?device=android2... 一起复制，然后粘贴：\nCookie: ...\nUser-Agent: ...\nx-tk: ...\n注意：URL 查询参数 sign 不是 x-tk'}
                 autoComplete="off"
                 spellCheck="false"
               />
@@ -889,7 +889,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               {mobileCredential.message && mobileCredential.state !== 'missing_ticket' && (
                 <div className={`cookie-note ${info.has_mobile_ticket ? 'ok' : 'warn'}`}>{mobileCredential.message}</div>
               )}
-              <div className="cookie-desc">请在 Stream 中打开一条路径含 <code>/mobile-playpage/track/v4/baseInfo</code> 的播放请求，在“请求头”里复制 <code>x-tk</code>、<code>Cookie</code>、<code>User-Agent</code> 并一次粘贴。URL 中的 <code>sign</code> 是临时查询参数，不能当作 <code>x-tk</code>。不能混用网页 Cookie，也不能拼接不同请求的字段。保存后不会回显或写入日志；扫码刷新网页登录不会覆盖它。</div>
+              <div className="cookie-desc">请把 <code>GET /mobile-playpage/track/v4/baseInfo/...?device=...</code> 请求行和同一请求的 <code>x-tk</code>、<code>Cookie</code>、<code>User-Agent</code> 一起粘贴。请求行里的 <code>device=android</code> 或 <code>device=android2</code> 会参与 sign，必须与官方请求一致；只粘贴请求头时项目会自动尝试两个 Android 签名分支。URL 中的 <code>sign</code> 不能当作 <code>x-tk</code>。</div>
             </div>
           )}
         </>

@@ -172,6 +172,17 @@ class XimalayaDownloadManager:
             headers["Cookie"] = cookie
         return headers
 
+    def _mobile_v4_device_candidates(self):
+        """Return signed device variants, preferring the captured request."""
+        platform_device = self.mobile_credentials.get("device", "android")
+        captured = self.mobile_credentials.get("api_device", "")
+        if platform_device != "android":
+            return [captured or platform_device]
+
+        first = captured if captured in {"android", "android2"} else "android"
+        alternate = "android2" if first == "android" else "android"
+        return [first, alternate]
+
     @staticmethod
     def _walk_dicts(value):
         if isinstance(value, dict):
@@ -294,39 +305,47 @@ class XimalayaDownloadManager:
             )
             return False
 
-        timestamp = int(time.time() * 1000)
-        device = self.mobile_credentials.get("device", "android")
-        params = {
-            "device": device,
-            "trackId": str(track_id),
-            "trackQualityLevel": level,
-            "sign": self._build_mobile_v4_sign(str(track_id), timestamp, device=device),
-        }
         headers = self._mobile_v4_headers()
-        api_url = self._MOBILE_V4_URL.format(timestamp=timestamp)
 
         try:
-            info_response = self.session.get(api_url, params=params, headers=headers, timeout=20)
-            if info_response.status_code != 200:
-                self._record_error(
-                    f"喜马拉雅{profile['name']}接口 HTTP {info_response.status_code}",
-                    info_response.status_code,
-                )
-                return False
+            data = None
+            attempted_devices = []
+            device_candidates = self._mobile_v4_device_candidates()
+            for index, device in enumerate(device_candidates):
+                timestamp = int(time.time() * 1000)
+                params = {
+                    "device": device,
+                    "trackId": str(track_id),
+                    "trackQualityLevel": level,
+                    "sign": self._build_mobile_v4_sign(str(track_id), timestamp, device=device),
+                }
+                api_url = self._MOBILE_V4_URL.format(timestamp=timestamp)
+                attempted_devices.append(device)
+                info_response = self.session.get(api_url, params=params, headers=headers, timeout=20)
+                if info_response.status_code != 200:
+                    self._record_error(
+                        f"喜马拉雅{profile['name']}接口 HTTP {info_response.status_code}",
+                        info_response.status_code,
+                    )
+                    return False
 
-            data = info_response.json()
-            if not isinstance(data, dict):
-                self._record_error(f"喜马拉雅{profile['name']}接口返回格式无效")
-                return False
+                data = info_response.json()
+                if not isinstance(data, dict):
+                    self._record_error(f"喜马拉雅{profile['name']}接口返回格式无效")
+                    return False
+                if str(data.get("ret")) == "1001" and index + 1 < len(device_candidates):
+                    print(f"   ♻️ V4 device={device} 签名分支被拒绝，尝试 {device_candidates[index + 1]}")
+                    continue
+                break
+
             if data.get("ret") not in (None, 0, "0"):
                 message = str(data.get("msg") or data.get("message") or "未知错误")
                 if str(data.get("ret")) == "50":
                     message = "移动端登录凭证已失效或请求头不完整，请从已登录 App 重新抓取同一次请求的完整请求头"
                 elif str(data.get("ret")) == "1001":
                     message = (
-                        "V4 请求协议校验失败；请确认 x-tk 来自同一次 "
-                        "/mobile-playpage/track/v4/baseInfo 请求（不要把查询参数 sign 当成 x-tk），"
-                        "并同时复制该请求的 Cookie 与 User-Agent"
+                        f"V4 请求协议校验失败（已尝试 device={','.join(attempted_devices)}）；"
+                        "请把同一次 baseInfo 的 GET 请求行、Cookie、x-tk 与 User-Agent 一起保存"
                     )
                 self._record_error(f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})")
                 return False

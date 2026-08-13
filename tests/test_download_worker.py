@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from core.download_worker import DownloadWorker
 
@@ -87,6 +88,21 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertEqual(worker._ximalaya_extension_for_quality("Audio Vivid 菁彩声"), ".m4a")
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("DOLBY_ATMOS"))
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("AUDIO_VIVID"))
+
+    def test_restricted_download_is_not_retried(self):
+        worker = self.make_worker()
+        chapter = {"id": "1", "title": "第一章"}
+
+        def denied(item, _index):
+            item["_error"] = "移动端凭证不可用"
+            item["_error_type"] = "restricted"
+            return False
+
+        with mock.patch.object(worker, "_download_single_chapter", side_effect=denied) as download:
+            result = worker._download_chapter_with_retry(chapter, 1)
+
+        self.assertFalse(result)
+        self.assertEqual(download.call_count, 1)
 
 
 if __name__ == "__main__":

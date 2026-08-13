@@ -413,6 +413,13 @@ class DownloadWorker(QThread):
                     print(f"   ✅ 章节 {chapter_index} 重试成功（第 {attempt} 次）")
                 return True
 
+            # Account entitlement and structurally invalid credentials cannot
+            # recover by retrying the same chapter with the same saved bundle.
+            # Stop immediately instead of issuing duplicate premium requests.
+            if str(chapter.get('_error_type') or '') == 'restricted':
+                print(f"   ⛔ 章节 {chapter_index} 为凭证/权限错误，不再自动重试")
+                return False
+
             if self._is_stopped:
                 return False
 

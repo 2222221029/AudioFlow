@@ -11,12 +11,13 @@ from core.ximalaya_credentials import (
     remove_ximalaya_mobile_ticket,
     save_ximalaya_mobile_ticket,
     ximalaya_mobile_credential_status,
+    ximalaya_mobile_ticket_metadata,
     ximalaya_mobile_ticket_uid,
 )
 
 
-def _ticket_for_uid(uid):
-    payload = b"ticket-prefix" + f"close!0!0!b=ticket&s=close&uid={uid}".encode()
+def _ticket_for_uid(uid, business="ticket", scene="close", uid_key="uid"):
+    payload = b"ticket-prefix" + f"close!0!0!b={business}&s={scene}&{uid_key}={uid}".encode()
     return "TAC" + base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
@@ -79,6 +80,38 @@ def test_mobile_ticket_and_cookie_account_must_match():
 
     assert status["state"] == "account_mismatch"
     assert status["account_match"] is False
+
+
+def test_play_track_ticket_from_real_base_info_request_is_accepted():
+    ticket = _ticket_for_uid(123456, business="playTrack", scene="play", uid_key="u")
+    metadata = ximalaya_mobile_ticket_metadata(ticket)
+    status = ximalaya_mobile_credential_status({
+        "x_tk": ticket,
+        "cookie": "1&*token=123456&session",
+        "user_agent": "ting_9.4.52(V2059A,Android33)",
+    })
+
+    assert metadata == {"uid": "123456", "business": "playTrack", "scene": "play"}
+    assert status["state"] == "complete"
+    assert status["ticket_scope"] == "playTrack/play"
+    assert status["account_match"] is True
+    assert status["complete"] is True
+
+
+def test_full_http_request_preserves_android2_sign_variant():
+    captured = f"""GET /mobile-playpage/track/v4/baseInfo/1786632464075?device=android2&trackId=559285269 HTTP/1.1
+Cookie: 1&_token=123456&session
+User-Agent: ting_9.4.52(V2059A,Android33)
+x-tk: {_ticket_for_uid(123456, business="playTrack", scene="play", uid_key="u")}
+"""
+
+    credential = normalize_ximalaya_mobile_credentials(captured)
+    status = ximalaya_mobile_credential_status(captured)
+
+    assert credential["device"] == "android"
+    assert credential["api_device"] == "android2"
+    assert status["api_device"] == "android2"
+    assert status["complete"] is True
 
 
 def test_v4_sign_is_not_accepted_as_x_tk():

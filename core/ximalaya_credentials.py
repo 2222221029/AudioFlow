@@ -89,8 +89,8 @@ def is_anonymous_ximalaya_mobile_ticket(value) -> bool:
     )
 
 
-def ximalaya_mobile_ticket_uid(value) -> str:
-    """Read the non-secret uid marker carried by a baseInfo x-tk, if present.
+def ximalaya_mobile_ticket_metadata(value) -> Dict[str, str]:
+    """Read non-secret routing markers carried by a mobile x-tk, if present.
 
     Ximalaya prefixes its URL-safe Base64 ticket with three transport bytes.
     Trying each Base64 alignment also keeps this compatible with tickets whose
@@ -102,9 +102,10 @@ def ximalaya_mobile_ticket_uid(value) -> str:
         if ";" not in standalone and ":" not in standalone and " " not in standalone:
             ticket = standalone
     if not ticket:
-        return ""
+        return {}
 
     compact = ticket.rstrip("=")
+    found = {}
     for offset in range(min(8, len(compact))):
         candidate = compact[offset:]
         if not candidate or not re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
@@ -113,10 +114,26 @@ def ximalaya_mobile_ticket_uid(value) -> str:
             decoded = base64.urlsafe_b64decode(candidate + "=" * (-len(candidate) % 4))
         except (TypeError, ValueError):
             continue
-        matches = re.findall(rb"(?:^|[&!?])uid=(\d+)(?:$|[&!?])", decoded)
-        if matches:
-            return matches[-1].decode("ascii")
-    return ""
+        markers = {
+            "uid": rb"(?:^|[&!?])(?:uid|u)=(\d+)(?:$|[&!?])",
+            "business": rb"(?:^|[&!?])b=([A-Za-z0-9_-]+)(?:$|[&!?])",
+            "scene": rb"(?:^|[&!?])s=([A-Za-z0-9_-]+)(?:$|[&!?])",
+        }
+        current = {}
+        for key, pattern in markers.items():
+            matches = re.findall(pattern, decoded)
+            if matches:
+                current[key] = matches[-1].decode("ascii")
+        if len(current) > len(found):
+            found = current
+        if all(key in current for key in markers):
+            return current
+    return found
+
+
+def ximalaya_mobile_ticket_uid(value) -> str:
+    """Return the account uid marker from a mobile ticket, if decodable."""
+    return ximalaya_mobile_ticket_metadata(value).get("uid", "")
 
 
 def _looks_like_mobile_v4_sign(value) -> bool:
@@ -242,6 +259,27 @@ def _detect_mobile_device(user_agent: str, explicit: str = "") -> str:
     return "android"
 
 
+def _captured_api_device(value: Any) -> str:
+    """Extract the signed V4 device variant from a copied request line/URL."""
+    candidates = []
+    if isinstance(value, dict):
+        lowered = {str(key).strip().lower(): val for key, val in value.items()}
+        for key in ("request_url", "request-url", "url", "path", "request_line", "request-line"):
+            if lowered.get(key):
+                candidates.append(str(lowered[key]))
+        explicit = str(lowered.get("api_device") or "").strip().lower()
+        if explicit in {"android", "android2", "ios"}:
+            return explicit
+    else:
+        candidates.append(str(value or ""))
+
+    for candidate in candidates:
+        match = re.search(r"(?:[?&])device=(android2?|ios)(?:[&#\s]|$)", candidate, re.I)
+        if match:
+            return match.group(1).lower()
+    return ""
+
+
 def normalize_ximalaya_mobile_credentials(value: Any) -> Dict[str, str]:
     """Parse Stream/Charles copied headers into the small allow-listed bundle we need."""
     original = value
@@ -277,6 +315,7 @@ def normalize_ximalaya_mobile_credentials(value: Any) -> Dict[str, str]:
         or str(lowered.get("accept_language") or lowered.get("accept-language") or "").strip()
     )
     device = _detect_mobile_device(user_agent, str(lowered.get("device") or ""))
+    api_device = _captured_api_device(original)
 
     # If only a raw Cookie string was pasted, recognize it as such. An x-tk
     # alias inside that string is extracted separately and never forwarded.
@@ -290,6 +329,7 @@ def normalize_ximalaya_mobile_credentials(value: Any) -> Dict[str, str]:
         "cookie": _mobile_cookie_string(cookie),
         "user_agent": str(user_agent or "").strip(),
         "accept_language": str(accept_language or "").strip(),
+        "api_device": api_device,
     }
     result = {key: val for key, val in result.items() if val}
     if result:
@@ -318,7 +358,10 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
     cookie = credential.get("cookie", "")
     user_agent = credential.get("user_agent", "")
     anonymous = is_anonymous_ximalaya_mobile_ticket(ticket)
-    ticket_uid = ximalaya_mobile_ticket_uid(ticket)
+    ticket_metadata = ximalaya_mobile_ticket_metadata(ticket)
+    ticket_uid = ticket_metadata.get("uid", "")
+    ticket_business = ticket_metadata.get("business", "")
+    ticket_scene = ticket_metadata.get("scene", "")
     cookie_uid = _mobile_cookie_uid(cookie)
     has_login_cookie = bool(cookie_uid)
     account_match = bool(ticket_uid and cookie_uid and ticket_uid == cookie_uid)
@@ -349,8 +392,13 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
         "has_login_cookie": has_login_cookie,
         "has_user_agent": bool(user_agent),
         "device": credential.get("device", "android"),
+        "api_device": credential.get("api_device", ""),
         "ticket_has_account": bool(ticket_uid and ticket_uid != "0"),
         "account_match": account_match if ticket_uid and cookie_uid else None,
+        "ticket_scope": (
+            f"{ticket_business}/{ticket_scene}"
+            if ticket_business or ticket_scene else "unknown"
+        ),
     }
 
 
