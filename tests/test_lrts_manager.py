@@ -3,8 +3,11 @@ from unittest import mock
 
 from core.lrts_manager import (
     ALBUM_ENTITY_TYPE,
+    APP_HEADERS,
     BOOK_ENTITY_TYPE,
+    LrtsAppClient,
     LRTSManager,
+    V3_LISTEN_PATH,
 )
 
 
@@ -80,6 +83,7 @@ class LRTSManagerTest(unittest.TestCase):
         client.fetch_all_chapters.return_value = [{
             "id": 4515100000001,
             "sectionId": "4515100000001",
+            "tmeId": "1038301964",
             "section": 1,
             "name": "第1集_楔子",
             "payType": 0,
@@ -92,6 +96,107 @@ class LRTSManagerTest(unittest.TestCase):
         self.assertEqual(chapters[0]["id"], "4515100000001")
         self.assertEqual(chapters[0]["_chapter_data"]["entity_type"], BOOK_ENTITY_TYPE)
         self.assertEqual(chapters[0]["_chapter_data"]["id"], 4515100000001)
+        self.assertEqual(chapters[0]["_chapter_data"]["track_id"], 1038301964)
+
+    def test_android_v3_play_path_uses_track_id_and_hq(self):
+        client = LrtsAppClient(imei="test-imei", token="test-token")
+        client.get = mock.Mock(return_value={
+            "status": 0,
+            "data": {"path": "//audio.example/hq.m4a", "quality": 3},
+        })
+
+        result = client.get_play_path(
+            BOOK_ENTITY_TYPE,
+            46111471,
+            4611147100000004,
+            section=4,
+            op_type=1,
+            track_id=1038301964,
+            quality=3,
+        )
+
+        self.assertEqual(result["data"]["quality"], 3)
+        client.get.assert_called_once_with(
+            "https://dapis.mting.info",
+            V3_LISTEN_PATH,
+            {
+                "entityType": BOOK_ENTITY_TYPE,
+                "entityId": 46111471,
+                "trackId": 1038301964,
+                "opType": 1,
+                "quality": 3,
+                "effect": 0,
+                "section": 4,
+                "resId": 4611147100000004,
+            },
+        )
+
+    def test_android_v3_unsupported_quality_retries_next_tier(self):
+        client = LrtsAppClient(imei="test-imei", token="test-token")
+        client.get = mock.Mock(side_effect=[
+            {"status": 33, "msg": "SQ unavailable"},
+            {"status": 0, "data": {"path": "//audio.example/hq.m4a", "quality": 3}},
+        ])
+
+        result = client.get_play_path(
+            BOOK_ENTITY_TYPE,
+            46111471,
+            4611147100000004,
+            section=4,
+            track_id=1038301964,
+            quality=4,
+        )
+
+        self.assertEqual(result["data"]["quality"], 3)
+        self.assertEqual(client.get.call_count, 2)
+        self.assertEqual(client.get.call_args_list[1].args[2]["quality"], 3)
+
+    def test_android_v3_finds_and_caches_best_available_quality(self):
+        client = LrtsAppClient(imei="test-imei", token="test-token")
+        client.get = mock.Mock(side_effect=[
+            {
+                "status": 27,
+                "data": {"path": "//audio.example/normal.m4a", "quality": 1},
+            },
+            {
+                "status": 0,
+                "data": {"path": "//audio.example/high.m4a", "quality": 2},
+            },
+        ])
+
+        result = client.get_play_path(
+            BOOK_ENTITY_TYPE,
+            46111471,
+            4611147100000004,
+            section=4,
+            track_id=1038301964,
+            quality=3,
+        )
+
+        self.assertEqual(result["data"]["quality"], 2)
+        self.assertEqual([call.args[2]["quality"] for call in client.get.call_args_list], [3, 2])
+
+        client.get.reset_mock()
+        client.get.side_effect = None
+        client.get.return_value = {
+            "status": 0,
+            "data": {"path": "//audio.example/high-2.m4a", "quality": 2},
+        }
+        client.get_play_path(
+            BOOK_ENTITY_TYPE,
+            46111471,
+            4611147100000005,
+            section=5,
+            track_id=1038301968,
+            quality=3,
+        )
+
+        client.get.assert_called_once()
+        self.assertEqual(client.get.call_args.args[2]["quality"], 2)
+
+    def test_current_android_headers_are_used(self):
+        self.assertEqual(APP_HEADERS["ClientVersion"], "8.8.03")
+        self.assertIn("/ch_yyting/8803/8.8.03", APP_HEADERS["User-Agent"])
 
     def test_audio_lookup_uses_book_entity_for_web_book(self):
         manager = LRTSManager()
@@ -123,6 +228,44 @@ class LRTSManagerTest(unittest.TestCase):
             4515100000001,
             1,
             op_type=1,
+        )
+
+    def test_audio_lookup_passes_tme_track_and_accepts_quality_downgrade(self):
+        manager = LRTSManager()
+        client = mock.Mock()
+        client.session.headers = {"User-Agent": "test"}
+        client.get_play_path.return_value = {
+            "status": 27,
+            "data": {
+                "path": "//audio.example/downgraded.m4a",
+                "quality": 1,
+                "bitrate": "48000",
+            },
+        }
+        manager._client = client
+        chapter_data = {
+            "entity_type": BOOK_ENTITY_TYPE,
+            "entity_id": 46111471,
+            "section": 4,
+            "id": 4611147100000004,
+            "track_id": 1038301964,
+        }
+
+        with (
+            mock.patch("core.lrts_manager._throttle_audio_request"),
+            mock.patch.dict("core.lrts_manager.os.environ", {"LRTS_AUDIO_QUALITY": "3"}),
+        ):
+            url = manager.get_audio_url("1:46111471", "4611147100000004", chapter_data)
+
+        self.assertEqual(url, "https://audio.example/downgraded.m4a")
+        client.get_play_path.assert_called_once_with(
+            BOOK_ENTITY_TYPE,
+            46111471,
+            4611147100000004,
+            4,
+            op_type=1,
+            track_id=1038301964,
+            quality=3,
         )
 
     def test_book_detail_unwraps_app_payload(self):

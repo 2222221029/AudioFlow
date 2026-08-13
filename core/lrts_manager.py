@@ -51,11 +51,16 @@ RSA_PUB_B64 = (
     "BViIyqKi/1Z2buGWEb/ML836JiRY4WgcVOLWGpde3ZTddWvQ1Hm3bZ/+hGbswIDAQAB"
 )
 APP_HEADERS = {
-    "User-Agent": "Android12/yyting/unknown/unknown/ch_yyting/257/8.0.1",
+    # Mirrors the public Android 8.8.03 client. The v3 listen-path API rejects
+    # the legacy 8.0.1 headers before it evaluates the signed parameters.
+    "User-Agent": "Android12/yyting/unknown/unknown/ch_yyting/8803/8.8.03",
     "Accept-Encoding": "gzip,deflate,sdch",
-    "ClientVersion": "8.0.1",
+    "ClientVersion": "8.8.03",
     "Referer": "yytingting.com",
 }
+V3_LISTEN_PATH = "/yyting/v3/gateway/getListenPath"
+LEGACY_LISTEN_PATH = "/yyting/gateway/getListenPath.action"
+DEFAULT_AUDIO_QUALITY = 3
 
 
 def _env_int(name: str, default: int) -> int:
@@ -70,6 +75,16 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)) or default)
     except (TypeError, ValueError):
         return default
+
+
+def _audio_quality(value=None) -> int:
+    """Return an Android ResQualityLevel value (normal/high/HQ/SQ = 1..4)."""
+    raw = os.getenv("LRTS_AUDIO_QUALITY", str(DEFAULT_AUDIO_QUALITY)) if value is None else value
+    labels = {"normal": 1, "high": 2, "hq": 3, "sq": 4}
+    normalized = labels.get(str(raw or "").strip().lower())
+    if normalized is None:
+        normalized = _to_int(raw, DEFAULT_AUDIO_QUALITY)
+    return max(1, min(4, normalized))
 
 
 _LRTS_AUDIO_CONCURRENCY = max(1, min(3, _env_int("LRTS_AUDIO_CONCURRENCY", 1)))
@@ -246,6 +261,7 @@ class LrtsAppClient:
         self.session = requests.Session()
         self.session.headers.update(APP_HEADERS)
         self._last_path = ""
+        self._quality_ceilings: dict[tuple[int, int], int] = {}
 
     def _next_q(self) -> str:
         key = f"{self.imei}:{self.token or 'guest'}"
@@ -356,7 +372,59 @@ class LrtsAppClient:
             "sortType": sort_type,
         })
 
-    def get_play_path(self, entity_type: int, entity_id: int, chapter_id: int, section: int = 1, op_type: int = 1) -> dict:
+    def get_play_path(
+        self,
+        entity_type: int,
+        entity_id: int,
+        chapter_id: int,
+        section: int = 1,
+        op_type: int = 1,
+        track_id: int = 0,
+        quality=None,
+        effect: int = 0,
+    ) -> dict:
+        """Resolve an audio path, preferring the Android v3 quality-aware API."""
+        requested_quality = _audio_quality(quality)
+        if track_id:
+            quality_key = (entity_type, entity_id)
+            if quality_key in self._quality_ceilings:
+                requested_quality = min(requested_quality, self._quality_ceilings[quality_key])
+            v3_params = {
+                "entityType": entity_type,
+                "entityId": entity_id,
+                "trackId": track_id,
+                "opType": op_type,
+                "effect": effect,
+                "section": section,
+                "resId": chapter_id,
+            }
+            best_data = None
+            best_quality = 0
+            downgraded = False
+            for candidate in range(requested_quality, 0, -1):
+                downgraded = downgraded or candidate < requested_quality
+                v3_params["quality"] = candidate
+                data = self.get(READ_HOST, V3_LISTEN_PATH, dict(v3_params))
+                payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+                has_path = bool(payload.get("path") or data.get("path"))
+                actual_quality = _to_int(payload.get("quality"), candidate if has_path else 0)
+                if has_path and actual_quality > best_quality:
+                    best_data = data
+                    best_quality = actual_quality
+                if has_path and actual_quality >= candidate:
+                    if downgraded:
+                        self._quality_ceilings[quality_key] = actual_quality
+                    return data
+                if has_path:
+                    downgraded = True
+                if data.get("status") in (4, 114):
+                    return data
+
+            if best_data is not None:
+                if downgraded:
+                    self._quality_ceilings[quality_key] = max(1, best_quality)
+                return best_data
+
         params = {
             "entityType": entity_type,
             "entityId": entity_id,
@@ -368,13 +436,7 @@ class LrtsAppClient:
             "httpStatus": 0,
             "bizError": "",
         }
-        # 码率档位开关：懒人 iOS(v3 接口)用 quality=3 拿高码率(320k)。先尝试在当前接口附加该参数
-        # （签名 sc 会自动把它算进去）。环境变量 LRTS_AUDIO_QUALITY=3 启用。
-        import os
-        quality = os.getenv("LRTS_AUDIO_QUALITY")
-        if quality:
-            params["quality"] = quality
-        return self.get(READ_HOST, "/yyting/gateway/getListenPath.action", params)
+        return self.get(READ_HOST, LEGACY_LISTEN_PATH, params)
 
     def fetch_all_chapters(self, entity_type: int, entity_id: int) -> list[dict]:
         if entity_type == 2:
@@ -707,6 +769,7 @@ class LRTSManager:
                     "section": section,
                     "id": chapter_id,
                     "chapter_id": chapter_id,
+                    "track_id": _to_int(_first(item, "tmeId", "tmeID", "trackId")),
                 },
             })
         print(f"[lrts] chapters loaded: {len(chapters)}")
@@ -772,26 +835,37 @@ class LRTSManager:
         entity_type = _to_int(chapter_data.get("entity_type"), entity_type)
         entity_id = _to_int(chapter_data.get("entity_id"), entity_id)
         chapter = _to_int(chapter_data.get("id") or chapter_data.get("chapter_id") or chapter_id)
+        track_id = _to_int(
+            chapter_data.get("track_id")
+            or chapter_data.get("tme_id")
+            or chapter_data.get("tmeId")
+            or chapter_data.get("tmeID")
+        )
         section = _to_int(chapter_data.get("section"), 1)
         if not entity_id or not chapter:
             return None
         try:
-            import os
             with _RATE_SEMAPHORE:
                 _throttle_audio_request()
                 client = self._client_or_guest()
-                # 取流专用 UA 开关：懒人按客户端类型分码率，安卓只给 48k。
-                # 填入 iOS UA（环境变量 LRTS_AUDIO_UA）可尝试拿高码率；仅替换取流这一步的 UA，
-                # 不影响搜索/章节（懒人下载并发=1，临时改 header 安全）。
-                audio_ua = os.getenv("LRTS_AUDIO_UA")
-                old_ua = client.session.headers.get("User-Agent") if audio_ua else None
-                if audio_ua:
-                    client.session.headers["User-Agent"] = audio_ua
-                try:
-                    data = client.get_play_path(entity_type, entity_id, chapter, section, op_type=1)
-                finally:
-                    if audio_ua and old_ua is not None:
-                        client.session.headers["User-Agent"] = old_ua
+                if track_id:
+                    data = client.get_play_path(
+                        entity_type,
+                        entity_id,
+                        chapter,
+                        section,
+                        op_type=1,
+                        track_id=track_id,
+                        quality=_audio_quality(),
+                    )
+                else:
+                    data = client.get_play_path(
+                        entity_type,
+                        entity_id,
+                        chapter,
+                        section,
+                        op_type=1,
+                    )
         except Exception as exc:
             print(f"[lrts] getListenPath failed: {exc}")
             return None
@@ -799,16 +873,22 @@ class LRTSManager:
             raise RateLimitError(data.get("msg") or "download too frequently")
         if data.get("status") == 4 and "非法请求" in str(data.get("msg") or ""):
             raise IllegalRequestError(data.get("msg") or "非法请求")
-        if data.get("status") != 0:
+        payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+        url = payload.get("path") or data.get("path")
+        # Status 27 is the server's quality downgrade response. It still
+        # contains a valid normal-quality path for accounts without HQ access.
+        if data.get("status") != 0 and not url:
             print(f"[lrts] getListenPath status={data.get('status')} msg={data.get('msg')}")
             return None
-        # 一次性诊断：打印懒人音频接口返回的字段名，排查高码率(320k)是否已藏在某字段里（只打字段名，不含含 token 的完整 URL）
         global _LRTS_AUDIO_DEBUG_DONE
         if not _LRTS_AUDIO_DEBUG_DONE:
             _LRTS_AUDIO_DEBUG_DONE = True
-            d = data.get("data") or {}
-            print(f"[lrts-audio-debug] UA={os.getenv('LRTS_AUDIO_UA') or '默认安卓'} mimeType={d.get('mimeType')} fileSize={d.get('fileSize')} fileLength={d.get('fileLength')}")
-        url = (data.get("data") or {}).get("path") or data.get("path")
+            print(
+                "[lrts-audio] "
+                f"requestedQuality={_audio_quality()} actualQuality={payload.get('quality')} "
+                f"bitrate={payload.get('bitrate')} mimeType={payload.get('mimeType')} "
+                f"fileSize={payload.get('fileSize')} fileLength={payload.get('fileLength')}"
+            )
         return self._normalize_url(url)
 
     def _normalize_url(self, url):
