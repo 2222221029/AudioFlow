@@ -706,6 +706,38 @@ export function useAudioFlowApp() {
     });
   }, [loadCookies, runBusy, showToast]);
 
+  const saveXimalayaMobileTicket = useCallback(async (ticket) => {
+    if (!ticket || !ticket.trim()) {
+      showToast('x-tk 不能为空', 'err');
+      return false;
+    }
+    try {
+      await runBusy('xmlyMobileTicket', async () => {
+        await api('/api/cookies/xmly/mobile-ticket', {method: 'POST', body: {ticket: ticket.trim()}});
+        showToast('喜马拉雅移动音质凭证已单独保存', 'ok');
+        await loadCookies();
+      });
+      return true;
+    } catch (error) {
+      showToast(error.message, 'err');
+      return false;
+    }
+  }, [loadCookies, runBusy, showToast]);
+
+  const deleteXimalayaMobileTicket = useCallback(async () => {
+    try {
+      await runBusy('xmlyMobileTicketDelete', async () => {
+        await api('/api/cookies/xmly/mobile-ticket', {method: 'DELETE'});
+        showToast('已删除移动音质凭证，网页登录保留', 'ok');
+        await loadCookies();
+      });
+      return true;
+    } catch (error) {
+      showToast(error.message, 'err');
+      return false;
+    }
+  }, [loadCookies, runBusy, showToast]);
+
   const deleteCookie = useCallback(async (platformKey) => {
     await runBusy('cookieDelete:' + platformKey, async () => {
       await api('/api/cookies/' + encodeURIComponent(platformKey), {method: 'DELETE'});
@@ -1036,6 +1068,8 @@ export function useAudioFlowApp() {
       exportCookies,
       importCookies,
       saveCookie,
+      saveXimalayaMobileTicket,
+      deleteXimalayaMobileTicket,
       deleteCookie,
       loadConfig,
       saveSettings,

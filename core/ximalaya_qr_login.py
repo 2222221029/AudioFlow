@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import os
 import random
 import secrets
 import string
@@ -16,6 +15,7 @@ import uuid
 import requests
 
 from core.qt_compat import QThread, pyqtSignal
+from core.qr_login import _base64_image_to_data_url
 from core.time_api import get_timestamp, get_timestamp_ms_str
 
 
@@ -114,11 +114,9 @@ class XimalayaQRLoginWorker(QThread):
             data = response.json()
             if data.get("ret") == 0 and data.get("img"):
                 qr_id = data.get("qrId")
-                qr_filename = "ximalaya_qrcode.png"
-                with open(qr_filename, "wb") as f:
-                    f.write(base64.b64decode(data["img"]))
+                qr_image = _base64_image_to_data_url(data["img"])
                 self.qr_id = qr_id
-                self.qr_generated.emit(qr_id, os.path.abspath(qr_filename))
+                self.qr_generated.emit(qr_id, qr_image)
                 return True
             self.login_failed.emit(f"二维码生成失败: {data.get('msg')}")
         except Exception as exc:
@@ -196,4 +194,3 @@ class XimalayaQRLoginWorker(QThread):
 
     def stop(self):
         self.is_running = False
-

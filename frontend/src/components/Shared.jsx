@@ -802,6 +802,7 @@ function CookieImportModal({actions, onClose}) {
 
 function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
   const [value, setValue] = useState('');
+  const [mobileTicket, setMobileTicket] = useState('');
   const noCookie = NO_COOKIE_KEYS.includes(platform.key);
   const ok = info.has_cookie || info.has_server;
   const scanText = platform.qr === 'lrts' ? '验证码登录' : '扫码';
@@ -809,7 +810,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
   const textareaPlaceholder = platform.key === 'lrts'
     ? '粘贴懒人听书 App 凭证 JSON，或 token=...; imei=...'
     : platform.key === 'xmly'
-      ? '粘贴网页登录 Cookie；移动端无损/全景声可追加 xmly_x_tk=本人账号票据'
+      ? '粘贴喜马拉雅网页登录 Cookie'
       : '粘贴 Cookie 字符串';
   return (
     <div className="cookie-card">
@@ -846,15 +847,45 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
             {platform.key !== 'lrts' && <button className="btn btn-ghost btn-tiny" onClick={() => setModal({content: <CookieScriptModal platform={platform} onSave={(cookie) => actions.saveCookie(platform.key, cookie)} onClose={closeModal} />})}><Icon id="i-globe" className="icon icon-sm" />浏览器获取</button>}
             {ok && <button className="btn btn-danger btn-tiny" disabled={busy[`cookieDelete:${platform.key}`]} onClick={() => actions.deleteCookie(platform.key)}><BusyIcon busy={busy[`cookieDelete:${platform.key}`]} icon="i-trash" />删除</button>}
           </div>
+          {platform.key === 'xmly' && <div className="xmly-ticket-label">网页登录 Cookie</div>}
           <textarea
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder={textareaPlaceholder}
           />
-          {platform.key === 'xmly' && <div className="cookie-desc">扫码可自动刷新网页 Cookie，但扫码回调不会返回手机 App 的 <code>x-tk</code>。移动端高级音质凭证只需追加一次 <code>xmly_x_tk=本人账号票据</code>，以后扫码或更新网页 Cookie 都会自动保留。无损、全景声仍须账号已购买或具备会员权限。</div>}
           <button className="btn btn-primary btn-tiny" disabled={busy[`cookie:${platform.key}`]} onClick={() => { actions.saveCookie(platform.key, value); setValue(''); }}>
             <BusyIcon busy={busy[`cookie:${platform.key}`]} icon="i-check" />{saveText}
           </button>
+          {platform.key === 'xmly' && (
+            <div className="xmly-ticket-editor">
+              <div className="xmly-ticket-label">移动端音质凭证（独立保存）</div>
+              <input
+                type="password"
+                value={mobileTicket}
+                onChange={(event) => setMobileTicket(event.target.value)}
+                placeholder="粘贴原始 x-tk，也支持 x-tk: ... 或 xmly_x_tk=..."
+                autoComplete="off"
+                spellCheck="false"
+              />
+              <div className="xmly-ticket-actions">
+                <button
+                  className="btn btn-primary btn-tiny"
+                  disabled={busy.xmlyMobileTicket || !mobileTicket.trim()}
+                  onClick={async () => {
+                    if (await actions.saveXimalayaMobileTicket(mobileTicket)) setMobileTicket('');
+                  }}
+                >
+                  <BusyIcon busy={busy.xmlyMobileTicket} icon="i-key" />保存移动端凭证
+                </button>
+                {info.has_mobile_ticket && (
+                  <button className="btn btn-danger btn-tiny" disabled={busy.xmlyMobileTicketDelete} onClick={actions.deleteXimalayaMobileTicket}>
+                    <BusyIcon busy={busy.xmlyMobileTicketDelete} icon="i-trash" />仅删除 x-tk
+                  </button>
+                )}
+              </div>
+              <div className="cookie-desc">扫码只刷新网页 Cookie，不会返回手机 App 的 <code>x-tk</code>。这里保存的移动凭证不会显示、不会写入日志，之后重新扫码也会自动保留。无损、全景声仍须该移动凭证所属账号具备权限。</div>
+            </div>
+          )}
         </>
       )}
     </div>

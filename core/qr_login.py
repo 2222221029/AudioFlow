@@ -57,6 +57,8 @@ class QRSession:
 
 
 def _file_to_data_url(path) -> str:
+    if isinstance(path, str) and path.startswith("data:image/"):
+        return path
     p = Path(path)
     if not p.exists():
         return ""
@@ -70,6 +72,17 @@ def _bytes_to_data_url(data: bytes, content_type: str = "image/png") -> str:
         return ""
     b64 = base64.b64encode(data).decode("ascii")
     return f"data:{content_type or 'image/png'};base64,{b64}"
+
+
+def _base64_image_to_data_url(value, content_type: str = "image/png") -> str:
+    """Normalize a base64 image response without touching the filesystem."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("二维码图片为空")
+    if text.startswith("data:image/"):
+        return text
+    base64.b64decode(text, validate=True)
+    return f"data:{content_type or 'image/png'};base64,{text}"
 
 
 # ── 平台驱动 ────────────────────────────────────────────────────────

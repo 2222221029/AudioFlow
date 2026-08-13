@@ -685,6 +685,12 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .xmly-credential-status{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .xmly-credential-pill{padding:3px 8px;border-radius:var(--radius-pill);background:var(--panel-hi);color:var(--text-faint);font-size:10.5px;font-weight:700;border:1px solid var(--border)}
 .xmly-credential-pill.ready{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.28);color:var(--success)}
+.xmly-ticket-editor{display:grid;gap:8px;padding:10px;margin:8px 0;border:1px solid var(--border);border-radius:12px;background:var(--panel-hi)}
+.xmly-ticket-label{font-size:11px;font-weight:750;color:var(--text-mute)}
+.xmly-ticket-editor input{width:100%;min-width:0;background:var(--pre-bg);border:1px solid var(--border);border-radius:9px;padding:10px;color:var(--text);font:inherit}
+.xmly-ticket-editor input:focus{outline:none;border-color:var(--border-hi)}
+.xmly-ticket-actions{display:flex;gap:7px;flex-wrap:wrap}
+.xmly-ticket-editor .cookie-desc{margin:0}
 .cookie-role-tabs{margin-bottom:8px}
 .cookie-card textarea{max-height:150px}
 

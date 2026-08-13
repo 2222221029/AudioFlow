@@ -51,6 +51,8 @@ from core.ximalaya_credentials import (
     has_ximalaya_mobile_ticket,
     has_ximalaya_web_cookie,
     merge_ximalaya_credentials,
+    remove_ximalaya_mobile_ticket,
+    save_ximalaya_mobile_ticket,
 )
 from core.meta_scraper.state import META_STATE
 from core.meta_scraper import config_store as meta_config_store
@@ -3625,16 +3627,17 @@ _XMLY_ACCOUNT_TTL = 3600
 
 def _xmly_account_info(cookie):
     """用 Cookie 调喜马拉雅官方 getCurrentUser 接口获取昵称/VIP（带 1 小时缓存，避免每次刷新都请求）。"""
-    if not cookie:
+    web_cookie = remove_ximalaya_mobile_ticket(cookie)
+    if not web_cookie:
         return {}
-    key = hash(str(cookie))
+    key = hash(str(web_cookie))
     now = time.time()
     cached = _xmly_account_cache.get(key)
     if cached and now - cached[0] < _XMLY_ACCOUNT_TTL:
         return cached[1]
     info = {}
     try:
-        info = search_manager.ximalaya_manager.get_account_info(cookie) or {}
+        info = search_manager.ximalaya_manager.get_account_info(web_cookie) or {}
     except Exception:
         logging.debug("xmly account info fetch failed", exc_info=True)
     _xmly_account_cache[key] = (now, info)
@@ -3710,6 +3713,43 @@ def api_set_cookie():
     cookie_manager.set_cookie(platform, cookie)
     search_manager.set_cookie(platform, cookie)
     return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file))
+
+
+@app.post("/api/cookies/xmly/mobile-ticket")
+def api_set_ximalaya_mobile_ticket():
+    """Save an x-tk independently without replacing the browser login cookie."""
+    payload = request.get_json(silent=True) or {}
+    incoming = payload.get("ticket", "")
+    cookie = save_ximalaya_mobile_ticket(cookie_manager.get_cookie("xmly"), incoming)
+    if not cookie:
+        return json_error("请输入有效的 x-tk；支持原始值、x-tk: 值或 xmly_x_tk=值")
+    cookie_manager.set_cookie("xmly", cookie)
+    search_manager.set_cookie("xmly", cookie)
+    return json_ok(
+        saved=True,
+        platform="xmly",
+        has_web_cookie=has_ximalaya_web_cookie(cookie),
+        has_mobile_ticket=has_ximalaya_mobile_ticket(cookie),
+        config_file=str(cookie_manager.config_file),
+    )
+
+
+@app.delete("/api/cookies/xmly/mobile-ticket")
+def api_delete_ximalaya_mobile_ticket():
+    """Delete only x-tk and retain the browser login cookie."""
+    cookie = remove_ximalaya_mobile_ticket(cookie_manager.get_cookie("xmly"))
+    if cookie:
+        cookie_manager.set_cookie("xmly", cookie)
+    else:
+        cookie_manager.delete_cookie("xmly")
+    search_manager.set_cookie("xmly", cookie)
+    return json_ok(
+        deleted=True,
+        platform="xmly",
+        has_web_cookie=has_ximalaya_web_cookie(cookie),
+        has_mobile_ticket=False,
+        config_file=str(cookie_manager.config_file),
+    )
 
 
 @app.delete("/api/cookies/<platform>")
