@@ -74,7 +74,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
 
         self.assertEqual(
             url,
-            "https://mobilehera.ximalaya.com/mobile-playpage/track/v4/baseInfo/1786632464075"
+            "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/1786632464075"
             "?device=android2&sign=oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI%3D"
             "&trackId=559285269&trackQualityLevel=1",
         )

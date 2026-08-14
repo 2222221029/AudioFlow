@@ -314,6 +314,10 @@ def normalize_ximalaya_mobile_credentials(value: Any) -> Dict[str, str]:
         headers.get("accept-language")
         or str(lowered.get("accept_language") or lowered.get("accept-language") or "").strip()
     )
+    host = (
+        headers.get("host")
+        or str(lowered.get("host") or "").strip()
+    )
     device = _detect_mobile_device(user_agent, str(lowered.get("device") or ""))
     api_device = _captured_api_device(original)
 
@@ -330,6 +334,7 @@ def normalize_ximalaya_mobile_credentials(value: Any) -> Dict[str, str]:
         "user_agent": str(user_agent or "").strip(),
         "accept_language": str(accept_language or "").strip(),
         "api_device": api_device,
+        "host": str(host or "").strip().lower(),
     }
     result = {key: val for key, val in result.items() if val}
     if result:

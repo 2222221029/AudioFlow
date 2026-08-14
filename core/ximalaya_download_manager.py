@@ -29,7 +29,7 @@ class XimalayaDownloadManager:
     # numeric values are client enum values, not a linear bitrate ranking.
     # The anonymous ticket identifies uid=0 only; it does not grant access and
     # the server still enforces login, membership and per-track entitlement.
-    _MOBILE_V4_URL = "https://mobilehera.ximalaya.com/mobile-playpage/track/v4/baseInfo/{timestamp}"
+    _MOBILE_V4_URL = "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/{timestamp}"
     _MOBILE_V4_AES_KEY = bytes.fromhex("9e3B103bA2d2cb56e805B3cCeB2512E3")
     _MOBILE_V4_IV_PREFIX = "M%6)W5F6@Jj~"
     _MOBILE_V4_SIGN_SUFFIX = "0zpnlXAG"
@@ -159,7 +159,8 @@ class XimalayaDownloadManager:
         return base64.urlsafe_b64encode(encrypted).decode("ascii")
 
     @classmethod
-    def _mobile_v4_request_url(cls, track_id: str, timestamp: int, device: str, level: int) -> str:
+    def _mobile_v4_request_url(cls, track_id: str, timestamp: int, device: str, level: int,
+                               host: str = "") -> str:
         """Build the URL sent by the official Android client.
 
         OkHttp serializes the parameter map through a TreeMap and URL-encodes
@@ -187,10 +188,11 @@ class XimalayaDownloadManager:
             f"{key}={quote_plus(str(value), safe='-_.*')}"
             for key, value in sorted(params.items())
         )
-        return (
-            f"{cls._MOBILE_V4_URL.format(timestamp=int(timestamp))}"
-            f"?{query}"
-        )
+        if host:
+            base_url = f"https://{host}/mobile-playpage/track/v4/baseInfo/{int(timestamp)}"
+        else:
+            base_url = cls._MOBILE_V4_URL.format(timestamp=int(timestamp))
+        return f"{base_url}?{query}"
 
     def _mobile_v4_headers(self) -> Dict[str, str]:
         headers = {
@@ -351,7 +353,13 @@ class XimalayaDownloadManager:
             device_candidates = self._mobile_v4_device_candidates()
             for index, device in enumerate(device_candidates):
                 timestamp = int(time.time() * 1000)
-                api_url = self._mobile_v4_request_url(track_id, timestamp, device, level)
+                api_url = self._mobile_v4_request_url(
+                    track_id,
+                    timestamp,
+                    device,
+                    level,
+                    host=self.mobile_credentials.get("host", ""),
+                )
                 attempted_devices.append(device)
                 info_response = self.session.get(api_url, headers=headers, timeout=20)
                 if info_response.status_code != 200:
