@@ -29,7 +29,7 @@ class XimalayaDownloadManager:
     # numeric values are client enum values, not a linear bitrate ranking.
     # The anonymous ticket identifies uid=0 only; it does not grant access and
     # the server still enforces login, membership and per-track entitlement.
-    _MOBILE_V4_URL = "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/{timestamp}"
+    _MOBILE_V4_URL = "https://mobilehera.ximalaya.com/mobile-playpage/track/v4/baseInfo/{timestamp}"
     _MOBILE_V4_AES_KEY = bytes.fromhex("9e3B103bA2d2cb56e805B3cCeB2512E3")
     _MOBILE_V4_IV_PREFIX = "M%6)W5F6@Jj~"
     _MOBILE_V4_SIGN_SUFFIX = "0zpnlXAG"
