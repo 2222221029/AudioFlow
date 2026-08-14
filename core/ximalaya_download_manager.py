@@ -240,16 +240,6 @@ class XimalayaDownloadManager:
         encrypted_url_seen = False
         unauthorized_seen = False
         items = list(cls._walk_dicts(data))
-        # The level-3 entitlement has a dedicated track-level flag.  Do not
-        # apply it to Dolby/Vivid: those use independent capability checks.
-        if level == 3:
-            if any(
-                "isXimiUhqAuthorized" in item
-                and not cls._flag_enabled(item.get("isXimiUhqAuthorized"))
-                for item in items
-            ):
-                return None, False, True
-
         for item in items:
             level_values = (
                 item.get("qualityLevel"), item.get("downloadQualityLevel"),

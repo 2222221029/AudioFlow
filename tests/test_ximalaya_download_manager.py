@@ -388,6 +388,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 "isXimiUhqAuthorized": False,
                 "playUrlInfos": [{
                     "qualityLevel": 3,
+                    "isXimiUhqAuthorized": False,
                     "decodeUrl": "https://audio.example/should-not-download.flac",
                 }],
             },
