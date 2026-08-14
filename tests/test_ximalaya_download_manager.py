@@ -75,10 +75,11 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(
             url,
             "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/1786632464075"
-            "?device=android2&sign=oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI="
+            "?device=android2&sign=oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI%3D"
             "&trackId=559285269&trackQualityLevel=1",
         )
         self.assertNotIn("%0A", url.upper())
+        self.assertIn("sign=oH66rHnhH3qwK7bgy9j-I8qv5cFahEEZvMTEuYVeUlI%3D", url)
 
     def test_dolby_atmos_uses_level_twelve_and_validates_ec3_container(self):
         body = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom" + b"ec-3" + (b"audio" * 1000)

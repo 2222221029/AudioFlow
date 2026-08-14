@@ -12,6 +12,7 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from .ximalaya_credentials import (
     MOBILE_V4_ANONYMOUS_TICKET,
@@ -159,7 +160,12 @@ class XimalayaDownloadManager:
 
     @classmethod
     def _mobile_v4_request_url(cls, track_id: str, timestamp: int, device: str, level: int) -> str:
-        """Build the same query order and unwrapped sign sent by the App."""
+        """Build the URL sent by the official Android client.
+
+        OkHttp serializes the parameter map through a TreeMap and URL-encodes
+        every value with java.net.URLEncoder. In particular, the trailing '='
+        in the Base64 sign is sent as %3D.
+        """
         track = str(track_id).strip()
         if not track.isdigit():
             raise ValueError("invalid Ximalaya track id")
@@ -169,10 +175,21 @@ class XimalayaDownloadManager:
         sign = cls._build_mobile_v4_sign(track, int(timestamp), device=device).strip()
         if not sign or any(char.isspace() for char in sign):
             raise ValueError("invalid Ximalaya V4 sign")
+        params = {
+            "device": device,
+            "trackId": track,
+            "trackQualityLevel": str(quality_level),
+            "sign": sign,
+        }
+        # URLEncoder keeps alphanumerics, '-', '_', '.', and '*', turns spaces
+        # into '+', and percent-encodes everything else (including '=').
+        query = "&".join(
+            f"{key}={quote_plus(str(value), safe='-_.*')}"
+            for key, value in sorted(params.items())
+        )
         return (
             f"{cls._MOBILE_V4_URL.format(timestamp=int(timestamp))}"
-            f"?device={device}&sign={sign}&trackId={track}"
-            f"&trackQualityLevel={quality_level}"
+            f"?{query}"
         )
 
     def _mobile_v4_headers(self) -> Dict[str, str]:
