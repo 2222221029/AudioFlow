@@ -35,7 +35,50 @@ class XimalayaDownloadManager:
     _MOBILE_V4_IV_PREFIX = "M%6)W5F6@Jj~"
     _MOBILE_V4_SIGN_SUFFIX = "0zpnlXAG"
     _MOBILE_V4_ANONYMOUS_TICKET = MOBILE_V4_ANONYMOUS_TICKET
+    WEB_AUTO_QUALITY = "喜马拉雅网页版接口"
+    MOBILE_AUTO_QUALITY = "喜马拉雅移动端接口（自动最高音质）"
+
+    # Android `libencrypt.so` URL decryption (PlayUrlUtil/EncryptUtil path).
+    # The V2 constants were verified byte-for-byte against the 9.4.52.3 APK:
+    # fixed XOR key at file offset 0x8c980 and substitution table at 0x8c9a0.
+    # Version 0/1 uses AES-128-ECB/PKCS7 with the mobile play URL key; version 2
+    # uses base64 -> substitution -> fixed-key XOR -> per-ciphertext XOR.
+    _MOBILE_PLAY_URL_AES_KEY = bytes.fromhex("5776f21b9e9911388aacfe448068f16a")
+    _MOBILE_DOWNLOAD_V2_XOR_KEY = bytes.fromhex(
+        "802246a09acfc6ac4f546b03257e04735a046e0a51540adcc4f1678d95b95f31"
+    )
+    _MOBILE_DOWNLOAD_V2_SUBSTITUTION = bytes.fromhex(
+        "2eb9c9b8b136d3bc3fde7c4ea5b3dcc12c4f7b85bba91b1e549757ad1c4aa70f"
+        "88b73ce8a3385e89288fac761d064098326d046ed9525b25eb8d9eae87932105"
+        "da3d7ed6724d0366f6f7a0ab3ea8efccbfaf81496333b0ed83ec4362a1fa2a9c"
+        "f54126753714cde16c64695f9948e7650e95b44723d5e3085642349f15177819"
+        "7f9a1f5ac63b29b6a261d8f2ea44cff1f90bee0c2f531a6baac86fe4167782e0"
+        "866a119bdd7a597110ca740024fe84fcd1df399df33a27f413fbc7075dbec47d"
+        "c39073352b5179ff0d9692708e91678b5c4601d7e64b80dbcb0930bd60d2f00a"
+        "a60255ba20e5e250c22db5cec0f84c4531b2d09412d42268a4c58afd18e98c58"
+    )
     _MOBILE_QUALITY_PROFILES = {
+        0: {
+            "level": 0,
+            "key": "standard",
+            "name": "标准音质",
+            "aliases": ("M4A_24", "M4A 24"),
+            "accept": "audio/mp4,audio/*;q=0.9,*/*;q=0.8",
+        },
+        1: {
+            "level": 1,
+            "key": "high",
+            "name": "高清音质",
+            "aliases": ("M4A_64", "M4A 64"),
+            "accept": "audio/mp4,audio/*;q=0.9,*/*;q=0.8",
+        },
+        2: {
+            "level": 2,
+            "key": "super",
+            "name": "超清音质",
+            "aliases": ("M4A_128", "M4A 128"),
+            "accept": "audio/mp4,audio/*;q=0.9,*/*;q=0.8",
+        },
         3: {
             "level": 3,
             "key": "lossless",
@@ -87,6 +130,7 @@ class XimalayaDownloadManager:
         self.last_download_size = 0
         self.last_download_expected_size = 0
         self.last_download_quality_label = ""
+        self.last_download_path = ""
 
     def _record_error(self, message, status_code=None):
         """Expose a stable failure reason to subscription result handling."""
@@ -114,7 +158,35 @@ class XimalayaDownloadManager:
             or normalized in {"LOSSLESS", "FLAC", "XMLY LOSSLESS", "XIMALAYA LOSSLESS"}
         ):
             return cls._MOBILE_QUALITY_PROFILES[3]
+        if normalized in {"M4A 128", "M4A128", "M4A 128K", "M4A128K", "超清音质", "超清"}:
+            return cls._MOBILE_QUALITY_PROFILES[2]
+        if normalized in {"M4A 64", "M4A64", "M4A 64K", "M4A64K", "高清音质", "高清"}:
+            return cls._MOBILE_QUALITY_PROFILES[1]
+        if normalized in {"M4A 24", "M4A24", "M4A 24K", "M4A24K", "标准音质", "标准"}:
+            return cls._MOBILE_QUALITY_PROFILES[0]
         return None
+
+    def _download_mobile_best_available(self, track_id: str, save_path: str,
+                                        chapter_title: str, progress_callback=None) -> bool:
+        """Download the highest V4 quality actually available for a track.
+
+        Mobile enum values are not bitrates.  Level 3 is lossless, level 2 is
+        normally M4A 128K (some catalog generations label it 96K), followed by
+        levels 1 and 0.  An explicit lossless selection remains strict; only
+        this auto mode is allowed to step down.
+        """
+        attempts = []
+        for level in (3, 2, 1, 0):
+            self.last_error = ""
+            self.last_error_type = ""
+            if self._download_mobile_quality(
+                track_id, save_path, level, chapter_title,
+                progress_callback=progress_callback,
+            ):
+                return True
+            attempts.append(f"{self._MOBILE_QUALITY_PROFILES[level]['name']}: {self.last_error}")
+        self._record_error("移动端 V4 未返回可下载音质；" + "；".join(attempts))
+        return False
 
     @classmethod
     def _is_lossless_quality(cls, quality: str) -> bool:
@@ -160,13 +232,18 @@ class XimalayaDownloadManager:
         if provider_token:
             request_headers["Authorization"] = f"Bearer {provider_token}"
 
+        # The current Bridge captures tickets only from the App's premium
+        # playback branches.  That ticket is session-scoped and is also valid
+        # when baseInfo itself requests ordinary levels 0/1/2.
+        provider_level = 3 if int(level) in (0, 1, 2) else int(level)
+
         try:
             response = requests.post(
                 provider_url,
                 headers=request_headers,
                 json={
                     "track_id": str(track_id),
-                    "quality_level": int(level),
+                    "quality_level": provider_level,
                     "timestamp": int(timestamp),
                     "device": str(device),
                     "business": "playTrack",
@@ -299,12 +376,97 @@ class XimalayaDownloadManager:
                 yield from XimalayaDownloadManager._walk_dicts(nested)
 
     @classmethod
+    def _item_encrypt_version(cls, item: Dict, fallback: int = 0) -> int:
+        """Return the decrypt version carried by a play/download entry."""
+        for field in ("downloadEncryptVersion", "encryptVersion", "version"):
+            value = item.get(field)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+        return int(fallback or 0)
+
+    @classmethod
+    def _track_encrypt_version(cls, data: Dict) -> int:
+        """Find a track-level downloadEncryptVersion for V4 responses."""
+        for item in cls._walk_dicts(data):
+            if item.get("downloadEncryptVersion") is not None:
+                try:
+                    return int(item["downloadEncryptVersion"])
+                except (TypeError, ValueError):
+                    continue
+        return 0
+
+    @classmethod
+    def _decrypt_mobile_play_url_raw(cls, encrypted_url: str, version: int) -> str:
+        """Decrypt a mobile play/download URL without the CDN shape check."""
+        text = str(encrypted_url or "").strip()
+        if not text or text.startswith(("http://", "https://")):
+            return text
+        try:
+            missing = len(text) % 4
+            decoded = base64.urlsafe_b64decode(text + ("=" * (4 - missing) if missing else ""))
+            if int(version or 0) == 2:
+                if len(decoded) < 16:
+                    return ""
+                payload, dynamic_key = decoded[:-16], decoded[-16:]
+                plain = bytes(
+                    cls._MOBILE_DOWNLOAD_V2_SUBSTITUTION[value]
+                    ^ cls._MOBILE_DOWNLOAD_V2_XOR_KEY[index % len(cls._MOBILE_DOWNLOAD_V2_XOR_KEY)]
+                    ^ dynamic_key[index % len(dynamic_key)]
+                    for index, value in enumerate(payload)
+                )
+                return plain.decode("utf-8").strip()
+
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import unpad
+
+            raw = unpad(
+                AES.new(cls._MOBILE_PLAY_URL_AES_KEY, AES.MODE_ECB).decrypt(decoded),
+                AES.block_size,
+            )
+            return raw.decode("utf-8").strip()
+        except Exception:
+            return ""
+
+    @classmethod
+    def _decrypt_mobile_play_url(cls, encrypted_url: str, version: int) -> str:
+        """Decrypt a mobile play/download URL and require a CDN direct link."""
+        result = cls._decrypt_mobile_play_url_raw(encrypted_url, version)
+        if cls._looks_like_cdn_url(result):
+            return result
+        return ""
+
+    @classmethod
+    def _decrypt_mobile_play_url_any(cls, encrypted_url: str, preferred_version: int = 0) -> str:
+        """Try V2 first, then V0/V1; the CDN shape check rejects false positives."""
+        preferred = int(preferred_version or 0)
+        if preferred == 1:
+            versions = [1, 2, 0]
+        else:
+            # V2 is the current mobile primary; explicit V0 is also handled
+            # after it because the CDN shape check rejects false positives.
+            versions = [2, 1, 0]
+        for version in versions:
+            result = cls._decrypt_mobile_play_url(encrypted_url, version)
+            if result:
+                return result
+        return ""
+
+    @classmethod
     def _extract_authorized_mobile_url(cls, data: Dict, level: int):
         """Return only an authorized direct URL for the requested enum level."""
         profile = cls._MOBILE_QUALITY_PROFILES[level]
         encrypted_url_seen = False
         unauthorized_seen = False
+        fallback_version = cls._track_encrypt_version(data)
         items = list(cls._walk_dicts(data))
+        auth_fields = (
+            "hasAuthorized", "authorized", "isAuthorized", "canChoose",
+        )
+        if level == 3:
+            auth_fields += ("isXimiUhqAuthorized",)
         for item in items:
             level_values = (
                 item.get("qualityLevel"), item.get("downloadQualityLevel"),
@@ -317,14 +479,11 @@ class XimalayaDownloadManager:
             if not (is_requested_level or is_requested_name):
                 continue
 
-            auth_fields = (
-                "hasAuthorized", "authorized", "isAuthorized", "canChoose",
-            )
-            if level == 3:
-                auth_fields += ("isXimiUhqAuthorized",)
             if any(field in item and not cls._flag_enabled(item.get(field)) for field in auth_fields):
                 unauthorized_seen = True
                 continue
+
+            version = cls._item_encrypt_version(item, fallback_version)
 
             for field in ("decodeUrl", "downloadUrl", "playUrl", "url"):
                 candidate = str(item.get(field) or "").strip()
@@ -341,8 +500,146 @@ class XimalayaDownloadManager:
                         encrypted_url_seen,
                         unauthorized_seen,
                     )
+                # Android 播放/下载地址有三种形态：明文直链、V0/V1
+                # AES-ECB（mobile play URL key）、V2 substitution+XOR。
+                # 解密 URL 密文不改变服务端权限判定，解不出才记为“受保护地址”。
+                decrypted = cls._decrypt_mobile_play_url_any(candidate, version)
+                if not decrypted:
+                    decrypted = cls._decrypt_play_url_candidates(candidate)
+                if decrypted:
+                    size = item.get("fileSize") or item.get("downloadSize") or 0
+                    try:
+                        expected_size = int(size)
+                    except (TypeError, ValueError):
+                        expected_size = 0
+                    return (
+                        (decrypted, expected_size, quality_name or profile["name"]),
+                        encrypted_url_seen,
+                        unauthorized_seen,
+                    )
+                encrypted_url_seen = True
+
+        # Track-level downloadAacUrl/downloadUrl are outside playUrlInfos and
+        # carry their own downloadEncryptVersion (TrackM.fillProperties path).
+        for item in items:
+            for field in ("downloadAacUrl", "downloadUrl"):
+                candidate = str(item.get(field) or "").strip()
+                if not candidate or candidate.startswith(("http://", "https://")):
+                    continue
+                if any(field in item and not cls._flag_enabled(item.get(field)) for field in auth_fields):
+                    unauthorized_seen = True
+                    continue
+                version = cls._item_encrypt_version(item, fallback_version)
+                decrypted = cls._decrypt_mobile_play_url_any(candidate, version)
+                if not decrypted:
+                    decrypted = cls._decrypt_play_url_candidates(candidate)
+                if decrypted:
+                    size = item.get("fileSize") or item.get("downloadSize") or 0
+                    try:
+                        expected_size = int(size)
+                    except (TypeError, ValueError):
+                        expected_size = 0
+                    return (
+                        (decrypted, expected_size, str(item.get("qualityName") or profile["name"])),
+                        encrypted_url_seen,
+                        unauthorized_seen,
+                    )
                 encrypted_url_seen = True
         return None, encrypted_url_seen, unauthorized_seen
+
+    @classmethod
+    def _decrypt_play_url_candidates(cls, encrypted_url: str) -> str:
+        """把喜马拉雅播放地址密文解成 CDN 直链。
+
+        优先 AES-ECB（web v3 实测有效，密钥为网页端 JS 内置固定值），
+        失败再试旧版 S-box/XOR（www2/mweb2 组）。返回合法 http(s) 直链
+        或空字符串。
+        """
+        try:
+            from Crypto.Cipher import AES
+            from Crypto.Util.Padding import unpad
+        except ImportError:
+            return ""
+
+        # 1) AES-ECB
+        try:
+            aes_key = bytes.fromhex("aaad3e4fd540b0f79dca95606e72bf93")
+            missing = len(encrypted_url) % 4
+            padded = encrypted_url + ("=" * (4 - missing) if missing else "")
+            decoded = base64.b64decode(padded.replace("-", "+").replace("_", "/"))
+            raw = AES.new(aes_key, AES.MODE_ECB).decrypt(decoded)
+            try:
+                raw = unpad(raw, AES.block_size)
+            except Exception:
+                if raw and raw[-1] <= 16:
+                    raw = raw[:-raw[-1]]
+            result = raw.decode("utf-8").strip()
+            if cls._looks_like_cdn_url(result):
+                return result
+        except Exception:
+            pass
+
+        # 2) 旧版 S-box/XOR（www2/mweb2 组）
+        try:
+            audio_key = bytes([
+                204, 53, 135, 197, 39, 73, 58, 160, 79, 24, 12, 83, 180, 250, 101, 60,
+                206, 30, 10, 227, 36, 95, 161, 16, 135, 150, 235, 116, 242, 116, 165, 171,
+            ])
+            s_box = bytes([
+                183, 174, 108, 16, 131, 159, 250, 5, 239, 110, 193, 202, 153, 137, 251,
+                176, 119, 150, 47, 204, 97, 237, 1, 71, 177, 42, 88, 218, 166, 82, 87,
+                94, 14, 195, 69, 127, 215, 240, 225, 197, 238, 142, 123, 44, 219, 50,
+                190, 29, 181, 186, 169, 98, 139, 185, 152, 13, 141, 76, 6, 157, 200,
+                132, 182, 49, 20, 116, 136, 43, 155, 194, 101, 231, 162, 242, 151, 213,
+                53, 60, 26, 134, 211, 56, 28, 223, 107, 161, 199, 15, 229, 61, 96, 41,
+                66, 158, 254, 21, 165, 253, 103, 89, 3, 168, 40, 246, 81, 95, 58, 31,
+                172, 78, 99, 45, 148, 187, 222, 124, 55, 203, 235, 64, 68, 149, 180,
+                35, 113, 207, 118, 111, 91, 38, 247, 214, 7, 212, 209, 189, 241, 18,
+                115, 173, 25, 236, 121, 249, 75, 57, 216, 10, 175, 112, 234, 164, 70,
+                206, 198, 255, 140, 230, 12, 32, 83, 46, 245, 0, 62, 227, 72, 191, 156,
+                138, 248, 114, 220, 90, 84, 170, 128, 19, 24, 122, 146, 80, 39, 37, 8,
+                34, 22, 11, 93, 130, 63, 154, 244, 160, 144, 79, 23, 133, 92, 54, 102,
+                210, 65, 67, 27, 196, 201, 106, 143, 52, 74, 100, 217, 179, 48, 233,
+                126, 117, 184, 226, 85, 171, 167, 86, 2, 147, 17, 135, 228, 252, 105,
+                30, 192, 129, 178, 120, 36, 145, 51, 163, 77, 205, 73, 4, 188, 125,
+                232, 33, 243, 109, 224, 104, 208, 221, 59, 9,
+            ])
+            url = encrypted_url.replace("_", "/").replace("-", "+")
+            missing = len(url) % 4
+            if missing:
+                url += "=" * (4 - missing)
+            decoded = base64.b64decode(url)
+            if len(decoded) < 16:
+                return ""
+            data_length = len(decoded) - 16
+            data = bytearray(decoded[:data_length])
+            iv = bytearray(decoded[data_length:])
+            for i in range(len(data)):
+                data[i] = s_box[data[i]]
+            for i in range(0, len(data), 16):
+                for j in range(min(16, len(data) - i)):
+                    data[i + j] ^= iv[j]
+            for i in range(0, len(data), 32):
+                for j in range(min(32, len(data) - i)):
+                    data[i + j] ^= audio_key[j]
+            result = data.decode("utf-8", "replace").strip()
+            if cls._looks_like_cdn_url(result):
+                return result
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _looks_like_cdn_url(url: str) -> bool:
+        """宽松的 CDN 直链判定：http(s) + 喜马拉雅域名/媒体路径关键字。"""
+        if not url or not url.startswith(("http://", "https://")):
+            return False
+        lower = url.lower()
+        if "xmcdn.com" not in lower and "ximalaya.com" not in lower:
+            return False
+        return any(marker in lower for marker in (
+            ".mp3", ".m4a", ".aac", ".flac", ".wav", "/storages/", "aod.cos",
+        ))
 
     @classmethod
     def _extract_authorized_lossless_url(cls, data: Dict):
@@ -361,6 +658,34 @@ class XimalayaDownloadManager:
                     return True
                 tail = block[-16:]
 
+    @staticmethod
+    def _detect_mobile_media_format(path: str):
+        """Identify a downloaded V4 payload by its container signature.
+
+        CDN URLs and Content-Type values are not reliable enough to choose a
+        filename: lossless level 3 is known to return both FLAC and PCM WAV.
+        Return ``(format_name, extension)`` and keep unknown payloads closed.
+        """
+        with open(path, "rb") as source:
+            head = source.read(64)
+        if head.startswith(b"fLaC"):
+            return "flac", ".flac"
+        if len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+            return "wav", ".wav"
+        if len(head) >= 12 and head[4:8] == b"ftyp":
+            return "m4a", ".m4a"
+        if head.startswith(b"OggS"):
+            return "ogg", ".ogg"
+        if head.startswith(b"caff"):
+            return "caf", ".caf"
+        if head.startswith(b"ID3") or (
+            len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE6) == 0xE2
+        ):
+            return "mp3", ".mp3"
+        if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0:
+            return "aac", ".aac"
+        return "", ""
+
     @classmethod
     def _validate_mobile_media(cls, path: str, level: int, content_type: str):
         with open(path, "rb") as source:
@@ -368,13 +693,16 @@ class XimalayaDownloadManager:
         stripped = head.lstrip().lower()
         if "json" in content_type or "html" in content_type or stripped.startswith((b"{", b"<")):
             return False, "文件地址返回了错误页面"
+        media_format, _ = cls._detect_mobile_media_format(path)
+        if not media_format:
+            return False, "文件格式无法识别"
         if level == 3:
-            if head.startswith(b"fLaC"):
-                return True, ""
-            return False, "level 3 文件不是可直接播放的 FLAC"
+            # The exact level is already entitlement-checked in baseInfo.
+            # Different albums deliver level 3 as FLAC, PCM WAV, or an audio
+            # MP4/M4A container, so accept every recognized playable format.
+            return True, ""
 
-        is_mp4 = len(head) >= 12 and head[4:8] == b"ftyp"
-        if not is_mp4:
+        if media_format != "m4a":
             return False, "全景声音轨不是受支持的 MP4/M4A 容器"
         if level == 12:
             # Dolby Atmos streaming normally uses E-AC-3 JOC (`ec-3`/`dec3`)
@@ -387,6 +715,13 @@ class XimalayaDownloadManager:
             if not cls._file_contains_any(path, (b"av3a",)):
                 return False, "level 13 文件未检测到 Audio Vivid/AVS3-P3 音轨"
         return True, ""
+
+    @classmethod
+    def _mobile_media_extension(cls, path: str, level: int) -> str:
+        """Return the extension matching the downloaded container."""
+        del level  # The file signature, not the requested quality, is authoritative.
+        _, extension = cls._detect_mobile_media_format(path)
+        return extension
 
     def _download_mobile_quality(self, track_id: str, save_path: str, level: int,
                                  chapter_title: str = "", progress_callback=None) -> bool:
@@ -404,6 +739,9 @@ class XimalayaDownloadManager:
             data = None
             attempted_devices = []
             device_candidates = self._mobile_v4_device_candidates()
+            candidate = None
+            encrypted_seen = False
+            unauthorized_seen = False
             for index, device in enumerate(device_candidates):
                 timestamp = int(time.time() * 1000)
                 if not self._refresh_mobile_credentials_from_provider(
@@ -434,6 +772,24 @@ class XimalayaDownloadManager:
                 if str(data.get("ret")) == "1001" and index + 1 < len(device_candidates):
                     print(f"   ♻️ V4 device={device} 签名分支被拒绝，尝试 {device_candidates[index + 1]}")
                     continue
+                if data.get("ret") not in (None, 0, "0"):
+                    break
+
+                cand, enc, unauth = self._extract_authorized_mobile_url(data, level)
+                if cand:
+                    candidate, encrypted_seen, unauthorized_seen = cand, enc, unauth
+                    break
+                encrypted_seen = encrypted_seen or enc
+                unauthorized_seen = unauthorized_seen or unauth
+                if enc and index + 1 < len(device_candidates):
+                    # Android App 的 MMKV 开关 item_use_android2_for_decrypt 表明：
+                    # device=android2 分支会返回可播放（已解密）的直链。当前分支
+                    # 只拿到受保护地址时，换下一个设备分支重试一次。
+                    print(
+                        f"   ♻️ V4 device={device} 只返回受保护的{profile['name']}地址，"
+                        f"尝试 {device_candidates[index + 1]} 分支获取解密直链"
+                    )
+                    continue
                 break
 
             if data.get("ret") not in (None, 0, "0"):
@@ -452,7 +808,6 @@ class XimalayaDownloadManager:
                 )
                 return False
 
-            candidate, encrypted_seen, unauthorized_seen = self._extract_authorized_mobile_url(data, level)
             if not candidate:
                 if unauthorized_seen:
                     reason = f"当前喜马拉雅账号没有该音频的{profile['name']}下载权限"
@@ -525,7 +880,10 @@ class XimalayaDownloadManager:
                 self._record_error(f"移动端返回的{profile['name']}{validation_error}，已拒绝保存")
                 return False
 
-            os.replace(temp_path, save_path)
+            actual_extension = self._mobile_media_extension(temp_path, level)
+            requested = Path(save_path)
+            final_path = str(requested.with_suffix(actual_extension))
+            os.replace(temp_path, final_path)
 
             self.last_error = ""
             self.last_error_type = ""
@@ -533,7 +891,11 @@ class XimalayaDownloadManager:
             self.last_download_size = total_size
             self.last_download_expected_size = expected_size
             self.last_download_quality_label = quality_label
-            print(f"✅ 喜马拉雅{profile['name']}下载成功: {chapter_title or track_id} ({total_size / 1024 / 1024:.2f}MB)")
+            self.last_download_path = final_path
+            print(
+                f"✅ 喜马拉雅{profile['name']}下载成功: "
+                f"{Path(final_path).name} ({total_size / 1024 / 1024:.2f}MB)"
+            )
             return True
         except Exception as exc:
             temp_path = f"{save_path}.part"
@@ -770,6 +1132,18 @@ class XimalayaDownloadManager:
         self.last_error_type = ""
         print(f"🚀🚀🚀 新版下载方法被调用! 🚀🚀🚀")
         print(f"📥 开始下载音频: {chapter_title} ({quality})")
+
+        if str(quality or "").strip() == self.MOBILE_AUTO_QUALITY:
+            print("🎼 使用喜马拉雅移动端 V4，按无损 → 128/96K → 64K → 24K 自动选择")
+            return self._download_mobile_best_available(
+                track_id, save_path, chapter_title, progress_callback=progress_callback
+            )
+
+        if str(quality or "").strip() == self.WEB_AUTO_QUALITY:
+            # The legacy web path chooses what the web endpoint exposes.  The
+            # UI intentionally offers no misleading per-bitrate selector.
+            quality = "M4A_96K"
+            print("🌐 使用喜马拉雅网页版接口（自动选择网页端可用音频）")
 
         mobile_profile = self._mobile_quality_profile(quality)
         if mobile_profile:

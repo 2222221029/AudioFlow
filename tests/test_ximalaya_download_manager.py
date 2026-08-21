@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import tempfile
@@ -5,6 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
+
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 
 from core.ximalaya_download_manager import XimalayaDownloadManager
 
@@ -51,13 +55,55 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             },
         })
 
+    @staticmethod
+    def _v2_encrypt(plaintext: str, dynamic_key: bytes = b"0123456789abcdef") -> str:
+        manager = XimalayaDownloadManager
+        inverse = [0] * 256
+        for index, value in enumerate(manager._MOBILE_DOWNLOAD_V2_SUBSTITUTION):
+            inverse[value] = index
+        fixed = manager._MOBILE_DOWNLOAD_V2_XOR_KEY
+        payload = bytes(
+            inverse[value ^ fixed[index % len(fixed)] ^ dynamic_key[index % len(dynamic_key)]]
+            for index, value in enumerate(plaintext.encode("utf-8"))
+        )
+        return base64.urlsafe_b64encode(payload + dynamic_key).rstrip(b"=").decode("ascii")
+
     def test_mobile_quality_labels_map_to_exact_levels(self):
         manager = XimalayaDownloadManager()
         self.assertEqual(manager._mobile_quality_profile("无损真人录制")["key"], "lossless")
         self.assertEqual(manager._mobile_quality_profile("杜比全景声")["key"], "dolby_atmos")
         self.assertEqual(manager._mobile_quality_profile("DOLBY_ATMOS")["key"], "dolby_atmos")
         self.assertEqual(manager._mobile_quality_profile("Audio Vivid 菁彩声")["key"], "audio_vivid")
+        self.assertEqual(manager._mobile_quality_profile("M4A 128K")["level"], 2)
+        self.assertEqual(manager._mobile_quality_profile("M4A 64K")["level"], 1)
         self.assertIsNone(manager._mobile_quality_profile("M4A 96K"))
+
+    def test_mobile_auto_quality_steps_down_until_available(self):
+        manager = XimalayaDownloadManager()
+        with mock.patch.object(
+            manager, "_download_mobile_quality", side_effect=[False, True]
+        ) as download:
+            self.assertTrue(manager._download_mobile_best_available(
+                "123", "book.flac", "chapter"
+            ))
+        self.assertEqual([call.args[2] for call in download.call_args_list], [3, 2])
+
+    def test_ordinary_v4_level_uses_bridge_premium_capture_branch(self):
+        manager = XimalayaDownloadManager(mobile_credentials={
+            "cookie": "1&*token=123456&mobile-session",
+            "user_agent": "ting_9.4.74.3(com.ximalaya.ting.android,Android)",
+        })
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"x_tk": "fresh-ticket"}
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_PROVIDER_URL": "http://android-signer/ticket",
+        }), mock.patch(
+            "core.ximalaya_download_manager.requests.post", return_value=response
+        ) as post:
+            self.assertTrue(manager._refresh_mobile_credentials_from_provider(
+                "123", 2, 1786632464075, "android"
+            ))
+        self.assertEqual(post.call_args.kwargs["json"]["quality_level"], 3)
 
     def test_dynamic_ticket_provider_is_called_for_each_refresh(self):
         manager = XimalayaDownloadManager(mobile_credentials={
@@ -314,6 +360,79 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_download_source, "mobile_v4_lossless")
         self.assertEqual(manager.last_download_expected_size, lossless_size)
 
+    def test_lossless_accepts_wav_and_uses_wav_extension(self):
+        wav_body = (
+            b"RIFF" + (5036).to_bytes(4, "little") + b"WAVE"
+            + b"fmt " + (16).to_bytes(4, "little")
+            + b"\x01\x00\x02\x00\x44\xac\x00\x00\x98\x09\x04\x00\x06\x00\x18\x00"
+            + b"data" + (5000).to_bytes(4, "little") + (b"\x00" * 5000)
+        )
+        info = self._spatial_info(
+            3, "无损音质", "https://audio.example/member-lossless.wav", len(wav_body)
+        )
+        audio = FakeResponse(
+            headers={"content-type": "audio/wav", "content-length": str(len(wav_body))},
+            body=wav_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
+            with tempfile.TemporaryDirectory() as tmp:
+                requested = Path(tmp) / "0001-正常章节名.flac"
+                with mock.patch.object(manager.session, "get", side_effect=[info, audio]):
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(requested), chapter_title="正常章节名"
+                    )
+                actual = Path(tmp) / "0001-正常章节名.wav"
+                self.assertTrue(ok)
+                self.assertFalse(requested.exists())
+                self.assertTrue(actual.exists())
+                self.assertEqual(manager.last_download_path, str(actual))
+
+    def test_v4_media_signatures_choose_real_extensions(self):
+        samples = {
+            ".flac": b"fLaC" + b"\x00" * 64,
+            ".wav": b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 64,
+            ".m4a": b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 64,
+            ".ogg": b"OggS" + b"\x00" * 64,
+            ".caf": b"caff" + b"\x00" * 64,
+            ".mp3": b"ID3" + b"\x00" * 64,
+            ".aac": b"\xff\xf1" + b"\x00" * 64,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for expected, body in samples.items():
+                path = Path(tmp) / ("sample" + expected)
+                path.write_bytes(body)
+                valid, error = XimalayaDownloadManager._validate_mobile_media(
+                    str(path), 3, "application/octet-stream"
+                )
+                self.assertTrue(valid, (expected, error))
+                self.assertEqual(
+                    XimalayaDownloadManager._mobile_media_extension(str(path), 3), expected
+                )
+
+    def test_lossless_m4a_is_saved_with_m4a_extension(self):
+        body = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom" + b"alac" + (b"audio" * 1000)
+        info = self._spatial_info(
+            3, "无损音质", "https://audio.example/member-lossless.m4a", len(body)
+        )
+        audio = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(body))},
+            body=body,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
+            with tempfile.TemporaryDirectory() as tmp:
+                requested = Path(tmp) / "0001-章节.flac"
+                with mock.patch.object(manager.session, "get", side_effect=[info, audio]):
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(requested), chapter_title="章节"
+                    )
+                actual = Path(tmp) / "0001-章节.m4a"
+                self.assertTrue(ok)
+                self.assertTrue(actual.exists())
+                self.assertEqual(manager.last_download_path, str(actual))
+
     def test_android_v4_retries_android2_when_android_sign_branch_is_rejected(self):
         body = b"fLaC" + (b"audio" * 1000)
         rejected = FakeResponse(json_data={"ret": 1001, "msg": "系统繁忙"})
@@ -405,15 +524,163 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
             )
             with tempfile.TemporaryDirectory() as tmp:
+                # Both android and android2 return the same encrypted payload;
+                # the downloader must retry the android2 branch once and then
+                # still refuse to bypass the protected address.
                 with mock.patch.object(manager.session, "get", return_value=info) as get:
                     ok = manager.download_audio_by_quality(
                         "539592153", "FLAC", str(Path(tmp) / "track.flac")
                     )
 
         self.assertFalse(ok)
-        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_count, 2)
         self.assertEqual(manager.last_error_type, "restricted")
         self.assertIn("不会绕过", manager.last_error)
+
+    def test_lossless_retries_android2_when_android_returns_encrypted_url(self):
+        """device=android 返回加密地址时，自动用 device=android2 重试取直链。
+
+        对应 Android App 的 MMKV 开关 item_use_android2_for_decrypt：android2
+        分支会返回可播放（已解密）的直链。重试拿到直链后应正常下载。
+        """
+        encrypted = FakeResponse(json_data={
+            "ret": 0,
+            "playUrlInfos": [{
+                "qualityLevel": 3,
+                "qualityName": "lossless",
+                "hasAuthorized": True,
+                "url": "encrypted-mobile-play-url",
+            }],
+        })
+        direct = FakeResponse(json_data={
+            "ret": 0,
+            "playUrlInfos": [{
+                "qualityLevel": 3,
+                "qualityName": "lossless",
+                "hasAuthorized": True,
+                "decodeUrl": "https://audio.example/member-lossless.flac",
+                "fileSize": 5004,
+            }],
+        })
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": "5004"},
+            body=b"fLaC" + b"\x00" * 5000,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.flac"
+                with mock.patch.object(manager.session, "get",
+                                       side_effect=[encrypted, direct, audio]) as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(save_path)
+                    )
+                self.assertTrue(ok)
+                self.assertEqual(get.call_count, 3)
+                self.assertTrue(save_path.exists())
+                self.assertEqual(manager.last_download_source, "mobile_v4_lossless")
+                # first call android, second call android2
+                first_query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
+                second_query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)
+                self.assertEqual(first_query["device"], ["android"])
+                self.assertEqual(second_query["device"], ["android2"])
+
+    def test_mobile_v2_decrypts_native_vectors(self):
+        vectors = [
+            ("ZwARIjNEVWZ3iJmqu8zd7v8", "a"),
+            ("_eLZ7VYBEiM0RVZneImaq7zN3u8A", "hello"),
+            ("zszry9Woc4mX6X6yAxQlNkdYaXqLnK2-z-DxAg", "中文路径"),
+        ]
+        for encrypted, expected in vectors:
+            self.assertEqual(
+                XimalayaDownloadManager._decrypt_mobile_play_url_raw(encrypted, 2),
+                expected,
+            )
+
+    def test_mobile_v1_uses_mobile_play_url_aes_ecb_key(self):
+        url = "https://aod.cos.tx.xmcdn.com/group1/M00/00/00/member-lossless.flac"
+        manager = XimalayaDownloadManager
+        encrypted = base64.urlsafe_b64encode(
+            AES.new(manager._MOBILE_PLAY_URL_AES_KEY, AES.MODE_ECB).encrypt(
+                pad(url.encode("utf-8"), AES.block_size)
+            )
+        ).decode("ascii")
+        self.assertEqual(manager._decrypt_mobile_play_url(encrypted, 1), url)
+        self.assertEqual(manager._decrypt_mobile_play_url(encrypted, 0), url)
+
+    def test_lossless_decrypts_encrypted_v2_url_even_without_version_field(self):
+        direct_url = "https://aod.cos.tx.xmcdn.com/group1/M00/00/00/member-lossless.flac"
+        encrypted = self._v2_encrypt(direct_url)
+        info = FakeResponse(json_data={
+            "ret": 0,
+            "trackBaseVO": {
+                "trackInfo": {
+                    "playUrlInfoList": [{
+                        "qualityLevel": 3,
+                        "qualityName": "无损音质",
+                        "hasAuthorized": True,
+                        "url": encrypted,
+                        "fileSize": 5004,
+                    }],
+                },
+            },
+        })
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": "5004"},
+            body=b"fLaC" + b"\x00" * 5000,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.flac"
+                with mock.patch.object(manager.session, "get", side_effect=[info, audio]) as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(save_path)
+                    )
+                self.assertTrue(ok)
+                self.assertTrue(save_path.exists())
+
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args_list[1].args[0], direct_url)
+        self.assertEqual(manager.last_download_source, "mobile_v4_lossless")
+
+    def test_lossless_decrypts_track_level_download_aac_url_v2(self):
+        direct_url = "https://aod.cos.tx.xmcdn.com/group1/M00/00/00/member-lossless.m4a"
+        encrypted = self._v2_encrypt(direct_url)
+        info = FakeResponse(json_data={
+            "ret": 0,
+            "trackInfo": {
+                "isXimiUhqAuthorized": True,
+                "downloadAacUrl": encrypted,
+                "downloadEncryptVersion": 2,
+                "downloadSize": 5004,
+            },
+        })
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": "5004"},
+            body=b"fLaC" + b"\x00" * 5000,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member", mobile_credentials=self._mobile_credentials()
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.flac"
+                with mock.patch.object(manager.session, "get", side_effect=[info, audio]) as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(save_path)
+                    )
+                self.assertTrue(ok)
+
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args_list[1].args[0], direct_url)
 
     def test_track_level_lossless_denial_overrides_nested_url(self):
         info = FakeResponse(json_data={
@@ -470,7 +737,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 self.assertFalse(save_path.exists())
 
         self.assertFalse(ok)
-        self.assertIn("不是可直接播放的 FLAC", manager.last_error)
+        self.assertIn("文件格式无法识别", manager.last_error)
 
     def test_m4a_permission_response_is_exposed_as_restricted(self):
         with contextlib.redirect_stdout(io.StringIO()):

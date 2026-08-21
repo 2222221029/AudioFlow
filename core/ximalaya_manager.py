@@ -266,13 +266,23 @@ class XimalayaManager:
         return any(x in lower for x in ('.mp3', '.m4a', '.aac', '/storages/', 'aod.cos'))
 
     def _decrypt_audio_url_aes(self, encrypted_url: str) -> Optional[str]:
-        """网页端密文：CryptoJS AES-ECB（MP3/M4A 均适用）"""
+        """网页端密文：CryptoJS AES-ECB（MP3/M4A 均适用）
+
+        实测（2026-08）：web v3 baseInfo 的 playUrlList[].url 是 URL-safe
+        base64 的 AES-ECB 密文，用本方法可解出 audiopay.cos.tx.xmcdn.com
+        的未加密 CDN 直链（文件大小与 fileSize 完全一致）。
+        """
         try:
             from Crypto.Cipher import AES
             from Crypto.Util.Padding import unpad
 
             aes_key = bytes.fromhex('aaad3e4fd540b0f79dca95606e72bf93')
-            decoded = base64.urlsafe_b64decode(encrypted_url + '==')
+            # 密文长度不一定是 4 的倍数，按需补齐 padding（固定 '+==' 在
+            # 长度 mod 4 == 3 时会失败，mod 4 == 0 时会多余 padding 报错）。
+            missing = len(encrypted_url) % 4
+            if missing:
+                encrypted_url += '=' * (4 - missing)
+            decoded = base64.urlsafe_b64decode(encrypted_url)
             cipher = AES.new(aes_key, AES.MODE_ECB)
             raw = cipher.decrypt(decoded)
             try:
@@ -1334,6 +1344,7 @@ class XimalayaManager:
                 self.last_download_size = getattr(downloader, "last_download_size", 0)
                 self.last_download_expected_size = getattr(downloader, "last_download_expected_size", 0)
                 self.last_download_quality_label = getattr(downloader, "last_download_quality_label", "")
+                self.last_download_path = getattr(downloader, "last_download_path", "")
                 return success
             
             # 否则使用原有下载逻辑

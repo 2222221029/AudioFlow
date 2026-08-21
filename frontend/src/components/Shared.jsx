@@ -226,7 +226,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, ximalayaInterface, setXimalayaInterface, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
   const loading = busy.album || busy.voice;
@@ -249,15 +249,14 @@ export function AlbumDetail({app, mobile = false}) {
       )}
       {selectedAlbum.platform === '喜马拉雅' && (
         <div className={mobile ? 'detail-quality-bar' : 'quality-bar'}>
-          <label htmlFor="xmlyDownloadQuality">本次下载音质</label>
-          <select id="xmlyDownloadQuality" value={downloadQuality} onChange={(event) => setDownloadQuality(event.target.value)}>
-            <option value="M4A 48K">高清音质（48K）</option>
-            <option value="M4A 96K">超高音质（96K，需权限）</option>
-            <option value="无损真人录制">无损音质（level 3）</option>
-            <option value="杜比全景声">杜比全景声（level 12）</option>
-            <option value="Audio Vivid 菁彩声">Audio Vivid 菁彩声（level 13）</option>
+          <label htmlFor="xmlyDownloadInterface">下载接口</label>
+          <select id="xmlyDownloadInterface" value={ximalayaInterface} onChange={(event) => setXimalayaInterface(event.target.value)}>
+            <option value="喜马拉雅移动端接口（自动最高音质）">移动端 V4（自动最高音质）</option>
+            <option value="喜马拉雅网页版接口">网页版接口（兼容模式）</option>
           </select>
-          <span>高级音质需要同一次 App 请求中的完整请求头和对应会员/专辑权限；不支持时不会降级。</span>
+          <span>{ximalayaInterface === '喜马拉雅网页版接口'
+            ? '使用原网页版下载链路，不提供音质选项，由网页接口决定可用格式。'
+            : '使用 App 登录态，从无损开始，按 128/96K、64K、24K 的顺序自动选择该曲目可用的最高音质。'}</span>
         </div>
       )}
       <ChapterToolbar

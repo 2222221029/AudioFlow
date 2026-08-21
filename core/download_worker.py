@@ -75,10 +75,18 @@ class DownloadWorker(QThread):
 
     @classmethod
     def _is_ximalaya_mobile_premium_quality(cls, quality):
-        return cls._is_ximalaya_lossless_quality(quality) or cls._is_ximalaya_spatial_quality(quality)
+        text = str(quality or '').strip()
+        return (
+            cls._is_ximalaya_lossless_quality(quality)
+            or cls._is_ximalaya_spatial_quality(quality)
+            or text == '喜马拉雅移动端接口（自动最高音质）'
+        )
 
     @classmethod
     def _ximalaya_extension_for_quality(cls, quality):
+        if str(quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）':
+            # The downloader renames this placeholder to the detected format.
+            return '.flac'
         if cls._is_ximalaya_lossless_quality(quality):
             return '.flac'
         if cls._is_ximalaya_spatial_quality(quality):
@@ -678,6 +686,22 @@ class DownloadWorker(QThread):
             print(f"📖 [{actual_order}] {chapter_title}")
 
             # ---- 文件已存在检查 ----
+            if self.platform == '喜马拉雅' and (
+                self._is_ximalaya_lossless_quality(self.quality)
+                or str(self.quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）'
+            ):
+                stem, _ = os.path.splitext(file_path)
+                existing_lossless = next(
+                    (
+                        candidate
+                        for extension in ('.wav', '.flac', '.m4a', '.aac', '.mp3', '.ogg', '.caf')
+                        for candidate in (stem + extension,)
+                        if os.path.exists(candidate)
+                    ),
+                    None,
+                )
+                if existing_lossless:
+                    file_path = existing_lossless
             if os.path.exists(file_path):
                 file_size = os.path.getsize(file_path)
                 if file_size > 1024:

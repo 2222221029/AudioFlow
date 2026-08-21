@@ -61,6 +61,7 @@ function sendBrowserNotification(title, body) {
 }
 
 const DEFAULT_QUALITY = 'M4A 96K';
+const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
 const XMLY_DOWNLOAD_QUALITIES = new Set([
   'M4A 48K',
   'M4A 96K',
@@ -147,6 +148,7 @@ export function useAudioFlowApp() {
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [downloadQuality, setDownloadQuality] = useState(DEFAULT_QUALITY);
+  const [ximalayaInterface, setXimalayaInterface] = useState(XMLY_MOBILE_INTERFACE);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
   const [downloadPagination, setDownloadPagination] = useState({page: 1, limit: 20, total: 0, total_pages: 1});
   const [downloadSummary, setDownloadSummary] = useState({total: 0, active_count: 0, completed_count: 0, failed_count: 0, interrupted_count: 0});
@@ -464,7 +466,7 @@ export function useAudioFlowApp() {
         body: {
           album: selectedAlbum,
           chapters: slimChapters,
-          options: {quality: selectedAlbum.platform === '喜马拉雅' ? (downloadQuality || DEFAULT_QUALITY) : (config.quality || DEFAULT_QUALITY), voice: selectedVoice || undefined, warning: selectedAlbum.catalog_warning || undefined},
+          options: {quality: selectedAlbum.platform === '喜马拉雅' ? ximalayaInterface : (config.quality || DEFAULT_QUALITY), voice: selectedVoice || undefined, warning: selectedAlbum.catalog_warning || undefined},
         },
       });
       showToast('已加入下载 ' + items.length + ' 章', 'ok');
@@ -474,7 +476,7 @@ export function useAudioFlowApp() {
     }).catch((error) => {
       showToast(error.message, 'err');
     });
-  }, [config.quality, downloadQuality, loadDownloads, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast]);
+  }, [config.quality, loadDownloads, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast, ximalayaInterface]);
 
   const applyDownloadRange = useCallback((mode = 'select') => {
     const items = parseChapterRange(downloadRange, displayChapters);
@@ -989,6 +991,8 @@ export function useAudioFlowApp() {
     selectedVoice,
     downloadQuality,
     setDownloadQuality,
+    ximalayaInterface,
+    setXimalayaInterface,
     downloads,
     downloadPagination,
     downloadSummary,
