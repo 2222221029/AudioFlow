@@ -948,10 +948,11 @@ class DownloadWorker(QThread):
                             progress_callback=self._make_progress_callback(chapter_index),
                         )
                 elif self.platform == '懒人听书':
+                    # LRTSManager.download_audio(url, save_path, progress_callback)
+                    # only streams the resolved URL; it takes no chapter_id kwarg.
                     success = download_manager.download_audio(
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
-                        chapter_id=chapter_id,
                     )
                 elif self.platform == '云听FM':
                     print(f"☁️ 下载云听FM音频中...")

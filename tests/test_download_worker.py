@@ -104,6 +104,26 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertFalse(worker._ximalaya_skip_url_fallback("M4A 48K"))
         self.assertFalse(worker._ximalaya_skip_url_fallback("MP3 64K"))
 
+    def test_lrts_branch_calls_download_audio_without_chapter_id(self):
+        from core.lrts_manager import LRTSManager
+
+        worker = self.make_worker()
+        worker.platform = '懒人听书'
+        worker.album_id = "book-1"
+        worker.search_manager = mock.MagicMock()
+        worker.search_manager.lrts_manager = None
+        chapter = {"id": "t1", "title": "第一章"}
+
+        with mock.patch.object(LRTSManager, "get_audio_url", return_value="https://example.com/a.m4a"), mock.patch.object(
+            LRTSManager, "download_audio", return_value=True
+        ) as dl:
+            ok = worker._download_single_chapter(chapter, 1)
+
+        self.assertTrue(ok)
+        # 修复前该分支误传 chapter_id=...，LRTSManager 签名不接受，必然 TypeError。
+        self.assertNotIn("chapter_id", dl.call_args.kwargs)
+        self.assertEqual(dl.call_args.args[:2], ("https://example.com/a.m4a", mock.ANY))
+
     def test_restricted_download_is_not_retried(self):
         worker = self.make_worker()
         chapter = {"id": "1", "title": "第一章"}
