@@ -719,6 +719,18 @@ function SubscriptionImportModal({actions, onClose}) {
 
 export function CookiesPage({app}) {
   const {cookies, actions, setModal, closeModal, busy} = app;
+  const [selectedKey, setSelectedKey] = useState(COOKIE_PLATFORMS[0]?.key || 'xmly');
+  const selectedPlatform = COOKIE_PLATFORMS.find((platform) => platform.key === selectedKey) || COOKIE_PLATFORMS[0];
+  const loginPlatforms = COOKIE_PLATFORMS.filter((platform) => !NO_COOKIE_KEYS.includes(platform.key));
+  const freePlatforms = COOKIE_PLATFORMS.filter((platform) => NO_COOKIE_KEYS.includes(platform.key));
+  const configuredPlatforms = loginPlatforms.filter((platform) => {
+    const info = cookies[platform.key] || {};
+    return info.has_cookie || info.has_server;
+  });
+  const pendingPlatforms = loginPlatforms.filter((platform) => {
+    const info = cookies[platform.key] || {};
+    return !info.has_cookie && !info.has_server;
+  });
   const doExport = async (mode) => {
     try {
       const data = await actions.exportCookies();
@@ -743,17 +755,66 @@ export function CookiesPage({app}) {
     }
   };
   return (
-    <>
-      <div className="glass glass-pad cookie-toolbar">
-        <span className="cookie-toolbar-tip"><Icon id="i-alert" className="icon icon-sm" />导出/导入全部平台登录凭证，文件含明文，请妥善保管</span>
-        <button className="btn btn-ghost btn-sm" onClick={() => doExport('file')}><Icon id="i-download" className="icon icon-sm" />导出文件</button>
-        <button className="btn btn-ghost btn-sm" onClick={() => doExport('copy')}><Icon id="i-copy" className="icon icon-sm" />复制 JSON</button>
-        <button className="btn btn-primary btn-sm" disabled={busy.importCookies} onClick={() => setModal({content: <CookieImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入</button>
+    <div className="cookie-page-layout">
+      <div className="cookie-overview">
+        <div className="cookie-summary" aria-label="账号配置概览">
+          <div><span>已连接</span><strong>{configuredPlatforms.length}</strong></div>
+          <div><span>待登录</span><strong>{pendingPlatforms.length}</strong></div>
+          <div><span>免登录平台</span><strong>{freePlatforms.length}</strong></div>
+        </div>
+        <div className="cookie-toolbar-actions">
+          <button className="btn btn-ghost btn-sm" onClick={() => doExport('file')} title="导出全部平台凭证"><Icon id="i-download" className="icon icon-sm" />导出</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => doExport('copy')} title="复制全部平台凭证 JSON"><Icon id="i-copy" className="icon icon-sm" />复制</button>
+          <button className="btn btn-primary btn-sm" disabled={busy.importCookies} onClick={() => setModal({content: <CookieImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入凭证</button>
+        </div>
       </div>
-      <div id="cookieList" className="cookie-grid">
-        {COOKIE_PLATFORMS.map((platform) => <CookieCard key={platform.key} platform={platform} info={cookies[platform.key] || {}} actions={actions} busy={busy} setModal={setModal} closeModal={closeModal} />)}
+      <div className="cookie-security-note"><Icon id="i-alert" className="icon icon-sm" /><span>凭证仅用于对应平台请求；导出的文件包含明文，请存放在安全位置。</span></div>
+      <div id="cookieList" className="cookie-workspace">
+        <aside className="cookie-platform-nav" aria-label="平台账号列表">
+          <CookiePlatformGroup title="已连接" platforms={configuredPlatforms} cookies={cookies} selectedKey={selectedKey} onSelect={setSelectedKey} />
+          <CookiePlatformGroup title="待登录" platforms={pendingPlatforms} cookies={cookies} selectedKey={selectedKey} onSelect={setSelectedKey} />
+          <CookiePlatformGroup title="无需登录" platforms={freePlatforms} cookies={cookies} selectedKey={selectedKey} onSelect={setSelectedKey} free />
+        </aside>
+        <section className="cookie-detail-pane" aria-label="平台凭证详情">
+          {selectedPlatform && (
+            <CookieCard
+              key={selectedPlatform.key}
+              platform={selectedPlatform}
+              info={cookies[selectedPlatform.key] || {}}
+              actions={actions}
+              busy={busy}
+              setModal={setModal}
+              closeModal={closeModal}
+            />
+          )}
+        </section>
       </div>
-    </>
+    </div>
+  );
+}
+
+function CookiePlatformGroup({title, platforms, cookies, selectedKey, onSelect, free = false}) {
+  if (!platforms.length) return null;
+  return (
+    <section className="cookie-platform-group">
+      <div className="cookie-platform-group-title"><span>{title}</span><em>{platforms.length}</em></div>
+      <div className="cookie-platform-list">
+        {platforms.map((platform) => {
+          const info = cookies[platform.key] || {};
+          const ok = free || info.has_cookie || info.has_server;
+          return (
+            <button key={platform.key} className={`cookie-platform-item ${selectedKey === platform.key ? 'active' : ''}`} onClick={() => onSelect(platform.key)}>
+              <PlatformLogo value={platform.key} name={platform.name} />
+              <span className="cookie-platform-copy">
+                <strong>{platform.name}</strong>
+                <small>{free ? '可直接使用' : info.account_name || (ok ? '凭证已保存' : '尚未配置凭证')}</small>
+              </span>
+              <span className={`cookie-platform-dot ${ok ? 'ready' : ''}`} aria-label={ok ? '可用' : '未配置'} />
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -814,7 +875,8 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
       : '粘贴 Cookie 字符串';
   const mobileCredential = info.mobile_credential || {};
   return (
-    <div className="cookie-card">
+    <div className={`cookie-card cookie-detail-card ${noCookie ? 'cookie-free' : ''}`}>
+      <div className="cookie-detail-kicker">{noCookie ? '平台接入说明' : '登录凭证'}</div>
       <div className="cookie-head">
         <span className="name">
           <PlatformLogo value={platform.key} name={platform.name} />
