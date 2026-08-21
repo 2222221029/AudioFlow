@@ -791,6 +791,12 @@ class DownloadWorker(QThread):
                             print(f"🔄 更新文件后缀: {os.path.basename(old_file_path)} -> {os.path.basename(file_path)}")
                     else:
                         audio_url = None
+                        error = str(getattr(download_manager, 'last_error', '') or '').strip()
+                        error_type = str(getattr(download_manager, 'last_error_type', '') or '').strip()
+                        if error:
+                            chapter['_error'] = error[:200]
+                        if error_type:
+                            chapter['_error_type'] = error_type
                         print(f"❌ 酷我听书下载信息获取失败")
                 elif self.platform == '网易云听书':
                     print(f"🎧 获取网易云听书音频URL...")
@@ -892,6 +898,7 @@ class DownloadWorker(QThread):
                     success = download_manager.download_audio(
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
+                        chapter_id=chapter_id,
                     )
                 elif self.platform == '云听FM':
                     print(f"☁️ 下载云听FM音频中...")
@@ -931,6 +938,28 @@ class DownloadWorker(QThread):
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
                     )
+                    if not success:
+                        first_error = str(getattr(download_manager, 'last_error', '') or '').strip()
+                        print(f"♻️ 酷我直链下载失败，刷新签名地址后重试: {first_error or '未知原因'}")
+                        if hasattr(download_manager, 'invalidate_download_info'):
+                            download_manager.invalidate_download_info(chapter_id)
+                        refreshed = download_manager.get_download_info(chapter_id, kuwo_quality)
+                        if refreshed and refreshed.get('url'):
+                            refreshed_extension = refreshed.get('extension', '.mp3')
+                            refreshed_path = os.path.splitext(file_path)[0] + refreshed_extension
+                            success = download_manager.download_audio(
+                                refreshed['url'], refreshed_path,
+                                progress_callback=self._make_progress_callback(chapter_index),
+                                chapter_id=chapter_id,
+                            )
+                            if success:
+                                file_path = refreshed_path
+                        if not success:
+                            error = str(getattr(download_manager, 'last_error', '') or first_error).strip()
+                            error_type = str(getattr(download_manager, 'last_error_type', '') or '').strip()
+                            chapter['_error'] = (error or '酷我下载失败（未返回具体原因）')[:200]
+                            if error_type:
+                                chapter['_error_type'] = error_type
                 elif self.platform == '网易云听书':
                     print(f"🎧 下载网易云听书音频中...")
                     success = download_manager.download_audio(

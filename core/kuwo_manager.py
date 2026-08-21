@@ -32,6 +32,8 @@ class KuwoManager:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         })
         self._kw_token = None
+        self.last_error = ""
+        self.last_error_type = ""
         
         # 写死的 Secret 和 Cookie（无需算法和登录）
         self._fixed_secret = "7363e89561110e6cb657c2fb7cedc85451a49cad02a8ce4d6bc236dce7ed52ce0144c917"
@@ -44,6 +46,22 @@ class KuwoManager:
             domain=".kuwo.cn"
         )
         print(f"[酷我听书] 使用固定的 Cookie 和 Secret（无需登录）")
+
+    def _record_error(self, message: str, error_type: str = "download_failed"):
+        self.last_error = str(message or "酷我下载失败")[:300]
+        self.last_error_type = str(error_type or "download_failed")
+
+    def _clear_error(self):
+        self.last_error = ""
+        self.last_error_type = ""
+
+    @classmethod
+    def invalidate_download_info(cls, chapter_id: str):
+        """Drop every cached signed media URL for one chapter."""
+        rid = str(chapter_id)
+        with cls._download_info_cache_lock:
+            for key in [key for key in cls._download_info_cache if key[0] == rid]:
+                cls._download_info_cache.pop(key, None)
 
     def normalize_download_quality(self, quality: str = "", voice_config: Optional[Dict] = None) -> str:
         """将 UI 的通用音质映射到酷我支持的音质档位。"""
@@ -417,7 +435,8 @@ class KuwoManager:
                 cached = self._download_info_cache.get(cache_key)
                 if cached and now - cached.get("time", 0) < self._download_info_cache_ttl:
                     cached_data = cached.get("data")
-                    return dict(cached_data) if cached_data else None
+                    if cached_data:
+                        return dict(cached_data)
 
             # 根据首选格式和比特率选择 br 参数
             if preferred_format.lower() == 'mp3' and bitrate:
@@ -445,7 +464,11 @@ class KuwoManager:
             response = self.session.get(url, headers=headers, timeout=15)
             
             if response.status_code == 200:
-                data = response.json()
+                try:
+                    data = response.json()
+                except (ValueError, json.JSONDecodeError) as exc:
+                    self._record_error(f"酷我下载地址接口返回了无效 JSON: {exc}")
+                    return None
                 
                 if data.get('code') == 200:
                     data_obj = data.get('data', {})
@@ -462,18 +485,50 @@ class KuwoManager:
                         with self._download_info_cache_lock:
                             self._download_info_cache[cache_key] = {"time": now, "data": dict(result)}
                         return result
-            
-            with self._download_info_cache_lock:
-                self._download_info_cache[cache_key] = {"time": now, "data": None}
+
+                message = data.get('msg') or data.get('message') or '未返回音频地址'
+                self._record_error(f"酷我下载地址接口拒绝请求: code={data.get('code')}, {message}")
+            else:
+                self._record_error(f"酷我下载地址接口 HTTP {response.status_code}")
+
+            # Do not cache failures. Kuwo occasionally returns a transient empty
+            # response; a ten-minute negative cache made all worker retries fail.
             return None
             
         except Exception as e:
+            self._record_error(f"酷我下载地址请求异常: {e}")
             print(f"[酷我] 获取下载URL失败: {e}")
             return None
     
-    def download_audio(self, url: str, save_path: str, progress_callback=None) -> bool:
-        """下载音频（使用当前线程的 session，支持并发）"""
+    def _get_play_restriction_message(self, rid: str) -> str:
+        """Ask Kuwo's web API why a media URL is not playable."""
+        if not str(rid or "").strip():
+            return ""
         try:
+            req_id = str(uuid.uuid4())
+            url = (
+                "https://www.kuwo.cn/api/v1/www/music/playUrl"
+                f"?mid={quote(str(rid))}&type=music&httpsStatus=1&reqId={req_id}"
+            )
+            response = self.session.get(
+                url,
+                headers=self._kuwo_api_headers("https://www.kuwo.cn/"),
+                timeout=15,
+            )
+            if response.status_code != 200:
+                return ""
+            payload = response.json()
+            message = str(payload.get("msg") or payload.get("message") or "").strip()
+            restricted_words = ("付费", "会员", "版权", "下架", "无权", "购买", "客户端")
+            return message if any(word in message for word in restricted_words) else ""
+        except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError):
+            return ""
+
+    def download_audio(self, url: str, save_path: str, progress_callback=None, chapter_id: str = "") -> bool:
+        """下载音频（使用当前线程的 session，支持并发）"""
+        temp_path = f"{save_path}.part"
+        try:
+            self._clear_error()
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
@@ -481,9 +536,18 @@ class KuwoManager:
             response = self.session.get(url, headers=headers, stream=True, timeout=60)
             
             if response.status_code == 200:
+                content_type = str(response.headers.get('Content-Type') or '').lower()
+                if 'text/html' in content_type or 'application/json' in content_type:
+                    self._record_error(f"酷我媒体地址已失效或返回非音频内容: {content_type}")
+                    return False
                 file_size = 0
                 total_size = int(response.headers.get('Content-Length') or 0)
-                with open(save_path, 'wb') as f:
+                os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                with open(temp_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=262144):
                         if chunk:
                             f.write(chunk)
@@ -492,16 +556,38 @@ class KuwoManager:
                                 progress_callback(file_size, total_size)
                 
                 if file_size > 1024 * 10:  # 大于10KB认为下载成功
-                    print(f"✅ 下载成功: {file_size // 1024}KB")
+                    os.replace(temp_path, save_path)
+                    self._clear_error()
+                    print(f"下载成功: {file_size // 1024}KB")
                     return True
                 else:
-                    os.remove(save_path)
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+                    self._record_error(f"酷我媒体文件过小: {file_size} 字节")
                     return False
-            
+
+            if response.status_code == 403:
+                restriction = self._get_play_restriction_message(chapter_id)
+                if restriction:
+                    self._record_error(f"酷我章节受限：{restriction}", "restricted")
+                else:
+                    self._record_error(
+                        "酷我媒体下载被 CDN 拒绝（HTTP 403），章节可能为付费、下架或版权受限",
+                        "restricted",
+                    )
+            else:
+                self._record_error(f"酷我媒体下载 HTTP {response.status_code}")
             return False
             
         except Exception as e:
-            print(f"❌ 下载异常: {e}")
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            self._record_error(f"酷我媒体下载异常: {e}")
+            print(f"下载异常: {e}")
             return False
     
     def get_download_info(self, chapter_id: str, quality: str = 'lossless') -> Optional[Dict]:
@@ -518,6 +604,7 @@ class KuwoManager:
             dict: {'url': '...', 'format': 'flac', 'bitrate': 2000, 'extension': '.flac'} 或 None
         """
         try:
+            self._clear_error()
             quality = self.normalize_download_quality(quality)
             print(f"🎵 获取酷我下载信息: {chapter_id}, 质量: {quality}")
             
@@ -558,6 +645,7 @@ class KuwoManager:
             
             if download_info and download_info.get('url'):
                 file_format = download_info.get('format', 'mp3')
+                self._clear_error()
                 return {
                     'url': download_info['url'],
                     'format': file_format,
@@ -565,9 +653,12 @@ class KuwoManager:
                     'extension': f'.{file_format}' if file_format else '.mp3'
                 }
             
+            if not self.last_error:
+                self._record_error(f"酷我未返回章节 {chapter_id} 的可下载音频地址")
             return None
             
         except Exception as e:
+            self._record_error(f"获取酷我下载信息失败: {e}")
             print(f"❌ 获取酷我下载信息失败: {e}")
             import traceback
             traceback.print_exc()

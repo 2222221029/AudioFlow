@@ -905,7 +905,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               <span
                 className={`xmly-credential-pill ${info.has_mobile_ticket ? 'ready' : (mobileCredential.has_ticket ? 'warning' : '')}`}
                 title={mobileCredential.message || ''}
-              >移动音质：{info.has_mobile_ticket ? '格式完整' : (mobileCredential.has_ticket ? '凭证不完整' : '未设置')}</span>
+              >移动音质：{mobileCredential.dynamic_provider ? 'Bridge 已配置' : (info.has_mobile_ticket ? '格式完整' : (mobileCredential.has_ticket ? '凭证不完整' : '未设置'))}</span>
             </div>
           )}
           <div className="cookie-actions">

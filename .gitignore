@@ -1,6 +1,8 @@
 .env
 .venv/
 venv/
+bridge/config.json
+com.ximalaya.ting.android.xmloader.XMApplication.apk
 
 __pycache__/
 *.py[cod]
@@ -23,6 +25,9 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+.pnpm-store/
+.tmp_apk_deps/
+.tmp_test_deps/
 
 data/*
 config/*

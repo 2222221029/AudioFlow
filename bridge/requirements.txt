@@ -1,0 +1,4 @@
+# The current agent is plain JavaScript and relies on the Java bridge that was
+# bundled with GumJS through Frida 16. Frida 17 requires an explicitly bundled
+# frida-java-bridge, so keep the client/server pair on the compatible major.
+frida>=16.7,<17

@@ -63,5 +63,25 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.version.outputs.value }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=audioflow
+          cache-to: type=gha,mode=max,scope=audioflow
+
+      - name: Build and push Android Bridge
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: bridge/nas/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-redroid-bridge:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-redroid-bridge:${{ steps.version.outputs.value }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-redroid-bridge:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=AudioFlow Android Bridge
+            org.opencontainers.image.description=Android-side dynamic credential bridge for AudioFlow
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+          cache-from: type=gha,scope=audioflow-redroid-bridge
+          cache-to: type=gha,mode=max,scope=audioflow-redroid-bridge

@@ -1,0 +1,31 @@
+services:
+  redroid:
+    image: redroid/redroid:11.0.0-latest
+    container_name: audioflow-redroid
+    privileged: true
+    ports:
+      - "127.0.0.1:5555:5555"
+      - "127.0.0.1:27042:27042"
+    volumes:
+      - ./data:/data
+    command:
+      - androidboot.redroid_gpu_mode=guest
+      - androidboot.use_memfd=true
+    mem_limit: 4g
+    cpus: 2.0
+    restart: unless-stopped
+
+  bridge:
+    image: ghcr.io/2222221029/audioflow-redroid-bridge:latest
+    pull_policy: always
+    container_name: audioflow-bridge
+    depends_on:
+      - redroid
+    network_mode: host
+    environment:
+      ADB_TARGET: 127.0.0.1:5555
+      AUDIOFLOW_BRIDGE_HOST: 0.0.0.0
+      AUDIOFLOW_BRIDGE_PORT: 17891
+      AUDIOFLOW_BRIDGE_FRIDA_ADDRESS: 127.0.0.1:27042
+      AUDIOFLOW_BRIDGE_TOKEN: ${AUDIOFLOW_BRIDGE_TOKEN:?请设置 AUDIOFLOW_BRIDGE_TOKEN}
+    restart: unless-stopped

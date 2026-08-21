@@ -59,6 +59,40 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(manager._mobile_quality_profile("Audio Vivid 菁彩声")["key"], "audio_vivid")
         self.assertIsNone(manager._mobile_quality_profile("M4A 96K"))
 
+    def test_dynamic_ticket_provider_is_called_for_each_refresh(self):
+        manager = XimalayaDownloadManager(mobile_credentials={
+            "cookie": "1&*token=123456&mobile-session",
+            "user_agent": "ting_9.4.74.3(com.ximalaya.ting.android,Android)",
+        })
+        first = mock.Mock()
+        first.status_code = 200
+        first.json.return_value = {"x_tk": "fresh-ticket-1"}
+        second = mock.Mock()
+        second.status_code = 200
+        second.json.return_value = {"x_tk": "fresh-ticket-2"}
+
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_PROVIDER_URL": "http://android-signer/ticket",
+            "XIMALAYA_TICKET_PROVIDER_TOKEN": "secret",
+        }), mock.patch(
+            "core.ximalaya_download_manager.requests.post",
+            side_effect=[first, second],
+        ) as post:
+            self.assertTrue(manager._refresh_mobile_credentials_from_provider(
+                "559285269", 3, 1786632464075, "android"
+            ))
+            self.assertEqual(manager._mobile_ticket(), "fresh-ticket-1")
+            self.assertTrue(manager._refresh_mobile_credentials_from_provider(
+                "559285269", 3, 1786632464076, "android"
+            ))
+            self.assertEqual(manager._mobile_ticket(), "fresh-ticket-2")
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(
+            post.call_args_list[0].kwargs["headers"]["Authorization"],
+            "Bearer secret",
+        )
+
     def test_android2_sign_matches_captured_official_request(self):
         sign = XimalayaDownloadManager._build_mobile_v4_sign(
             "559285269", 1786632464075, device="android2"

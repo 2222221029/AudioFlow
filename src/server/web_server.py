@@ -3580,6 +3580,15 @@ def api_get_cookies():
             mobile_status = ximalaya_mobile_credential_status(
                 cookie_manager.get_cookie(MOBILE_CREDENTIAL_PLATFORM)
             )
+            dynamic_provider = bool(str(os.environ.get("XIMALAYA_TICKET_PROVIDER_URL") or "").strip())
+            if dynamic_provider:
+                mobile_status = {
+                    **mobile_status,
+                    "state": "dynamic_provider",
+                    "message": "已配置 AudioFlow Bridge，下载时会为每次请求动态获取 x-tk",
+                    "complete": True,
+                    "dynamic_provider": True,
+                }
             result[p].update(
                 has_web_cookie=has_ximalaya_web_cookie(cookie),
                 has_mobile_ticket=mobile_status["complete"],

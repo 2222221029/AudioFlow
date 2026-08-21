@@ -1,0 +1,12 @@
+{
+  "bind_host": "0.0.0.0",
+  "port": 17891,
+  "token": "由 start_bridge.ps1 自动生成",
+  "frida_address": "127.0.0.1:27042",
+  "package_name": "com.ximalaya.ting.android",
+  "supported_version": "9.4.52.3",
+  "cookie": "",
+  "user_agent": "ting_9.4.52.3(com.ximalaya.ting.android,Android)",
+  "api_device": "android",
+  "host": "mobile.ximalaya.com"
+}
