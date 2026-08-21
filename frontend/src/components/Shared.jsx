@@ -1206,10 +1206,10 @@ function CookieScriptModal({platform, onSave, onClose}) {
 }
 
 const NOTIFICATION_SCENES = [
-  ['download_completed', '下载完成'],
-  ['download_failed', '下载失败/部分完成'],
-  ['subscription_queued', '订阅发现并加入下载'],
-  ['subscription_checked', '订阅检测发现缺失'],
+  ['download_completed', '下载完成', '任务完成后推送结果摘要', 'i-check'],
+  ['download_failed', '下载异常', '失败或部分完成时及时提醒', 'i-alert'],
+  ['subscription_queued', '自动追更', '发现新章节并加入下载队列', 'i-download'],
+  ['subscription_checked', '订阅检查', '检测到缺失章节时发送通知', 'i-search'],
 ];
 
 const NOTIFICATION_CHANNELS = [
@@ -1237,6 +1237,8 @@ function notificationServiceTemplate(type = 'telegram') {
 function NotificationSettings({notificationConfig, actions, busy}) {
   const [draft, setDraft] = useState(notificationConfig || {});
   const services = draft.services || [];
+  const activeServices = services.filter((service) => service.enabled !== false).length;
+  const activeScenes = NOTIFICATION_SCENES.filter(([key]) => !!draft.scenes?.[key]).length;
   useEffect(() => setDraft(notificationConfig || {}), [notificationConfig]);
   const update = (patch) => setDraft((prev) => ({...prev, ...patch}));
   const updateScene = (key, checked) => setDraft((prev) => ({...prev, scenes: {...(prev.scenes || {}), [key]: checked}}));
@@ -1251,32 +1253,68 @@ function NotificationSettings({notificationConfig, actions, busy}) {
   const addService = () => update({services: [...services, notificationServiceTemplate('telegram')]});
   const removeService = (id) => update({services: services.filter((item) => item.id !== id)});
   return (
-    <div className="glass glass-pad notification-card">
-      <div className="panel-head">
-        <h4>通知系统</h4>
-        <div className="panel-actions">
-          <button className="btn btn-ghost btn-tiny" disabled={busy.notifications} onClick={addService}><Icon id="i-plus" className="icon icon-sm" />添加渠道</button>
-          <button className="btn btn-primary btn-tiny" disabled={busy.notifications} onClick={() => actions.saveNotifications(draft)}><BusyIcon busy={busy.notifications} icon="i-check" />保存通知</button>
+    <div className="notification-page-layout">
+      <div className="notification-overview">
+        <label className={`notification-master ${draft.enabled ? 'active' : ''}`}>
+          <span className="notification-master-icon"><Icon id="i-bell" /></span>
+          <span className="notification-master-copy">
+            <strong>{draft.enabled ? '通知系统已启用' : '通知系统未启用'}</strong>
+            <small>{draft.enabled ? '已按下方规则监听并推送事件' : '配置会保留，但不会发送任何通知'}</small>
+          </span>
+          <input type="checkbox" checked={!!draft.enabled} onChange={(e) => update({enabled: e.target.checked})} />
+          <span className="notification-switch" aria-hidden="true" />
+        </label>
+        <div className="notification-stats" aria-label="通知配置概览">
+          <div><span>已启用渠道</span><strong>{activeServices}</strong><em>/ {services.length}</em></div>
+          <div><span>触发场景</span><strong>{activeScenes}</strong><em>/ {NOTIFICATION_SCENES.length}</em></div>
+        </div>
+        <div className="notification-overview-actions">
+          <button className="btn btn-ghost btn-sm" disabled={busy.notifications} onClick={addService}><Icon id="i-plus" className="icon icon-sm" />添加渠道</button>
+          <button className="btn btn-primary btn-sm" disabled={busy.notifications} onClick={() => actions.saveNotifications(draft)}><BusyIcon busy={busy.notifications} icon="i-check" />保存配置</button>
         </div>
       </div>
-      <label className="check-row"><input type="checkbox" checked={!!draft.enabled} onChange={(e) => update({enabled: e.target.checked})} /><span>启用通知系统</span></label>
-      <div className="notification-scenes">
-        {NOTIFICATION_SCENES.map(([key, label]) => (
-          <label className="check-row" key={key}><input type="checkbox" checked={!!draft.scenes?.[key]} onChange={(e) => updateScene(key, e.target.checked)} /><span>{label}</span></label>
-        ))}
-      </div>
-      <div className="notification-list">
-        {services.length ? services.map((service) => (
-          <NotificationServiceCard
-            key={service.id}
-            service={service}
-            busy={busy}
-            onChange={(patch) => updateService(service.id, patch)}
-            onConfig={(key, value) => updateServiceConfig(service.id, key, value)}
-            onRemove={() => removeService(service.id)}
-            onTest={() => actions.testNotifications(service.id, service)}
-          />
-        )) : <div className="empty small"><Icon id="i-bell" />暂无通知渠道</div>}
+      <div className="notification-workspace">
+        <aside className="notification-scene-panel">
+          <div className="notification-section-head">
+            <div><strong>触发场景</strong><span>选择需要推送的事件</span></div>
+            <em>{activeScenes}/{NOTIFICATION_SCENES.length}</em>
+          </div>
+          <div className="notification-scenes">
+            {NOTIFICATION_SCENES.map(([key, label, description, icon]) => (
+              <label className={`notification-scene-item ${draft.scenes?.[key] ? 'active' : ''}`} key={key}>
+                <span className="notification-scene-icon"><Icon id={icon} /></span>
+                <span><strong>{label}</strong><small>{description}</small></span>
+                <input type="checkbox" checked={!!draft.scenes?.[key]} onChange={(e) => updateScene(key, e.target.checked)} />
+              </label>
+            ))}
+          </div>
+        </aside>
+        <section className="notification-channel-panel" aria-label="通知渠道配置">
+          <div className="notification-section-head">
+            <div><strong>通知渠道</strong><span>配置接收消息的服务</span></div>
+            <em>{services.length}</em>
+          </div>
+          <div className="notification-list">
+            {services.length ? services.map((service) => (
+              <NotificationServiceCard
+                key={service.id}
+                service={service}
+                busy={busy}
+                onChange={(patch) => updateService(service.id, patch)}
+                onConfig={(key, value) => updateServiceConfig(service.id, key, value)}
+                onRemove={() => removeService(service.id)}
+                onTest={() => actions.testNotifications(service.id, service)}
+              />
+            )) : (
+              <div className="notification-empty">
+                <span><Icon id="i-bell" /></span>
+                <strong>还没有通知渠道</strong>
+                <small>添加 Telegram、Bark、企业微信或 Webhook 后即可发送提醒。</small>
+                <button className="btn btn-primary btn-sm" onClick={addService}><Icon id="i-plus" className="icon icon-sm" />添加第一个渠道</button>
+              </div>
+            )}
+          </div>
+        </section>
       </div>
       {services.some((s) => s.type === 'wecom_app') && <WecomTemplates />}
     </div>
@@ -1357,29 +1395,36 @@ export function NotificationsPage({app}) {
 function NotificationServiceCard({service, busy, onChange, onConfig, onRemove, onTest}) {
   const cfg = service.config || {};
   const type = service.type || 'telegram';
+  const typeLabel = NOTIFICATION_CHANNELS.find(([key]) => key === type)?.[1] || '通知渠道';
   const channelOptions = NOTIFICATION_CHANNELS.map(([key, label]) => <option value={key} key={key}>{label}</option>);
   return (
-    <div className="notification-service">
+    <div className={`notification-service ${service.enabled === false ? 'disabled' : ''}`}>
+      <div className="notification-service-titlebar">
+        <span className="notification-service-icon"><Icon id="i-bell" /></span>
+        <span className="notification-service-copy"><strong>{service.name || typeLabel}</strong><small>{typeLabel}</small></span>
+        <label className="notification-service-toggle"><input type="checkbox" checked={service.enabled !== false} onChange={(e) => onChange({enabled: e.target.checked})} /><span>启用</span></label>
+        <div className="notification-service-actions">
+          <button className="btn btn-ghost btn-tiny" disabled={busy[`notificationTest:${service.id}`]} onClick={onTest}><BusyIcon busy={busy[`notificationTest:${service.id}`]} icon="i-bell" />测试</button>
+          <button className="btn btn-danger btn-tiny" onClick={onRemove} title="删除渠道"><Icon id="i-trash" className="icon icon-sm" /><span>删除</span></button>
+        </div>
+      </div>
       <div className="notification-service-head">
         <input className="field-input" value={service.name || ''} onChange={(e) => onChange({name: e.target.value})} placeholder="渠道名称" />
         <select className="field-select" value={type} onChange={(e) => onChange({type: e.target.value, name: NOTIFICATION_CHANNELS.find(([key]) => key === e.target.value)?.[1] || service.name, config: {}})}>{channelOptions}</select>
-        <label className="check-row compact"><input type="checkbox" checked={service.enabled !== false} onChange={(e) => onChange({enabled: e.target.checked})} /><span>启用</span></label>
       </div>
-      <NotificationChannelFields type={type} config={cfg} onConfig={onConfig} />
-      {type === 'wecom_app' && (
-        <div className="field-row">
-          <label className="field-label">回调 URL</label>
-          <input
-            className="field-input"
-            readOnly
-            value={`${window.location.origin}/api/wecom/callback/${service.id}`}
-            onFocus={(event) => event.target.select()}
-          />
-        </div>
-      )}
-      <div className="notification-actions">
-        <button className="btn btn-ghost btn-tiny" disabled={busy[`notificationTest:${service.id}`]} onClick={onTest}><BusyIcon busy={busy[`notificationTest:${service.id}`]} icon="i-bell" />测试</button>
-        <button className="btn btn-danger btn-tiny" onClick={onRemove}><Icon id="i-trash" className="icon icon-sm" />删除</button>
+      <div className="notification-service-fields">
+        <NotificationChannelFields type={type} config={cfg} onConfig={onConfig} />
+        {type === 'wecom_app' && (
+          <div className="field-row">
+            <label className="field-label">回调 URL</label>
+            <input
+              className="field-input"
+              readOnly
+              value={`${window.location.origin}/api/wecom/callback/${service.id}`}
+              onFocus={(event) => event.target.select()}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
