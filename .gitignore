@@ -28,6 +28,8 @@ frontend/.vite/
 .pnpm-store/
 .tmp_apk_deps/
 .tmp_test_deps/
+.tmp_*
+docker-compose.*-temp.yml
 
 data/*
 config/*

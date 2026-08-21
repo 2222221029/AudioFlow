@@ -86,8 +86,23 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertEqual(worker._ximalaya_extension_for_quality("MP3 64K"), ".mp3")
         self.assertEqual(worker._ximalaya_extension_for_quality("杜比全景声"), ".m4a")
         self.assertEqual(worker._ximalaya_extension_for_quality("Audio Vivid 菁彩声"), ".m4a")
+        # 网页版接口实际走 M4A 直链下载，文件后缀必须是 .m4a（订阅下载的默认音质）。
+        self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅网页版接口"), ".m4a")
+        self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅移动端接口（自动最高音质）"), ".flac")
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("DOLBY_ATMOS"))
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("AUDIO_VIVID"))
+
+    def test_ximalaya_skip_url_fallback_covers_web_endpoint_default(self):
+        worker = self.make_worker()
+        # 网页版接口与 M4A 96K 都映射到同一个 M4A_96K 直链：失败后重发同一请求
+        # 只会放大风控，必须跳过"解析 URL"兜底。
+        self.assertTrue(worker._ximalaya_skip_url_fallback("喜马拉雅网页版接口"))
+        self.assertTrue(worker._ximalaya_skip_url_fallback("M4A 96K"))
+        self.assertTrue(worker._ximalaya_skip_url_fallback("喜马拉雅移动端接口（自动最高音质）"))
+        self.assertTrue(worker._ximalaya_skip_url_fallback("无损真人录制"))
+        # 普通档位保持旧行为：失败后可尝试解析 URL 兜底。
+        self.assertFalse(worker._ximalaya_skip_url_fallback("M4A 48K"))
+        self.assertFalse(worker._ximalaya_skip_url_fallback("MP3 64K"))
 
     def test_restricted_download_is_not_retried(self):
         worker = self.make_worker()
@@ -103,6 +118,26 @@ class DownloadWorkerTest(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(download.call_count, 1)
+
+    def test_v4_rate_limit_uses_longer_backoff_and_retries(self):
+        worker = self.make_worker()
+        chapter = {"id": "1", "title": "第一章"}
+
+        def first_limited_then_ok(item, _index):
+            if "_attempted" not in item:
+                item["_attempted"] = True
+                item["_error"] = "ret=1001"
+                item["_error_type"] = "rate_limited"
+                return False
+            return True
+
+        with mock.patch.object(worker, "_download_single_chapter", side_effect=first_limited_then_ok), mock.patch(
+            "core.download_worker.time.sleep"
+        ) as sleep:
+            result = worker._download_chapter_with_retry(chapter, 1)
+
+        self.assertTrue(result)
+        sleep.assert_any_call(15)
 
 
 if __name__ == "__main__":

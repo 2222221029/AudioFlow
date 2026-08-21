@@ -745,6 +745,41 @@ def subscription_scheduler_status():
     return status
 
 
+def subscription_download_options(item, album, voice=None):
+    """Build platform-specific options for automatic subscription downloads.
+
+    The legacy global setting is a Ximalaya-style value (normally ``M4A 96K``)
+    and must not be interpreted as lossless by unrelated platforms.  An
+    explicit per-subscription value still wins so existing/future callers can
+    opt in to another profile without changing the global default.
+    """
+    item = item or {}
+    album = album or {}
+    platform = str(album.get("platform") or item.get("platform") or "").strip()
+    explicit_quality = str(
+        item.get("subscription_quality")
+        or album.get("subscription_quality")
+        or ""
+    ).strip()
+
+    if explicit_quality:
+        quality = explicit_quality
+    elif platform == "喜马拉雅":
+        # Subscription downloads intentionally default to the web endpoint.
+        quality = "喜马拉雅网页版接口"
+    elif platform == "酷我听书":
+        # Do not let the generic M4A value normalize to Kuwo lossless.  Standard
+        # mode itself falls back 128 -> 192 -> 320 when a bitrate is unavailable.
+        quality = "kuwo:standard"
+    else:
+        quality = subscription_manager.settings().get("quality", "M4A 96K")
+
+    options = {"download_dir": active_download_dir(), "quality": quality}
+    if voice:
+        options["voice"] = voice
+    return options
+
+
 def _run_subscription_check(sid, queue_missing=False, source="subscription-check", progress=None, retry_restricted=False):
     def set_progress(message, **fields):
         if callable(progress):
@@ -824,7 +859,7 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
         if chapters_to_queue:
             queued_task_id = f"sub-{uuid.uuid4().hex[:12]}"
             queued_chapter_count = len(chapters_to_queue)
-            options = {"download_dir": active_download_dir(), "quality": subscription_manager.settings().get("quality", "M4A 96K"), "voice": voice}
+            options = subscription_download_options(item, album, voice=voice)
             start_download_task(queued_task_id, album, chapters_to_queue, options, source=source)
             notification_manager.notify(
                 "subscription_queued",

@@ -67,6 +67,30 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertEqual(first["id"], second["id"])
         thread.assert_called_once()
 
+    def test_subscription_download_defaults_ximalaya_to_web_endpoint(self):
+        album = {"id": "1", "platform": "喜马拉雅"}
+
+        options = web_server.subscription_download_options({}, album)
+
+        self.assertEqual(options["quality"], "喜马拉雅网页版接口")
+
+    def test_subscription_download_does_not_map_generic_quality_to_kuwo_lossless(self):
+        album = {"id": "2", "platform": "酷我听书"}
+        with mock.patch.object(web_server.subscription_manager, "settings", return_value={"quality": "M4A 96K"}):
+            options = web_server.subscription_download_options({}, album)
+
+        self.assertEqual(options["quality"], "kuwo:standard")
+
+    def test_subscription_download_preserves_explicit_per_subscription_quality(self):
+        album = {"id": "3", "platform": "酷我听书"}
+
+        options = web_server.subscription_download_options(
+            {"subscription_quality": "kuwo:high"}, album, voice={"name": "voice"}
+        )
+
+        self.assertEqual(options["quality"], "kuwo:high")
+        self.assertEqual(options["voice"], {"name": "voice"})
+
 
 if __name__ == "__main__":
     unittest.main()

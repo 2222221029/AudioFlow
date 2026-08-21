@@ -11,6 +11,7 @@ import json
 import requests
 import os
 import time
+import threading
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -37,6 +38,12 @@ class XimalayaDownloadManager:
     _MOBILE_V4_ANONYMOUS_TICKET = MOBILE_V4_ANONYMOUS_TICKET
     WEB_AUTO_QUALITY = "喜马拉雅网页版接口"
     MOBILE_AUTO_QUALITY = "喜马拉雅移动端接口（自动最高音质）"
+    # Only serialize/pace the tiny ticket + baseInfo control request.  Media
+    # responses are downloaded outside this lock, so CDN throughput and the
+    # worker's normal chapter concurrency are unaffected.
+    _MOBILE_V4_REQUEST_LOCK = threading.Lock()
+    _MOBILE_V4_LAST_REQUEST_AT = 0.0
+    _MOBILE_V4_MIN_INTERVAL = 0.75
 
     # Android `libencrypt.so` URL decryption (PlayUrlUtil/EncryptUtil path).
     # The V2 constants were verified byte-for-byte against the 9.4.52.3 APK:
@@ -132,7 +139,7 @@ class XimalayaDownloadManager:
         self.last_download_quality_label = ""
         self.last_download_path = ""
 
-    def _record_error(self, message, status_code=None):
+    def _record_error(self, message, status_code=None, error_type=None):
         """Expose a stable failure reason to subscription result handling."""
         text = str(message or "download failed")
         lowered = text.lower()
@@ -143,7 +150,18 @@ class XimalayaDownloadManager:
         )
         restricted = status_code in (401, 403) or any(word in lowered for word in permission_words)
         self.last_error = text
-        self.last_error_type = "restricted" if restricted else "download_failed"
+        self.last_error_type = str(error_type or ("restricted" if restricted else "download_failed"))
+
+    @classmethod
+    def _wait_for_mobile_v4_slot(cls):
+        """Pace V4 metadata calls without throttling the audio transfer."""
+        if not cls._ticket_provider_url():
+            return
+        with cls._MOBILE_V4_REQUEST_LOCK:
+            wait = cls._MOBILE_V4_MIN_INTERVAL - (time.monotonic() - cls._MOBILE_V4_LAST_REQUEST_AT)
+            if wait > 0:
+                time.sleep(wait)
+            cls._MOBILE_V4_LAST_REQUEST_AT = time.monotonic()
 
     @classmethod
     def _mobile_quality_profile(cls, quality: str):
@@ -185,7 +203,17 @@ class XimalayaDownloadManager:
             ):
                 return True
             attempts.append(f"{self._MOBILE_QUALITY_PROFILES[level]['name']}: {self.last_error}")
-        self._record_error("移动端 V4 未返回可下载音质；" + "；".join(attempts))
+            # ret=1001 is a request-level throttle/protocol rejection. Trying
+            # three lower qualities immediately repeats the same rejected
+            # request and amplifies the throttle window; let the chapter-level
+            # retry back off and obtain a fresh Bridge ticket instead.
+            if self.last_error_type == "rate_limited":
+                break
+        error_type = self.last_error_type
+        self._record_error(
+            "移动端 V4 未返回可下载音质；" + "；".join(attempts),
+            error_type=error_type,
+        )
         return False
 
     @classmethod
@@ -743,6 +771,7 @@ class XimalayaDownloadManager:
             encrypted_seen = False
             unauthorized_seen = False
             for index, device in enumerate(device_candidates):
+                self._wait_for_mobile_v4_slot()
                 timestamp = int(time.time() * 1000)
                 if not self._refresh_mobile_credentials_from_provider(
                     track_id, level, timestamp, device
@@ -801,10 +830,11 @@ class XimalayaDownloadManager:
                         f"V4 请求协议校验失败（已尝试 device={','.join(attempted_devices)}）；"
                         "请把同一次 baseInfo 的 GET 请求行、Cookie、x-tk 与 User-Agent 一起保存"
                     )
-                protocol_denial = str(data.get("ret")) in {"50", "1001"}
+                ret_code = str(data.get("ret"))
                 self._record_error(
                     f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})",
-                    status_code=401 if protocol_denial else None,
+                    status_code=401 if ret_code == "50" else None,
+                    error_type="rate_limited" if ret_code == "1001" else None,
                 )
                 return False
 

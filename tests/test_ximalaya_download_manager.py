@@ -88,6 +88,19 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             ))
         self.assertEqual([call.args[2] for call in download.call_args_list], [3, 2])
 
+    def test_mobile_auto_quality_stops_downgrade_after_v4_rate_limit(self):
+        manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
+
+        def rate_limited(*_args, **_kwargs):
+            manager._record_error("V4 rejected (ret=1001)", error_type="rate_limited")
+            return False
+
+        with mock.patch.object(manager, "_download_mobile_quality", side_effect=rate_limited) as download:
+            self.assertFalse(manager._download_mobile_best_available("123", "track.m4a", "track"))
+
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(manager.last_error_type, "rate_limited")
+
     def test_ordinary_v4_level_uses_bridge_premium_capture_branch(self):
         manager = XimalayaDownloadManager(mobile_credentials={
             "cookie": "1&*token=123456&mobile-session",
