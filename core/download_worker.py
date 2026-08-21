@@ -221,9 +221,11 @@ class DownloadWorker(QThread):
                 max_workers = max(1, min(64, max_workers, total_chapters))
                 print(f"🎧 喜马拉雅并发下载: {max_workers}（跟随设置，可用 XMLY_DOWNLOAD_THREADS 覆盖）")
             if self.platform == '懒人听书':
-                lrts_workers = int(os.getenv("LRTS_DOWNLOAD_THREADS", "1") or "1")
+                # URL 解析由 lrts_manager 的全局间隔锁 + 自适应节流串行控制（防风控），
+                # 并发线程只并行音频 CDN 下载本身，因此默认 2 路下载是安全的。
+                lrts_workers = int(os.getenv("LRTS_DOWNLOAD_THREADS", "2") or "2")
                 max_workers = max(1, min(3, lrts_workers, total_chapters))
-                print(f"📚 懒人听书使用保守下载模式，并发数: {max_workers}（可用 LRTS_DOWNLOAD_THREADS=1-3 调整）")
+                print(f"📚 懒人听书下载并发: {max_workers}（可用 LRTS_DOWNLOAD_THREADS=1-3 调整；URL 解析自动节流防风控）")
             if self.platform == '番茄畅听':
                 # 每章需要 ffmpeg 解密+转码，CPU 密集；限制并发避免打满 NAS CPU
                 max_workers = max(1, min(2, max_workers, total_chapters))

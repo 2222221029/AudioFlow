@@ -91,7 +91,20 @@ _LRTS_AUDIO_CONCURRENCY = max(1, min(3, _env_int("LRTS_AUDIO_CONCURRENCY", 1)))
 _RATE_SEMAPHORE = threading.Semaphore(_LRTS_AUDIO_CONCURRENCY)
 _RATE_LOCK = threading.Lock()
 _LAST_REQUEST_TIME = 0.0
-_MIN_REQUEST_INTERVAL = max(0.5, _env_float("LRTS_MIN_REQUEST_INTERVAL", 1.2))
+# Fastest allowed gap between audio-path requests.  The server rejects the
+# getListenPath API with status 114 ("download too frequently") when paced too
+# aggressively, so the effective gap is dynamic (see _note_request_ok /
+# _note_rate_limited): start conservative, converge down to this floor while
+# requests succeed, and escalate immediately on a throttle response.
+_MIN_REQUEST_INTERVAL = max(0.3, _env_float("LRTS_MIN_REQUEST_INTERVAL", 0.5))
+_START_REQUEST_INTERVAL = max(_MIN_REQUEST_INTERVAL, _env_float("LRTS_START_REQUEST_INTERVAL", 0.8))
+_MAX_REQUEST_INTERVAL = max(_MIN_REQUEST_INTERVAL, _env_float("LRTS_MAX_REQUEST_INTERVAL", 8.0))
+_RATE_STATE_LOCK = threading.Lock()
+_CURRENT_INTERVAL = _START_REQUEST_INTERVAL
+_CONSECUTIVE_OK = 0
+_RATE_RECOVERY_EVERY = 4       # lower the gap one step after N consecutive successes
+_RATE_INTERVAL_STEP = 0.2      # each recovery step shrinks the gap by this many seconds
+_RATE_ESCALATION = 1.8         # throttle response multiplies the gap by this factor
 _Q_LOCK = threading.Lock()
 _Q_COUNTERS: dict[str, int] = {}
 
@@ -240,11 +253,44 @@ def credentials_from_login(phone: str, imei: str, login_resp: dict) -> dict[str,
     return {k: v for k, v in credential.items() if v is not None and v != ""}
 
 
+def _current_rate_interval() -> float:
+    with _RATE_STATE_LOCK:
+        return _CURRENT_INTERVAL
+
+
+def _note_request_ok() -> None:
+    """A successful audio-path request: slowly recover toward the fast floor.
+
+    Called once per resolved URL (not per HTTP request inside get_play_path),
+    so a quality-downgrade probe inside one chapter counts as a single slot.
+    """
+    global _CONSECUTIVE_OK, _CURRENT_INTERVAL
+    with _RATE_STATE_LOCK:
+        _CONSECUTIVE_OK += 1
+        if _CONSECUTIVE_OK >= _RATE_RECOVERY_EVERY and _CURRENT_INTERVAL > _MIN_REQUEST_INTERVAL:
+            _CURRENT_INTERVAL = max(_MIN_REQUEST_INTERVAL, _CURRENT_INTERVAL - _RATE_INTERVAL_STEP)
+            _CONSECUTIVE_OK = 0
+
+
+def _note_rate_limited() -> None:
+    """Server-side throttle (status 114) or illegal-request response: escalate.
+
+    Immediately widens the gap so the next request waits longer; recovery only
+    happens through repeated successes.  Together with the worker's existing
+    30s/180s cooldowns this keeps the client fast when the server tolerates it
+    and backs off automatically at the first sign of risk control.
+    """
+    global _CONSECUTIVE_OK, _CURRENT_INTERVAL
+    with _RATE_STATE_LOCK:
+        _CONSECUTIVE_OK = 0
+        _CURRENT_INTERVAL = min(_MAX_REQUEST_INTERVAL, _CURRENT_INTERVAL * _RATE_ESCALATION)
+
+
 def _throttle_audio_request():
     global _LAST_REQUEST_TIME
     with _RATE_LOCK:
         now = time.time()
-        wait = _MIN_REQUEST_INTERVAL - (now - _LAST_REQUEST_TIME)
+        wait = _current_rate_interval() - (now - _LAST_REQUEST_TIME)
         if wait > 0:
             time.sleep(wait)
         _LAST_REQUEST_TIME = time.time()
@@ -870,8 +916,10 @@ class LRTSManager:
             print(f"[lrts] getListenPath failed: {exc}")
             return None
         if data.get("status") == 114:
+            _note_rate_limited()
             raise RateLimitError(data.get("msg") or "download too frequently")
         if data.get("status") == 4 and "非法请求" in str(data.get("msg") or ""):
+            _note_rate_limited()
             raise IllegalRequestError(data.get("msg") or "非法请求")
         payload = data.get("data") if isinstance(data.get("data"), dict) else {}
         url = payload.get("path") or data.get("path")
@@ -880,6 +928,9 @@ class LRTSManager:
         if data.get("status") != 0 and not url:
             print(f"[lrts] getListenPath status={data.get('status')} msg={data.get('msg')}")
             return None
+        # A resolved URL (including the status-27 downgrade) means the server
+        # accepted this pacing slot, so the adaptive gap may recover.
+        _note_request_ok()
         global _LRTS_AUDIO_DEBUG_DONE
         if not _LRTS_AUDIO_DEBUG_DONE:
             _LRTS_AUDIO_DEBUG_DONE = True

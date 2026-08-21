@@ -1,6 +1,8 @@
+import time
 import unittest
 from unittest import mock
 
+from core import lrts_manager as lm
 from core.lrts_manager import (
     ALBUM_ENTITY_TYPE,
     APP_HEADERS,
@@ -290,6 +292,105 @@ class LRTSManagerTest(unittest.TestCase):
         self.assertEqual(detail["id"], "1:45151")
         self.assertEqual(detail["title"], "民调局异闻录后传")
         self.assertEqual(detail["episodes"], 413)
+
+
+class LrtsAdaptivePacingTest(unittest.TestCase):
+    """自适应节流：连续成功自动提速，风控响应自动降速并封顶。"""
+
+    def setUp(self):
+        self.saved = (
+            lm._CURRENT_INTERVAL,
+            lm._CONSECUTIVE_OK,
+            lm._MIN_REQUEST_INTERVAL,
+            lm._START_REQUEST_INTERVAL,
+            lm._MAX_REQUEST_INTERVAL,
+            lm._LAST_REQUEST_TIME,
+        )
+        lm._MIN_REQUEST_INTERVAL = 0.5
+        lm._START_REQUEST_INTERVAL = 0.8
+        lm._MAX_REQUEST_INTERVAL = 8.0
+        lm._CURRENT_INTERVAL = 0.8
+        lm._CONSECUTIVE_OK = 0
+        lm._LAST_REQUEST_TIME = 0.0
+
+    def tearDown(self):
+        (
+            lm._CURRENT_INTERVAL,
+            lm._CONSECUTIVE_OK,
+            lm._MIN_REQUEST_INTERVAL,
+            lm._START_REQUEST_INTERVAL,
+            lm._MAX_REQUEST_INTERVAL,
+            lm._LAST_REQUEST_TIME,
+        ) = self.saved
+
+    def test_consecutive_successes_recover_toward_fast_floor(self):
+        for _ in range(4):
+            lm._note_request_ok()
+        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.6, places=6)
+        for _ in range(4):
+            lm._note_request_ok()
+        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.5, places=6)
+        for _ in range(12):
+            lm._note_request_ok()
+        self.assertEqual(lm._CURRENT_INTERVAL, 0.5)  # 到达下限后不再下降
+
+    def test_rate_limit_escalates_and_caps(self):
+        lm._CURRENT_INTERVAL = 0.5
+        lm._note_rate_limited()
+        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.9, places=6)
+        for _ in range(10):
+            lm._note_rate_limited()
+        self.assertEqual(lm._CURRENT_INTERVAL, 8.0)  # 上限封顶
+
+    def test_escalation_resets_recovery_counter(self):
+        for _ in range(3):
+            lm._note_request_ok()
+        lm._note_rate_limited()
+        self.assertEqual(lm._CONSECUTIVE_OK, 0)
+        self.assertGreater(lm._CURRENT_INTERVAL, 0.8)
+        for _ in range(3):
+            lm._note_request_ok()
+        self.assertEqual(lm._CONSECUTIVE_OK, 3)  # 未达到恢复阈值
+        lm._note_request_ok()
+        self.assertLess(lm._CURRENT_INTERVAL, lm._CURRENT_INTERVAL + 1)  # 第 4 次成功开始恢复
+        self.assertEqual(lm._CONSECUTIVE_OK, 0)
+
+    def test_throttle_uses_current_dynamic_interval(self):
+        lm._CURRENT_INTERVAL = 1.0
+        lm._LAST_REQUEST_TIME = time.time() - 10  # 很久没有请求
+        with mock.patch("time.sleep") as sleep:
+            lm._throttle_audio_request()
+            sleep.assert_not_called()
+        with mock.patch("time.sleep") as sleep:
+            lm._throttle_audio_request()  # 刚请求过，必须按动态间隔等待
+            sleep.assert_called_once()
+            self.assertGreaterEqual(sleep.call_args[0][0], 0.9)
+            self.assertLessEqual(sleep.call_args[0][0], 1.0)
+
+    def test_get_audio_url_feeds_pacing_feedback(self):
+        manager = LRTSManager()
+        client = mock.Mock()
+        client.get_play_path.return_value = {
+            "status": 114,
+            "msg": "download too frequently",
+        }
+        manager._client = client
+        chapter_data = {
+            "entity_type": BOOK_ENTITY_TYPE,
+            "entity_id": 46111471,
+            "section": 1,
+            "id": 4611147100000001,
+            "track_id": 1038301964,
+        }
+        before = lm._CURRENT_INTERVAL
+        with (
+            mock.patch("core.lrts_manager._throttle_audio_request"),
+            mock.patch.object(lm, "_note_request_ok") as ok,
+        ):
+            with self.assertRaises(lm.RateLimitError):
+                manager.get_audio_url("1:46111471", "4611147100000001", chapter_data)
+        ok.assert_not_called()
+        self.assertGreater(lm._CURRENT_INTERVAL, before)
 
 
 if __name__ == "__main__":
