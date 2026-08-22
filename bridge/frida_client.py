@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -144,12 +146,16 @@ class XimalayaFridaClient:
         """Ask Android itself to create the launcher Activity on headless ReDroid."""
         self._ensure_connected()
         try:
-            pid = self._device.spawn([
-                "/system/bin/sh", "-c",
-                "exec /system/bin/monkey -p " + self.config.package_name
-                + " -c android.intent.category.LAUNCHER 1",
-            ])
-            self._device.resume(pid)
+            target = os.environ.get("ADB_TARGET", "redroid:5555")
+            base = ["adb", "-s", target, "shell"]
+            subprocess.run(base + ["input", "keyevent", "224"], check=True, timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(base + ["wm", "dismiss-keyguard"], check=False, timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(base + ["monkey", "-p", self.config.package_name, "-c",
+                                    "android.intent.category.LAUNCHER", "1"],
+                           check=True, timeout=10, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
             time.sleep(1.5)
         except Exception as exc:
             raise BridgeUnavailable(f"无法唤醒喜马拉雅 App：{exc}") from exc
