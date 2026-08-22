@@ -229,26 +229,51 @@ function appSendSms(phone) {
                         ));
                     }
                 );
-                loginStage('sms-request-start');
-                // The Activity overload first enters the App's interactive
-                // captcha flow.  On headless ReDroid that flow can block the
-                // Frida JavaScript thread forever, so even our timeout cannot
-                // run.  The official SDK also exposes the direct async send
-                // overload used after that UI preflight; it returns the same
-                // bizKey through the same callback without requiring a visible
-                // FragmentActivity.
+                loginStage('sms-preflight-start');
                 const params = javaMap({mobile: phone, sendType: 1});
-                // The Activity overload performs this private SDK preprocessor
-                // before entering its captcha UI.  It encrypts `mobile` and
-                // adds the `encryptedMobile` field required by the direct send
-                // endpoint, so the headless path must preserve that step.
                 env.request.a.overload('java.util.Map').call(env.request, params);
                 loginStage('sms-params-ready');
+                // Reproduce the official Activity overload up to its captcha
+                // boundary: first fetch the nonce, then invoke the SDK's own
+                // final-request builder with an empty optional fdsOtp.  This
+                // preserves nonce/biz/signature and the correct k.j() endpoint
+                // while avoiding the headless FragmentActivity deadlock.
+                const SendParent = Java.use(
+                    'com.ximalaya.ting.android.loginservice.LoginRequest$11'
+                );
+                const parent = SendParent.$new(
+                    callback, 5, params, env.provider, phone, null
+                );
+                const preflightCallback = loginCallback(
+                    function (value) {
+                        try {
+                            const nonce = asText(value);
+                            if (!nonce) throw new Error('短信预检未返回 nonce');
+                            loginStage('sms-nonce-ready');
+                            const FinalRequest = Java.use(
+                                'com.ximalaya.ting.android.loginservice.LoginRequest$11$1'
+                            );
+                            const finalRequest = FinalRequest.$new(parent, nonce);
+                            finalRequest.b.overload('java.lang.String').call(finalRequest, null);
+                            loginStage('sms-request-returned');
+                        } catch (error) {
+                            loginStage('sms-final-request-exception', error);
+                            reject(error);
+                        }
+                    },
+                    function (code, message) {
+                        loginStage('sms-preflight-error', code);
+                        reject(new Error(
+                            (message ? message + '（预检错误码 ' + code + '）' :
+                                ('短信预检失败：' + code))
+                        ));
+                    }
+                );
                 env.request.a.overload(
-                    'int', 'com.ximalaya.ting.android.loginservice.base.d',
-                    'java.util.Map', 'com.ximalaya.ting.android.loginservice.base.a'
-                ).call(env.request, 5, env.provider, params, callback);
-                loginStage('sms-request-returned');
+                    'com.ximalaya.ting.android.loginservice.base.d',
+                    'com.ximalaya.ting.android.loginservice.base.a'
+                ).call(env.request, env.provider, preflightCallback);
+                loginStage('sms-preflight-returned');
             } catch (error) {
                 loginStage('sms-exception', error);
                 reject(error);
