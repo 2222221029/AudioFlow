@@ -40,6 +40,9 @@ class XimalayaDownloadManager:
     _MOBILE_V4_ANONYMOUS_TICKET = MOBILE_V4_ANONYMOUS_TICKET
     WEB_AUTO_QUALITY = "喜马拉雅网页版接口"
     MOBILE_AUTO_QUALITY = "喜马拉雅移动端接口（自动最高音质）"
+    MOBILE_DOLBY_PREFERRED_QUALITY = "杜比全景声优先（自动降级）"
+    MOBILE_VIVID_PREFERRED_QUALITY = "Audio Vivid 优先（自动降级）"
+    MOBILE_LOSSLESS_PREFERRED_QUALITY = "无损优先（自动降级）"
     # Only serialize/pace the tiny ticket + baseInfo control request.  Media
     # responses are downloaded outside this lock, so CDN throughput and the
     # worker's normal chapter concurrency are unaffected.
@@ -242,6 +245,45 @@ class XimalayaDownloadManager:
             return cls._MOBILE_QUALITY_PROFILES[0]
         return None
 
+    @classmethod
+    def _mobile_preferred_levels(cls, quality: str):
+        """Return the ordered V4 fallback chain for a UI preference mode."""
+        normalized = str(quality or "").strip()
+        return {
+            cls.MOBILE_DOLBY_PREFERRED_QUALITY: (12, 3, 2, 1, 0),
+            cls.MOBILE_VIVID_PREFERRED_QUALITY: (13, 12, 3, 2, 1, 0),
+            cls.MOBILE_LOSSLESS_PREFERRED_QUALITY: (3, 2, 1, 0),
+        }.get(normalized)
+
+    def _download_mobile_quality_chain(self, track_id: str, save_path: str,
+                                       levels, chapter_title: str,
+                                       progress_callback=None) -> bool:
+        """Try quality enums in order, falling back only when one is absent.
+
+        A missing enum is a stable per-track catalog property and should move
+        to the next level immediately.  Network, protocol, entitlement and DRM
+        failures must remain visible to the chapter retry/error handling rather
+        than being hidden by an unrelated low-quality request.
+        """
+        attempts = []
+        for level in levels:
+            self.last_error = ""
+            self.last_error_type = ""
+            if self._download_mobile_quality(
+                track_id, save_path, level, chapter_title,
+                progress_callback=progress_callback,
+            ):
+                return True
+            attempts.append(f"{self._MOBILE_QUALITY_PROFILES[level]['name']}: {self.last_error}")
+            if self.last_error_type != "quality_unavailable":
+                break
+        error_type = self.last_error_type or "quality_unavailable"
+        self._record_error(
+            "移动端 V4 未返回可下载音质；" + "；".join(attempts),
+            error_type=error_type,
+        )
+        return False
+
     def _download_mobile_best_available(self, track_id: str, save_path: str,
                                         chapter_title: str, progress_callback=None) -> bool:
         """Download the highest V4 quality actually available for a track.
@@ -251,28 +293,10 @@ class XimalayaDownloadManager:
         levels 1 and 0.  An explicit lossless selection remains strict; only
         this auto mode is allowed to step down.
         """
-        attempts = []
-        for level in (3, 2, 1, 0):
-            self.last_error = ""
-            self.last_error_type = ""
-            if self._download_mobile_quality(
-                track_id, save_path, level, chapter_title,
-                progress_callback=progress_callback,
-            ):
-                return True
-            attempts.append(f"{self._MOBILE_QUALITY_PROFILES[level]['name']}: {self.last_error}")
-            # ret=1001 is a request-level throttle/protocol rejection. Trying
-            # three lower qualities immediately repeats the same rejected
-            # request and amplifies the throttle window; let the chapter-level
-            # retry back off and obtain a fresh Bridge ticket instead.
-            if self.last_error_type == "rate_limited":
-                break
-        error_type = self.last_error_type
-        self._record_error(
-            "移动端 V4 未返回可下载音质；" + "；".join(attempts),
-            error_type=error_type,
+        return self._download_mobile_quality_chain(
+            track_id, save_path, (3, 2, 1, 0), chapter_title,
+            progress_callback=progress_callback,
         )
-        return False
 
     @classmethod
     def _is_lossless_quality(cls, quality: str) -> bool:
@@ -961,11 +985,14 @@ class XimalayaDownloadManager:
             if not candidate:
                 if unauthorized_seen:
                     reason = f"当前喜马拉雅账号没有该音频的{profile['name']}下载权限"
+                    error_type = "restricted"
                 elif encrypted_seen:
                     reason = f"移动端只返回了受保护的{profile['name']}地址，项目不会绕过加密或 DRM"
+                    error_type = "restricted"
                 else:
                     reason = f"该音频未返回可下载的{profile['name']}直链（不会回退到低码率）"
-                self._record_error(reason)
+                    error_type = "quality_unavailable"
+                self._record_error(reason, error_type=error_type)
                 return False
 
             audio_url, expected_size, quality_label = candidate
@@ -1287,6 +1314,20 @@ class XimalayaDownloadManager:
             print("🎼 使用喜马拉雅移动端 V4，按无损 → 128/96K → 64K → 24K 自动选择")
             return self._download_mobile_best_available(
                 track_id, save_path, chapter_title, progress_callback=progress_callback
+            )
+
+        preferred_levels = self._mobile_preferred_levels(quality)
+        if preferred_levels:
+            names = " → ".join(
+                self._MOBILE_QUALITY_PROFILES[level]["name"] for level in preferred_levels
+            )
+            print(f"🎼 使用喜马拉雅移动端 V4 音质优先链：{names}")
+            return self._download_mobile_quality_chain(
+                track_id,
+                save_path,
+                preferred_levels,
+                chapter_title,
+                progress_callback=progress_callback,
             )
 
         if str(quality or "").strip() == self.WEB_AUTO_QUALITY:

@@ -88,7 +88,7 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertEqual(worker._ximalaya_extension_for_quality("Audio Vivid 菁彩声"), ".m4a")
         # 网页版接口实际走 M4A 直链下载，文件后缀必须是 .m4a（订阅下载的默认音质）。
         self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅网页版接口"), ".m4a")
-        self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅移动端接口（自动最高音质）"), ".flac")
+        self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅移动端接口（自动最高音质）"), ".m4a")
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("DOLBY_ATMOS"))
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("AUDIO_VIVID"))
         for quality in (
@@ -99,6 +99,9 @@ class DownloadWorkerTest(unittest.TestCase):
             "M4A 128K",
             "M4A 64K",
             "M4A 24K",
+            "杜比全景声优先（自动降级）",
+            "Audio Vivid 优先（自动降级）",
+            "无损优先（自动降级）",
         ):
             self.assertTrue(worker._is_ximalaya_mobile_v4_quality(quality), quality)
         self.assertFalse(worker._is_ximalaya_mobile_v4_quality("M4A 96K"))
@@ -119,6 +122,10 @@ class DownloadWorkerTest(unittest.TestCase):
         )
         self.assertEqual(
             worker._ximalaya_marked_chapter_title("003 失落", "M4A 128K"),
+            "003 失落",
+        )
+        self.assertEqual(
+            worker._ximalaya_marked_chapter_title("003 失落", "杜比全景声优先（自动降级）"),
             "003 失落",
         )
         self.assertEqual(
@@ -192,6 +199,39 @@ class DownloadWorkerTest(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(download.call_count, 1)
+
+    def test_unavailable_exact_quality_is_not_retried(self):
+        worker = self.make_worker()
+        worker.platform = "喜马拉雅"
+        worker.quality = "杜比全景声"
+        chapter = {"id": "1", "title": "第一章"}
+
+        def unavailable(item, _index):
+            item["_error"] = "该音频没有杜比全景声"
+            item["_error_type"] = "quality_unavailable"
+            return False
+
+        with mock.patch.object(worker, "_download_single_chapter", side_effect=unavailable) as download:
+            result = worker._download_chapter_with_retry(chapter, 1)
+
+        self.assertFalse(result)
+        self.assertEqual(download.call_count, 1)
+
+    def test_dynamic_quality_result_is_renamed_with_actual_marker(self):
+        worker = self.make_worker()
+        with tempfile.TemporaryDirectory() as tmp:
+            original = os.path.join(tmp, "0003-003 失落.wav")
+            with open(original, "wb") as output:
+                output.write(b"RIFF" + b"audio" * 300)
+
+            final_path = worker._finalize_ximalaya_download_path(original, {
+                "source": "mobile_v4_lossless",
+                "path": original,
+            })
+
+            self.assertEqual(os.path.basename(final_path), "0003-003 失落 [无损].wav")
+            self.assertTrue(os.path.exists(final_path))
+            self.assertFalse(os.path.exists(original))
 
     def test_v4_rate_limit_uses_longer_backoff_and_retries(self):
         worker = self.make_worker()

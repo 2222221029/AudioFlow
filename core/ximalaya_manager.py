@@ -10,6 +10,7 @@ import time
 import base64
 import json
 import urllib.parse
+import threading
 from typing import List, Dict, Optional, Tuple
 from .time_api import get_timestamp_ms_str
 
@@ -23,6 +24,7 @@ class XimalayaManager:
         self.api_url = "https://www.ximalaya.com"
         self.cookie_string = ""
         self.mobile_credentials = {}
+        self._download_result_local = threading.local()
         self.session = requests.Session()
         self.user_id = None
         self.user_token = None
@@ -1345,6 +1347,15 @@ class XimalayaManager:
                 self.last_download_expected_size = getattr(downloader, "last_download_expected_size", 0)
                 self.last_download_quality_label = getattr(downloader, "last_download_quality_label", "")
                 self.last_download_path = getattr(downloader, "last_download_path", "")
+                self._download_result_local.value = {
+                    "error": self.last_download_error,
+                    "error_type": self.last_download_error_type,
+                    "source": self.last_download_source,
+                    "size": self.last_download_size,
+                    "expected_size": self.last_download_expected_size,
+                    "quality_label": self.last_download_quality_label,
+                    "path": self.last_download_path,
+                }
                 return success
             
             # 否则使用原有下载逻辑
@@ -1390,6 +1401,10 @@ class XimalayaManager:
             print(f"❌ 下载异常: {e}")
             return False
     
+    def get_thread_download_result(self) -> Dict:
+        """Return the current worker thread's most recent download metadata."""
+        return dict(getattr(self._download_result_local, "value", {}) or {})
+
     def _format_duration(self, seconds: int) -> str:
         """格式化时长"""
         if seconds <= 0:

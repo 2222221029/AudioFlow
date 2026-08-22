@@ -102,13 +102,52 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
 
     def test_mobile_auto_quality_steps_down_until_available(self):
         manager = XimalayaDownloadManager()
+        def unavailable_then_success(*_args, **_kwargs):
+            if not getattr(unavailable_then_success, "called", False):
+                unavailable_then_success.called = True
+                manager._record_error("quality absent", error_type="quality_unavailable")
+                return False
+            return True
         with mock.patch.object(
-            manager, "_download_mobile_quality", side_effect=[False, True]
+            manager, "_download_mobile_quality", side_effect=unavailable_then_success
         ) as download:
             self.assertTrue(manager._download_mobile_best_available(
                 "123", "book.flac", "chapter"
             ))
         self.assertEqual([call.args[2] for call in download.call_args_list], [3, 2])
+
+    def test_mobile_preferred_quality_chains_are_ordered(self):
+        manager = XimalayaDownloadManager()
+        self.assertEqual(
+            manager._mobile_preferred_levels("杜比全景声优先（自动降级）"),
+            (12, 3, 2, 1, 0),
+        )
+        self.assertEqual(
+            manager._mobile_preferred_levels("Audio Vivid 优先（自动降级）"),
+            (13, 12, 3, 2, 1, 0),
+        )
+        self.assertEqual(
+            manager._mobile_preferred_levels("无损优先（自动降级）"),
+            (3, 2, 1, 0),
+        )
+
+    def test_dolby_preferred_falls_back_to_lossless_without_chapter_retry(self):
+        manager = XimalayaDownloadManager()
+
+        def download(_track_id, _save_path, level, _title, progress_callback=None):
+            del progress_callback
+            if level == 12:
+                manager._record_error("Dolby absent", error_type="quality_unavailable")
+                return False
+            return level == 3
+
+        with mock.patch.object(manager, "_download_mobile_quality", side_effect=download) as mocked:
+            ok = manager.download_audio_by_quality(
+                "123", "杜比全景声优先（自动降级）", "track.m4a"
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual([call.args[2] for call in mocked.call_args_list], [12, 3])
 
     def test_mobile_auto_quality_stops_downgrade_after_v4_rate_limit(self):
         manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
@@ -304,6 +343,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(get.call_count, 1)
         self.assertIn("不会回退", manager.last_error)
+        self.assertEqual(manager.last_error_type, "quality_unavailable")
 
     def test_dolby_rejects_plain_aac_disguised_as_level_twelve(self):
         body = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom" + b"mp4a" + (b"audio" * 1000)

@@ -11,15 +11,21 @@ const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质�
 const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
 const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: XMLY_MOBILE_INTERFACE, label: '自动最佳（无损 → 128/64/24K）'},
-  {value: '杜比全景声', label: '杜比全景声（E-AC-3 / Atmos）'},
-  {value: 'Audio Vivid 菁彩声', label: 'Audio Vivid 菁彩声'},
-  {value: '无损真人录制', label: '无损音质'},
+  {value: '杜比全景声优先（自动降级）', label: '杜比全景声优先（推荐）'},
+  {value: 'Audio Vivid 优先（自动降级）', label: 'Audio Vivid 优先（推荐）'},
+  {value: '无损优先（自动降级）', label: '无损优先（推荐）'},
+  {value: '杜比全景声', label: '仅杜比全景声（严格）'},
+  {value: 'Audio Vivid 菁彩声', label: '仅 Audio Vivid（严格）'},
+  {value: '无损真人录制', label: '仅无损音质（严格）'},
   {value: 'M4A 128K', label: 'M4A 128/96K（level 2）'},
   {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
   {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
 ];
 const XMLY_MOBILE_QUALITY_HELP = {
   [XMLY_MOBILE_INTERFACE]: '按无损、128/96K、64K、24K 的顺序选择该曲目可用的最高传统音质；不会自动改选空间音频。',
+  '杜比全景声优先（自动降级）': '每集按杜比全景声 → 无损 → 128/96K → 64K → 24K 下载。专辑中没有全景声的单集会立即降级，文件名按实际音质标记。',
+  'Audio Vivid 优先（自动降级）': '每集按 Audio Vivid → 杜比全景声 → 无损 → 128/96K → 64K → 24K 下载。文件名按实际音质标记。',
+  '无损优先（自动降级）': '每集按无损 → 128/96K → 64K → 24K 下载。没有无损的单集会立即降级。',
   '杜比全景声': '严格请求 level 12，不可用时不会降级。文件为 E-AC-3 M4A，Windows 默认播放器可能不支持，请使用兼容播放器。',
   'Audio Vivid 菁彩声': '严格请求 level 13，不可用时不会降级。需要支持 Audio Vivid / AVS3-P3 的播放器。',
   '无损真人录制': '严格请求 level 3，不可用时不会降级；实际文件可能是 WAV、FLAC 或 M4A。',

@@ -74,6 +74,14 @@ class DownloadWorker(QThread):
         text = str(quality or '').strip().upper().replace('_', ' ')
         return any(marker in text for marker in ('DOLBY', 'ATMOS', '杜比', '全景声', 'AUDIO VIVID', '菁彩声'))
 
+    @staticmethod
+    def _is_ximalaya_preferred_quality(quality):
+        return str(quality or '').strip() in {
+            '杜比全景声优先（自动降级）',
+            'Audio Vivid 优先（自动降级）',
+            '无损优先（自动降级）',
+        }
+
     @classmethod
     def _is_ximalaya_mobile_premium_quality(cls, quality):
         text = str(quality or '').strip()
@@ -112,9 +120,9 @@ class DownloadWorker(QThread):
     @classmethod
     def _ximalaya_extension_for_quality(cls, quality):
         text = str(quality or '').strip()
-        if text == '喜马拉雅移动端接口（自动最高音质）':
+        if text == '喜马拉雅移动端接口（自动最高音质）' or cls._is_ximalaya_preferred_quality(quality):
             # The downloader renames this placeholder to the detected format.
-            return '.flac'
+            return '.m4a'
         if text == '喜马拉雅网页版接口':
             # The web endpoint resolves to the M4A direct-download API
             # (XimalayaDownloadManager maps this label to M4A_96K), so the
@@ -129,6 +137,10 @@ class DownloadWorker(QThread):
     @classmethod
     def _ximalaya_quality_filename_marker(cls, quality):
         """Return a short user-facing marker for special output formats."""
+        # Preference modes do not know their final level until baseInfo has
+        # selected a fallback.  They are marked after the successful download.
+        if cls._is_ximalaya_preferred_quality(quality):
+            return ''
         normalized = str(quality or '').strip().upper().replace('_', ' ')
         if 'AUDIO VIVID' in normalized or 'VIVID' in normalized or '菁彩声' in normalized:
             return '[Audio Vivid]'
@@ -148,6 +160,59 @@ class DownloadWorker(QThread):
         # the marker rather than truncating the marker itself.
         max_base_length = max(1, 200 - len(marker) - 1)
         return f"{text[:max_base_length].rstrip()} {marker}"
+
+    @staticmethod
+    def _ximalaya_actual_quality_marker(source):
+        source = str(source or '').strip()
+        return {
+            'mobile_v4_level_13': '[Audio Vivid]',
+            'mobile_v4_level_12': '[杜比全景声]',
+            'mobile_v4_lossless': '[无损]',
+        }.get(source, '')
+
+    @classmethod
+    def _finalize_ximalaya_download_path(cls, requested_path, result):
+        """Rename dynamic V4 output using its actual format/quality marker."""
+        actual_path = str((result or {}).get('path') or requested_path)
+        if not actual_path or not os.path.exists(actual_path):
+            return actual_path
+        marker = cls._ximalaya_actual_quality_marker((result or {}).get('source'))
+        actual = Path(actual_path)
+        base_stem = actual.stem
+        for known in ('[Audio Vivid]', '[杜比全景声]', '[无损]'):
+            suffix = f' {known}'
+            if base_stem.endswith(suffix):
+                base_stem = base_stem[:-len(suffix)].rstrip()
+                break
+        desired_stem = f'{base_stem} {marker}' if marker else base_stem
+        desired = actual.with_name(f'{desired_stem}{actual.suffix}')
+        if desired == actual:
+            return str(actual)
+        if desired.exists() and desired.stat().st_size > 1024:
+            actual.unlink()
+            return str(desired)
+        os.replace(actual, desired)
+        return str(desired)
+
+    @classmethod
+    def _find_existing_ximalaya_output(cls, file_path, quality):
+        """Find an existing dynamic V4 result across fallback markers/formats."""
+        if not (
+            cls._is_ximalaya_lossless_quality(quality)
+            or cls._is_ximalaya_preferred_quality(quality)
+            or str(quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）'
+        ):
+            return None
+        stem = str(Path(file_path).with_suffix(''))
+        stems = [stem]
+        if cls._is_ximalaya_preferred_quality(quality) or str(quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）':
+            stems.extend(f'{stem} {marker}' for marker in ('[Audio Vivid]', '[杜比全景声]', '[无损]'))
+        for candidate_stem in stems:
+            for extension in ('.wav', '.flac', '.m4a', '.aac', '.mp3', '.ogg', '.caf'):
+                candidate = candidate_stem + extension
+                if os.path.exists(candidate):
+                    return candidate
+        return None
 
     def _setting_enabled(self, key, default=False):
         value = self.cookie_manager.get_cookie(key)
@@ -494,8 +559,8 @@ class DownloadWorker(QThread):
             # Account entitlement and structurally invalid credentials cannot
             # recover by retrying the same chapter with the same saved bundle.
             # Stop immediately instead of issuing duplicate premium requests.
-            if str(chapter.get('_error_type') or '') == 'restricted':
-                print(f"   ⛔ 章节 {chapter_index} 为凭证/权限错误，不再自动重试")
+            if str(chapter.get('_error_type') or '') in {'restricted', 'quality_unavailable'}:
+                print(f"   ⛔ 章节 {chapter_index} 为凭证/权限或音质不可用错误，不再自动重试")
                 return False
 
             if self._is_stopped:
@@ -759,22 +824,10 @@ class DownloadWorker(QThread):
             print(f"📖 [{actual_order}] {chapter_title}")
 
             # ---- 文件已存在检查 ----
-            if self.platform == '喜马拉雅' and (
-                self._is_ximalaya_lossless_quality(self.quality)
-                or str(self.quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）'
-            ):
-                stem, _ = os.path.splitext(file_path)
-                existing_lossless = next(
-                    (
-                        candidate
-                        for extension in ('.wav', '.flac', '.m4a', '.aac', '.mp3', '.ogg', '.caf')
-                        for candidate in (stem + extension,)
-                        if os.path.exists(candidate)
-                    ),
-                    None,
-                )
-                if existing_lossless:
-                    file_path = existing_lossless
+            if self.platform == '喜马拉雅':
+                existing_output = self._find_existing_ximalaya_output(file_path, self.quality)
+                if existing_output:
+                    file_path = existing_output
             if os.path.exists(file_path):
                 file_size = os.path.getsize(file_path)
                 if file_size > 1024:
@@ -956,6 +1009,17 @@ class DownloadWorker(QThread):
                     success = download_manager.download_audio(
                         str(chapter_id), file_path, self.quality, progress_callback=progress_callback
                     )
+                    if success:
+                        if hasattr(download_manager, 'get_thread_download_result'):
+                            result = download_manager.get_thread_download_result()
+                        else:
+                            result = {
+                                'source': getattr(download_manager, 'last_download_source', ''),
+                                'path': getattr(download_manager, 'last_download_path', ''),
+                            }
+                        final_path = self._finalize_ximalaya_download_path(file_path, result)
+                        if final_path and final_path != file_path:
+                            print(f"🏷️ 按实际音质保存为: {os.path.basename(final_path)}")
                     if not success and audio_url:
                         if self._ximalaya_skip_url_fallback(self.quality):
                             # The web-endpoint label already resolves to the
@@ -972,8 +1036,20 @@ class DownloadWorker(QThread):
                         # Preserve the downloader's explicit entitlement result.
                         # Subscription logic must not infer account permission
                         # merely from chapter metadata such as isVip.
-                        error = str(getattr(download_manager, "last_download_error", "") or "").strip()
-                        error_type = str(getattr(download_manager, "last_download_error_type", "") or "").strip()
+                        if hasattr(download_manager, 'get_thread_download_result'):
+                            failure_result = download_manager.get_thread_download_result()
+                        else:
+                            failure_result = {}
+                        error = str(
+                            failure_result.get('error')
+                            or getattr(download_manager, "last_download_error", "")
+                            or ""
+                        ).strip()
+                        error_type = str(
+                            failure_result.get('error_type')
+                            or getattr(download_manager, "last_download_error_type", "")
+                            or ""
+                        ).strip()
                         if error:
                             chapter['_error'] = error[:200]
                         if error_type:

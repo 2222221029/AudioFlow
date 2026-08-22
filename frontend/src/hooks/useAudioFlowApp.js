@@ -71,6 +71,9 @@ const XMLY_DOWNLOAD_QUALITIES = new Set([
   '无损真人录制',
   '杜比全景声',
   'Audio Vivid 菁彩声',
+  '杜比全景声优先（自动降级）',
+  'Audio Vivid 优先（自动降级）',
+  '无损优先（自动降级）',
 ]);
 
 function ximalayaDownloadQuality(value) {
