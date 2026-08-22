@@ -11,6 +11,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from core.ximalaya_download_manager import XimalayaDownloadManager
+from core.ximalaya_local_ticket import LocalTicketError
 
 
 class FakeResponse:
@@ -138,6 +139,42 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
                 "123", 2, 1786632464075, "android"
             ))
         self.assertEqual(post.call_args.kwargs["json"]["quality_level"], 3)
+
+    def test_local_ticket_mode_does_not_call_bridge(self):
+        manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "local",
+            "XIMALAYA_TICKET_PROVIDER_URL": "http://android-signer/ticket",
+        }), mock.patch(
+            "core.ximalaya_download_manager.generate_mobile_ticket",
+            return_value="fresh-local-ticket",
+        ), mock.patch("core.ximalaya_download_manager.requests.post") as post:
+            self.assertTrue(manager._refresh_mobile_credentials_from_provider(
+                "123", 3, 1786632464075, "android"
+            ))
+
+        self.assertEqual(manager._mobile_ticket(), "fresh-local-ticket")
+        post.assert_not_called()
+
+    def test_auto_ticket_mode_falls_back_to_bridge_when_local_session_is_unusable(self):
+        manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"x_tk": "fresh-bridge-ticket"}
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "auto",
+            "XIMALAYA_TICKET_PROVIDER_URL": "http://android-signer/ticket",
+        }), mock.patch(
+            "core.ximalaya_download_manager.generate_mobile_ticket",
+            side_effect=LocalTicketError("session expired"),
+        ), mock.patch(
+            "core.ximalaya_download_manager.requests.post", return_value=response
+        ) as post:
+            self.assertTrue(manager._refresh_mobile_credentials_from_provider(
+                "123", 3, 1786632464075, "android"
+            ))
+
+        self.assertEqual(manager._mobile_ticket(), "fresh-bridge-ticket")
+        post.assert_called_once()
 
     def test_dynamic_ticket_provider_is_called_for_each_refresh(self):
         manager = XimalayaDownloadManager(mobile_credentials={

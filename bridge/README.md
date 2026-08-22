@@ -4,6 +4,19 @@ Bridge 使用安卓模拟器内已登录的喜马拉雅 App 为 AudioFlow 按请
 
 飞牛 NAS 可以使用仓库根目录的 `docker-compose.redroid.yml`，将 ReDroid、Frida 和 Bridge 全部运行在 NAS 上。首次部署仍需安装仓库内指定版本的喜马拉雅 APK；App 数据保存在 Compose 目录的 `data`，容器重建后无需重复安装。
 
+## 实验性本地 Ticket 模式
+
+AudioFlow 可以在已经保存过一套完整、仍有效的移动端登录请求头后，直接用纯
+Python 为 V4 `playTrack/play` 请求生成动态 Ticket。该模式只影响喜马拉雅移动端
+V4，不影响网页版下载或其他平台：
+
+- `XIMALAYA_TICKET_MODE=bridge`（默认）：保持当前 ReDroid + Bridge 行为。
+- `XIMALAYA_TICKET_MODE=local`：只使用本地 Ticket；会话失效时明确报错。
+- `XIMALAYA_TICKET_MODE=auto`：优先本地生成；生成失败或 V4 拒绝时自动回退 Bridge。
+
+首次登录、登录会话过期以及平台要求重新验证时仍需真实 App/Bridge。确认 `auto`
+模式长期稳定后，可以停止模拟器；建议保留原 Compose 配置，以便随时恢复。
+
 ## 首次使用
 
 1. 准备一个能够开启 Root 的安卓模拟器，并在设置中开启 Root/ADB。

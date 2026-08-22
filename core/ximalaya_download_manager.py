@@ -23,6 +23,7 @@ from .ximalaya_credentials import (
     normalize_ximalaya_mobile_credentials,
     ximalaya_mobile_credential_status,
 )
+from .ximalaya_local_ticket import LocalTicketError, generate_mobile_ticket
 
 
 class XimalayaDownloadManager:
@@ -153,6 +154,7 @@ class XimalayaDownloadManager:
         self.last_download_expected_size = 0
         self.last_download_quality_label = ""
         self.last_download_path = ""
+        self._last_mobile_ticket_source = "saved"
 
     def _record_error(self, message, status_code=None, error_type=None):
         """Expose a stable failure reason to subscription result handling."""
@@ -297,7 +299,8 @@ class XimalayaDownloadManager:
         return str(os.environ.get("XIMALAYA_TICKET_PROVIDER_URL") or "").strip()
 
     def _refresh_mobile_credentials_from_provider(
-        self, track_id: str, level: int, timestamp: int, device: str
+        self, track_id: str, level: int, timestamp: int, device: str,
+        force_bridge: bool = False,
     ) -> bool:
         """Fetch a fresh App request bundle from an Android-side signer.
 
@@ -307,6 +310,26 @@ class XimalayaDownloadManager:
         cache.  The provider may return either an allow-listed credential
         mapping or ``{"headers": {...}}``.
         """
+        ticket_mode = str(os.environ.get("XIMALAYA_TICKET_MODE") or "bridge").strip().lower()
+        if ticket_mode not in {"bridge", "local", "auto"}:
+            ticket_mode = "bridge"
+        if force_bridge:
+            ticket_mode = "bridge"
+        if ticket_mode in {"local", "auto"}:
+            try:
+                fresh_ticket = generate_mobile_ticket(
+                    self.mobile_credentials,
+                    business="playTrack",
+                    scene="play",
+                )
+                self.mobile_credentials["x_tk"] = fresh_ticket
+                self._last_mobile_ticket_source = "local"
+                return True
+            except LocalTicketError as exc:
+                if ticket_mode == "local":
+                    self._record_error(f"喜马拉雅本地 Ticket 生成失败：{exc}")
+                    return False
+
         provider_url = self._ticket_provider_url()
         if not provider_url:
             return self._has_mobile_credentials()
@@ -356,6 +379,7 @@ class XimalayaDownloadManager:
                 status = ximalaya_mobile_credential_status(self.mobile_credentials)
                 self._record_error(f"喜马拉雅动态取票服务返回的凭证不完整：{status['message']}")
                 return False
+            self._last_mobile_ticket_source = "bridge"
             return True
         except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
             self._record_error(f"喜马拉雅动态取票服务失败：{exc}")
@@ -854,6 +878,31 @@ class XimalayaDownloadManager:
                 if not isinstance(data, dict):
                     self._record_error(f"喜马拉雅{profile['name']}接口返回格式无效")
                     return False
+                if (
+                    str(data.get("ret")) in {"50", "1001"}
+                    and getattr(self, "_last_mobile_ticket_source", "") == "local"
+                    and str(os.environ.get("XIMALAYA_TICKET_MODE") or "bridge").strip().lower() == "auto"
+                    and self._ticket_provider_url()
+                ):
+                    print("   ♻️ 本地 Ticket 被 V4 拒绝，自动回退现有 Bridge 重新取票")
+                    timestamp = int(time.time() * 1000)
+                    if not self._refresh_mobile_credentials_from_provider(
+                        track_id, level, timestamp, device, force_bridge=True
+                    ):
+                        return False
+                    headers = self._mobile_v4_headers()
+                    api_url = self._mobile_v4_request_url(
+                        track_id, timestamp, device, level,
+                        host=self.mobile_credentials.get("host", ""),
+                    )
+                    info_response = self.session.get(api_url, headers=headers, timeout=20)
+                    if info_response.status_code != 200:
+                        self._record_error(
+                            f"喜马拉雅{profile['name']}Bridge 回退接口 HTTP {info_response.status_code}",
+                            info_response.status_code,
+                        )
+                        return False
+                    data = info_response.json()
                 if str(data.get("ret")) == "1001" and index + 1 < len(device_candidates):
                     print(f"   ♻️ V4 device={device} 签名分支被拒绝，尝试 {device_candidates[index + 1]}")
                     continue
