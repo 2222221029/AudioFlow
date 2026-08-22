@@ -1014,7 +1014,7 @@ function XimalayaMobileLoginModal({actions, onDone, onClose}) {
         </div>
         <input className="field-input lrts-input" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 8))} placeholder="短信验证码" inputMode="numeric" autoComplete="one-time-code" />
         {error && <div className="field-hint err">{error}</div>}
-        <div className="lrts-note">验证码由官方喜马拉雅 App 发送和校验。登录成功后自动保存 Cookie、User-Agent 和动态 Ticket 所需账号信息。</div>
+        <div className="lrts-note">验证码由官方喜马拉雅 App 发送和校验。若账号触发人机验证，必须先在 App 中完成验证；界面明确显示“验证码已发送”前，短信尚未发出。登录成功后自动保存 Cookie、User-Agent 和动态 Ticket 所需账号信息。</div>
         <div className="modal-actions">
           <button className="btn btn-primary btn-sm" disabled={loggingIn || phone.length !== 11 || code.length < 4} onClick={login}>
             <BusyIcon busy={loggingIn} icon="i-check" />登录并保存

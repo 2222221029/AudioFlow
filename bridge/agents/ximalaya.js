@@ -150,13 +150,15 @@ function loginEnvironment() {
 }
 
 let loginCallbackSequence = 0;
-function loginTimeout(promise, action) {
+function loginTimeout(promise, action, timeoutMessage) {
     return new Promise(function (resolve, reject) {
         let settled = false;
         const timer = setTimeout(function () {
             if (!settled) {
                 settled = true;
-                reject(new Error(action + '超时，请确认喜马拉雅 App 已停留在可见页面后重试'));
+                reject(new Error(timeoutMessage || (
+                    action + '超时，请确认喜马拉雅 App 已停留在可见页面后重试'
+                )));
             }
         }, 15000);
         promise.then(function (value) {
@@ -273,7 +275,8 @@ function appSendSms(phone) {
                 reject(error);
             }
         });
-    }), '发送验证码');
+    }), '发送验证码',
+    '验证码尚未发送：喜马拉雅 App 正在等待人机验证，请先在 App 中完成验证后重试');
 }
 
 function appSmsLogin(phone, code) {

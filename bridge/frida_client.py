@@ -186,24 +186,28 @@ class XimalayaFridaClient:
             raise BridgeUnavailable(f"无法唤醒喜马拉雅 App：{exc}") from exc
 
     def _login_rpc(self, method: str, *args: str) -> Dict[str, Any]:
+        """Run one official login action without transparent retries.
+
+        SMS send and verification are non-idempotent.  Retrying them after an
+        agent-side timeout can request multiple codes or invalidate the code the
+        user just received.  An RPC application error also does not mean the
+        Frida transport is broken, so keep the attached script and its login
+        state available for status/diagnostics.
+        """
         with self._lock:
-            for attempt in range(2):
-                try:
-                    self._ensure_connected()
-                    self._wake_login_activity()
-                    result = getattr(self._script.exports_sync, method)(*args)
-                    if not isinstance(result, dict):
-                        raise BridgeUnavailable("喜马拉雅 App 登录服务返回格式异常")
-                    if not result.get("ok"):
-                        raise BridgeUnavailable(str(result.get("error") or "喜马拉雅 App 登录失败"))
-                    return result
-                except Exception as exc:
-                    self._clear(str(exc))
-                    if attempt == 1:
-                        if isinstance(exc, BridgeUnavailable):
-                            raise
-                        raise BridgeUnavailable(f"喜马拉雅 App 登录失败：{exc}") from exc
-        raise BridgeUnavailable("喜马拉雅 App 登录失败")
+            try:
+                self._ensure_connected()
+                self._wake_login_activity()
+                result = getattr(self._script.exports_sync, method)(*args)
+                if not isinstance(result, dict):
+                    raise BridgeUnavailable("喜马拉雅 App 登录服务返回格式异常")
+                if not result.get("ok"):
+                    raise BridgeUnavailable(str(result.get("error") or "喜马拉雅 App 登录失败"))
+                return result
+            except BridgeUnavailable:
+                raise
+            except Exception as exc:
+                raise BridgeUnavailable(f"喜马拉雅 App 登录失败：{exc}") from exc
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
