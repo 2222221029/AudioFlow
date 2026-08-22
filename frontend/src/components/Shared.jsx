@@ -7,6 +7,27 @@ import {COOKIE_PLATFORMS, NO_COOKIE_KEYS, PERSONAL_FEATURES, SEARCH_PLATFORMS} f
 import {applyTheme, persistTheme, savedTheme, THEMES} from '../utils/themes.js';
 import {api} from '../services/api.js';
 
+const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
+const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
+const XMLY_MOBILE_QUALITY_OPTIONS = [
+  {value: XMLY_MOBILE_INTERFACE, label: '自动最佳（无损 → 128/64/24K）'},
+  {value: '杜比全景声', label: '杜比全景声（E-AC-3 / Atmos）'},
+  {value: 'Audio Vivid 菁彩声', label: 'Audio Vivid 菁彩声'},
+  {value: '无损真人录制', label: '无损音质'},
+  {value: 'M4A 128K', label: 'M4A 128/96K（level 2）'},
+  {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
+  {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
+];
+const XMLY_MOBILE_QUALITY_HELP = {
+  [XMLY_MOBILE_INTERFACE]: '按无损、128/96K、64K、24K 的顺序选择该曲目可用的最高传统音质；不会自动改选空间音频。',
+  '杜比全景声': '严格请求 level 12，不可用时不会降级。文件为 E-AC-3 M4A，Windows 默认播放器可能不支持，请使用兼容播放器。',
+  'Audio Vivid 菁彩声': '严格请求 level 13，不可用时不会降级。需要支持 Audio Vivid / AVS3-P3 的播放器。',
+  '无损真人录制': '严格请求 level 3，不可用时不会降级；实际文件可能是 WAV、FLAC 或 M4A。',
+  'M4A 128K': '严格请求移动端 level 2；部分旧资源可能标记为约 96K。',
+  'M4A 64K': '严格请求移动端 level 1。',
+  'M4A 24K': '严格请求移动端 level 0。',
+};
+
 export function Toast({toast}) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -226,7 +247,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, ximalayaInterface, setXimalayaInterface, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, ximalayaInterface, setXimalayaInterface, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
   const loading = busy.album || busy.voice;
@@ -251,12 +272,22 @@ export function AlbumDetail({app, mobile = false}) {
         <div className={mobile ? 'detail-quality-bar' : 'quality-bar'}>
           <label htmlFor="xmlyDownloadInterface">下载接口</label>
           <select id="xmlyDownloadInterface" value={ximalayaInterface} onChange={(event) => setXimalayaInterface(event.target.value)}>
-            <option value="喜马拉雅移动端接口（自动最高音质）">移动端 V4（自动最高音质）</option>
-            <option value="喜马拉雅网页版接口">网页版接口（兼容模式）</option>
+            <option value={XMLY_MOBILE_INTERFACE}>移动端 V4</option>
+            <option value={XMLY_WEB_INTERFACE}>网页版接口（兼容模式）</option>
           </select>
-          <span>{ximalayaInterface === '喜马拉雅网页版接口'
-            ? '使用原网页版下载链路，不提供音质选项，由网页接口决定可用格式。'
-            : '使用 App 登录态，从无损开始，按 128/96K、64K、24K 的顺序自动选择该曲目可用的最高音质。'}</span>
+          {ximalayaInterface !== XMLY_WEB_INTERFACE && (
+            <>
+              <label htmlFor="xmlyDownloadQuality">移动端音质</label>
+              <select id="xmlyDownloadQuality" value={downloadQuality} onChange={(event) => setDownloadQuality(event.target.value)}>
+                {XMLY_MOBILE_QUALITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </>
+          )}
+          <span>{ximalayaInterface === XMLY_WEB_INTERFACE
+            ? '使用原网页版下载链路，不提供音质选项，由网页接口决定可用格式；订阅下载仍默认使用此接口。'
+            : XMLY_MOBILE_QUALITY_HELP[downloadQuality] || XMLY_MOBILE_QUALITY_HELP[XMLY_MOBILE_INTERFACE]}</span>
         </div>
       )}
       <ChapterToolbar

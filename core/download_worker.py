@@ -84,6 +84,15 @@ class DownloadWorker(QThread):
         )
 
     @classmethod
+    def _is_ximalaya_mobile_v4_quality(cls, quality):
+        """Whether a UI quality is handled by the Android V4 control path."""
+        text = str(quality or '').strip().upper().replace('_', ' ')
+        return (
+            cls._is_ximalaya_mobile_premium_quality(quality)
+            or text in {'M4A 128K', 'M4A 64K', 'M4A 24K'}
+        )
+
+    @classmethod
     def _ximalaya_skip_url_fallback(cls, quality):
         """Whether a failed Ximalaya direct download may repeat via "resolved URL".
 
@@ -96,7 +105,7 @@ class DownloadWorker(QThread):
         text = str(quality or '').strip()
         return (
             text.startswith('M4A 96')
-            or cls._is_ximalaya_mobile_premium_quality(quality)
+            or cls._is_ximalaya_mobile_v4_quality(quality)
             or text == '喜马拉雅网页版接口'
         )
 
@@ -116,6 +125,29 @@ class DownloadWorker(QThread):
         if cls._is_ximalaya_spatial_quality(quality):
             return '.m4a'
         return '.m4a' if text.startswith('M4A') else '.mp3'
+
+    @classmethod
+    def _ximalaya_quality_filename_marker(cls, quality):
+        """Return a short user-facing marker for special output formats."""
+        normalized = str(quality or '').strip().upper().replace('_', ' ')
+        if 'AUDIO VIVID' in normalized or 'VIVID' in normalized or '菁彩声' in normalized:
+            return '[Audio Vivid]'
+        if any(marker in normalized for marker in ('DOLBY', 'ATMOS', '杜比', '全景声')):
+            return '[杜比全景声]'
+        if cls._is_ximalaya_lossless_quality(quality):
+            return '[无损]'
+        return ''
+
+    @classmethod
+    def _ximalaya_marked_chapter_title(cls, title, quality):
+        marker = cls._ximalaya_quality_filename_marker(quality)
+        text = str(title or '').strip() or '未知章节'
+        if not marker or text.endswith(marker):
+            return text
+        # Keep the existing 200-character filename-title limit after adding
+        # the marker rather than truncating the marker itself.
+        max_base_length = max(1, 200 - len(marker) - 1)
+        return f"{text[:max_base_length].rstrip()} {marker}"
 
     def _setting_enabled(self, key, default=False):
         value = self.cookie_manager.get_cookie(key)
@@ -391,7 +423,7 @@ class DownloadWorker(QThread):
 
         is_ximalaya_v4 = (
             self.platform == '喜马拉雅'
-            and str(self.quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）'
+            and self._is_ximalaya_mobile_v4_quality(self.quality)
         )
         max_retries = len(_XIMALAYA_V4_RATE_LIMIT_BACKOFF) if is_ximalaya_v4 else _MAX_RETRIES
 
@@ -677,6 +709,9 @@ class DownloadWorker(QThread):
                 print(f"   🎵 番茄实际格式: {fanqie_audio_info.get('format')}{file_extension}")
             elif self.platform == '喜马拉雅':
                 file_extension = self._ximalaya_extension_for_quality(self.quality)
+                safe_chapter_title = self._ximalaya_marked_chapter_title(
+                    safe_chapter_title, self.quality
+                )
             elif self.platform == '懒人听书':
                 file_extension = '.m4a'
             elif self.platform == '云听FM':

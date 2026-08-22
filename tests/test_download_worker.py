@@ -91,6 +91,57 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅移动端接口（自动最高音质）"), ".flac")
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("DOLBY_ATMOS"))
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("AUDIO_VIVID"))
+        for quality in (
+            "喜马拉雅移动端接口（自动最高音质）",
+            "杜比全景声",
+            "Audio Vivid 菁彩声",
+            "无损真人录制",
+            "M4A 128K",
+            "M4A 64K",
+            "M4A 24K",
+        ):
+            self.assertTrue(worker._is_ximalaya_mobile_v4_quality(quality), quality)
+        self.assertFalse(worker._is_ximalaya_mobile_v4_quality("M4A 96K"))
+
+    def test_ximalaya_special_qualities_add_friendly_filename_markers(self):
+        worker = self.make_worker()
+        self.assertEqual(
+            worker._ximalaya_marked_chapter_title("003 失落", "杜比全景声"),
+            "003 失落 [杜比全景声]",
+        )
+        self.assertEqual(
+            worker._ximalaya_marked_chapter_title("003 失落", "Audio Vivid 菁彩声"),
+            "003 失落 [Audio Vivid]",
+        )
+        self.assertEqual(
+            worker._ximalaya_marked_chapter_title("003 失落", "无损真人录制"),
+            "003 失落 [无损]",
+        )
+        self.assertEqual(
+            worker._ximalaya_marked_chapter_title("003 失落", "M4A 128K"),
+            "003 失落",
+        )
+        self.assertEqual(
+            worker._ximalaya_marked_chapter_title("003 失落 [杜比全景声]", "杜比全景声"),
+            "003 失落 [杜比全景声]",
+        )
+
+    def test_ximalaya_dolby_marker_is_used_in_download_path(self):
+        worker = self.make_worker()
+        worker.quality = "杜比全景声"
+        worker.cookie_manager = FakeCookieManager()
+        manager = mock.MagicMock()
+        manager.download_audio.return_value = True
+        worker.search_manager = mock.MagicMock()
+        worker.search_manager.ximalaya_manager = manager
+
+        ok = worker._download_single_chapter(
+            {"id": "893621590", "title": "003 失落", "order_num": 3}, 1
+        )
+
+        self.assertTrue(ok)
+        save_path = manager.download_audio.call_args.args[1]
+        self.assertEqual(os.path.basename(save_path), "0003-003 失落 [杜比全景声].m4a")
 
     def test_ximalaya_skip_url_fallback_covers_web_endpoint_default(self):
         worker = self.make_worker()
@@ -100,7 +151,10 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertTrue(worker._ximalaya_skip_url_fallback("M4A 96K"))
         self.assertTrue(worker._ximalaya_skip_url_fallback("喜马拉雅移动端接口（自动最高音质）"))
         self.assertTrue(worker._ximalaya_skip_url_fallback("无损真人录制"))
-        # 普通档位保持旧行为：失败后可尝试解析 URL 兜底。
+        self.assertTrue(worker._ximalaya_skip_url_fallback("M4A 128K"))
+        self.assertTrue(worker._ximalaya_skip_url_fallback("M4A 64K"))
+        self.assertTrue(worker._ximalaya_skip_url_fallback("M4A 24K"))
+        # 非 V4 普通档位保持旧行为：失败后可尝试解析 URL 兜底。
         self.assertFalse(worker._ximalaya_skip_url_fallback("M4A 48K"))
         self.assertFalse(worker._ximalaya_skip_url_fallback("MP3 64K"))
 

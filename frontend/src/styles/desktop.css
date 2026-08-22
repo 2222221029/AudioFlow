@@ -851,10 +851,11 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 
 .voice-bar{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scrollbar-width:thin}
 .voice-bar .chip{height:30px;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto}
-.quality-bar{display:flex;align-items:center;gap:10px;padding:7px 0;color:var(--text-mute);font-size:12px}
+.quality-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:7px 0;color:var(--text-mute);font-size:12px}
 .quality-bar label{color:var(--text);font-weight:600;white-space:nowrap}
 .quality-bar select{height:32px;min-width:230px;padding:0 10px;border-radius:9px;background:var(--panel-hi);border:1px solid var(--border);color:var(--text);font:inherit;outline:none}
 .quality-bar select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
+.quality-bar>span{flex:1 1 100%;line-height:1.5}
 .chapter-toolbar{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:9px 0}
 .chapter-toolbar .btn{white-space:nowrap}
 .chapter-toolbar .ch-summary{margin-left:auto;color:var(--text-mute);font-size:12px;font-variant-numeric:tabular-nums}
