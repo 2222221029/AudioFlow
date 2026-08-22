@@ -728,13 +728,13 @@ export function useAudioFlowApp() {
 
   const saveXimalayaMobileTicket = useCallback(async (credentials) => {
     if (!credentials || !credentials.trim()) {
-      showToast('移动端请求头不能为空', 'err');
+      showToast('移动版 V4 App Cookie 不能为空', 'err');
       return false;
     }
     try {
       await runBusy('xmlyMobileTicket', async () => {
         await api('/api/cookies/xmly/mobile-ticket', {method: 'POST', body: {credentials: credentials.trim()}});
-        showToast('移动端会话已保存；可用时将本地生成 x-tk', 'ok');
+        showToast('移动版 V4 App Cookie 已保存，后续请求将本地生成 x-tk', 'ok');
         await loadCookies();
       });
       return true;
@@ -748,7 +748,7 @@ export function useAudioFlowApp() {
     try {
       await runBusy('xmlyMobileTicketDelete', async () => {
         await api('/api/cookies/xmly/mobile-ticket', {method: 'DELETE'});
-        showToast('已删除移动端会话，网页登录保留', 'ok');
+        showToast('已删除移动版 V4 App Cookie，网页登录保留', 'ok');
         await loadCookies();
       });
       return true;

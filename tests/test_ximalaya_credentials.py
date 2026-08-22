@@ -147,6 +147,21 @@ x-tk: {_ticket_for_uid(123456, business="playTrack", scene="play", uid_key="u")}
     assert status["complete"] is True
 
 
+def test_android_app_cookie_can_be_imported_from_exported_curl():
+    captured = """curl 'https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/1786632464075?device=android2&trackId=559285269' \\
+  -H 'Cookie: channel=android; 1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.74.3; 1&*token=123456&mobile-session' \\
+  -H 'User-Agent: ting_9.4.74.3(V2059A,Android33)'"""
+
+    credential = normalize_ximalaya_mobile_credentials(captured)
+    status = ximalaya_mobile_credential_status(captured)
+
+    assert credential["api_device"] == "android2"
+    assert credential["cookie"].startswith("channel=android;")
+    assert status["state"] == "local_ready"
+    assert status["local_ticket_ready"] is True
+    assert status["has_ticket"] is False
+
+
 def test_v4_sign_is_not_accepted_as_x_tk():
     sign = base64.urlsafe_b64encode(b"x" * 32).decode()
     status = ximalaya_mobile_credential_status({

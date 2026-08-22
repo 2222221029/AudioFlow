@@ -236,6 +236,22 @@ def _header_mapping(value: Any) -> Dict[str, str]:
             return _header_mapping(parsed)
 
     headers = {}
+    # Accept a request exported as cURL as well as a plain header block.  We
+    # only parse quoted -H/--header values; the pasted command is never run.
+    curl_headers = re.finditer(
+        r"(?:^|\s)(?:-H|--header)\s+(['\"])(.*?)\1",
+        text,
+        re.DOTALL,
+    )
+    for match in curl_headers:
+        line = match.group(2).strip()
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        key = key.strip().lower()
+        if re.fullmatch(r"[a-z0-9_*&-]+", key) and val.strip():
+            headers[key] = val.strip()
+
     for line in text.replace("\r", "").split("\n"):
         line = line.strip()
         if not line or ":" not in line:
