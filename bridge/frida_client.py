@@ -152,10 +152,25 @@ class XimalayaFridaClient:
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(base + ["wm", "dismiss-keyguard"], check=False, timeout=5,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(base + ["monkey", "-p", self.config.package_name, "-c",
-                                    "android.intent.category.LAUNCHER", "1"],
-                           check=True, timeout=10, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
+            resolved = subprocess.run(
+                base + ["cmd", "package", "resolve-activity", "--brief",
+                        self.config.package_name],
+                check=True, timeout=8, capture_output=True, text=True,
+            )
+            component = next(
+                (line.strip() for line in reversed(resolved.stdout.splitlines())
+                 if "/" in line),
+                "",
+            )
+            if not component:
+                raise RuntimeError("Android 未解析到喜马拉雅 Launcher Activity")
+            started = subprocess.run(
+                base + ["am", "start", "-W", "-n", component],
+                check=False, timeout=15, capture_output=True, text=True,
+            )
+            if started.returncode:
+                detail = (started.stderr or started.stdout or "").strip()
+                raise RuntimeError(detail or f"am start 返回 {started.returncode}")
             time.sleep(1.5)
         except Exception as exc:
             raise BridgeUnavailable(f"无法唤醒喜马拉雅 App：{exc}") from exc
