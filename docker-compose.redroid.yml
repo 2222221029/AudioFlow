@@ -11,6 +11,7 @@ services:
     command:
       - androidboot.redroid_gpu_mode=guest
       - androidboot.use_memfd=true
+      - ro.secure=0
     mem_limit: 4g
     cpus: 2.0
     restart: unless-stopped
