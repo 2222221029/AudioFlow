@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import subprocess
 import threading
 import time
@@ -70,6 +71,15 @@ class XimalayaFridaClient:
             self._supervisor_thread.start()
 
     def _on_message(self, message, data) -> None:
+        payload = message.get("payload")
+        if message.get("type") == "send" and isinstance(payload, dict):
+            if payload.get("type") == "login-stage":
+                logging.info(
+                    "Ximalaya login stage: %s%s",
+                    payload.get("stage") or "unknown",
+                    f" ({payload.get('detail')})" if payload.get("detail") else "",
+                )
+            return
         if message.get("type") == "error":
             self._last_error = str(message.get("description") or "Frida Agent 错误")
 
@@ -205,6 +215,7 @@ class XimalayaFridaClient:
                     "connected": bool(agent.get("ready")),
                     "captured_cookie": bool(agent.get("captured_cookie")),
                     "app_version": str(agent.get("app_version") or ""),
+                    "login_stage": str(agent.get("login_stage") or ""),
                     "error": str(agent.get("error") or ""),
                 }
             except Exception as exc:

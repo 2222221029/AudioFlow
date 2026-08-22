@@ -13,6 +13,12 @@ let pangleGuardInstalled = false;
 let shuzilmGuardInstalled = false;
 const nativeGuardState = {};
 let credentialCacheFile = null;
+let lastLoginStage = 'idle';
+
+function loginStage(stage, detail) {
+    lastLoginStage = stage;
+    send({type: 'login-stage', stage: stage, detail: detail ? asText(detail) : ''});
+}
 
 function loadCapturedCache(context) {
     try {
@@ -202,26 +208,42 @@ function javaMap(values) {
 function appSendSms(phone) {
     return loginTimeout(new Promise(function (resolve, reject) {
         Java.perform(function () {
-            Java.scheduleOnMainThread(function () {
-                try {
-                    const env = loginEnvironment();
-                    const callback = loginCallback(
-                        function (value) {
+            try {
+                loginStage('sms-environment');
+                const env = loginEnvironment();
+                const callback = loginCallback(
+                    function (value) {
+                        try {
+                            loginStage('sms-callback-success');
                             const bizKey = asText(value);
                             if (!bizKey) throw new Error('验证码已发送但未返回业务密钥');
                             smsBizKeys[phone] = bizKey;
                             resolve({ok: true, message: '验证码已发送'});
-                        },
-                        function (code, message) { reject(new Error(message || ('发送验证码失败：' + code))); }
-                    );
-                    env.request.a.overload(
-                        'androidx.fragment.app.FragmentActivity', 'int',
-                        'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
-                        'com.ximalaya.ting.android.loginservice.base.a'
-                    ).call(env.request, currentFragmentActivity(), 5, env.provider,
-                        javaMap({mobile: phone, sendType: 1}), callback);
-                } catch (error) { reject(error); }
-            });
+                        } catch (error) { reject(error); }
+                    },
+                    function (code, message) {
+                        loginStage('sms-callback-error', code);
+                        reject(new Error(message || ('发送验证码失败：' + code)));
+                    }
+                );
+                loginStage('sms-request-start');
+                // The Activity overload first enters the App's interactive
+                // captcha flow.  On headless ReDroid that flow can block the
+                // Frida JavaScript thread forever, so even our timeout cannot
+                // run.  The official SDK also exposes the direct async send
+                // overload used after that UI preflight; it returns the same
+                // bizKey through the same callback without requiring a visible
+                // FragmentActivity.
+                env.request.a.overload(
+                    'int', 'com.ximalaya.ting.android.loginservice.base.d',
+                    'java.util.Map', 'com.ximalaya.ting.android.loginservice.base.a'
+                ).call(env.request, 5, env.provider,
+                    javaMap({mobile: phone, sendType: 1}), callback);
+                loginStage('sms-request-returned');
+            } catch (error) {
+                loginStage('sms-exception', error);
+                reject(error);
+            }
         });
     }), '发送验证码');
 }
@@ -372,7 +394,8 @@ rpc.exports = {
                     app_version: appVersion,
                     captured_cookie: !!captured.cookie,
                     pangle_guard: pangleGuardInstalled,
-                    shuzilm_guard: shuzilmGuardInstalled
+                    shuzilm_guard: shuzilmGuardInstalled,
+                    login_stage: lastLoginStage
                 });
             });
         });
