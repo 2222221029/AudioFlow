@@ -255,8 +255,12 @@ function appSendSms(phone) {
                 const SendParent = Java.use(
                     'com.ximalaya.ting.android.loginservice.LoginRequest$11'
                 );
+                // SmsLoginFragment uses biz=1 for the initial phone-login SMS.
+                // Other values can still deliver a code, but LoginRequest.d
+                // rejects that code as expired because it belongs to a
+                // different verification scene.
                 const parent = SendParent.$new(
-                    callback, 5, params, env.provider, phone, null
+                    callback, 1, params, env.provider, phone, null
                 );
                 const preflightCallback = loginCallback(
                     function (value) {
