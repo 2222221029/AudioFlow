@@ -16,6 +16,7 @@ _RETRY_BACKOFF = 2
 _RATE_LIMIT_WAIT = 30
 # 懒人听书 status=4 / “非法请求AA” 通常是风控冷却，短间隔重试只会继续失败。
 _LRTS_ILLEGAL_WAIT = int(os.getenv("LRTS_ILLEGAL_REQUEST_WAIT", "180") or "180")
+_XIMALAYA_V4_RATE_LIMIT_BACKOFF = (15, 30, 60)
 
 
 class DownloadWorker(QThread):
@@ -388,13 +389,22 @@ class DownloadWorker(QThread):
         except Exception:
             _IllegalRequestError = None
 
-        for attempt in range(_MAX_RETRIES + 1):
+        is_ximalaya_v4 = (
+            self.platform == '喜马拉雅'
+            and str(self.quality or '').strip() == '喜马拉雅移动端接口（自动最高音质）'
+        )
+        max_retries = len(_XIMALAYA_V4_RATE_LIMIT_BACKOFF) if is_ximalaya_v4 else _MAX_RETRIES
+
+        for attempt in range(max_retries + 1):
             if self._is_stopped:
                 return False
 
             if attempt > 0:
                 previous_error_type = str(chapter.get('_error_type') or '')
-                wait = attempt * (15 if previous_error_type == 'rate_limited' else _RETRY_BACKOFF)
+                if previous_error_type == 'rate_limited':
+                    wait = _XIMALAYA_V4_RATE_LIMIT_BACKOFF[min(attempt - 1, len(_XIMALAYA_V4_RATE_LIMIT_BACKOFF) - 1)]
+                else:
+                    wait = attempt * _RETRY_BACKOFF
                 reason = 'V4 风控冷却' if previous_error_type == 'rate_limited' else '重试'
                 print(f"   🔄 章节 {chapter_index} 第 {attempt} 次{reason}，等待 {wait}s…")
                 time.sleep(wait)
@@ -459,7 +469,7 @@ class DownloadWorker(QThread):
             if self._is_stopped:
                 return False
 
-        print(f"   ❌ 章节 {chapter_index} 重试 {_MAX_RETRIES} 次后仍失败")
+        print(f"   ❌ 章节 {chapter_index} 重试 {max_retries} 次后仍失败")
         return False
 
     # ------------------------------------------------------------------

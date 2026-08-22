@@ -12,6 +12,7 @@ import requests
 import os
 import time
 import threading
+import random
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -43,7 +44,21 @@ class XimalayaDownloadManager:
     # worker's normal chapter concurrency are unaffected.
     _MOBILE_V4_REQUEST_LOCK = threading.Lock()
     _MOBILE_V4_LAST_REQUEST_AT = 0.0
-    _MOBILE_V4_MIN_INTERVAL = 0.75
+    _MOBILE_V4_BASE_INTERVAL = float(
+        os.getenv("XIMALAYA_V4_MIN_INTERVAL", "0.75") or "0.75"
+    )
+    _MOBILE_V4_MIN_INTERVAL = _MOBILE_V4_BASE_INTERVAL
+    _MOBILE_V4_MAX_INTERVAL = float(
+        os.getenv("XIMALAYA_V4_MAX_INTERVAL", "12.0") or "12.0"
+    )
+    _MOBILE_V4_JITTER = float(
+        os.getenv("XIMALAYA_V4_JITTER", "0.2") or "0.2"
+    )
+    _MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
+    _MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
+    _MOBILE_V4_COOLDOWN_SECONDS = float(
+        os.getenv("XIMALAYA_V4_COOLDOWN_SECONDS", "15") or "15"
+    )
 
     # Android `libencrypt.so` URL decryption (PlayUrlUtil/EncryptUtil path).
     # The V2 constants were verified byte-for-byte against the 9.4.52.3 APK:
@@ -154,14 +169,55 @@ class XimalayaDownloadManager:
 
     @classmethod
     def _wait_for_mobile_v4_slot(cls):
-        """Pace V4 metadata calls without throttling the audio transfer."""
-        if not cls._ticket_provider_url():
-            return
+        """Pace V4 metadata calls without throttling the audio transfer.
+
+        V4 is the risk-controlled App protocol.  Unlike the legacy web/direct
+        paths, issuing many baseInfo requests without pacing quickly produces
+        ``ret=1001`` and locks the shared mobile ticket/cookie for a while.
+        Serialize only the small metadata request here; media bytes still flow
+        outside this lock.
+        """
         with cls._MOBILE_V4_REQUEST_LOCK:
-            wait = cls._MOBILE_V4_MIN_INTERVAL - (time.monotonic() - cls._MOBILE_V4_LAST_REQUEST_AT)
-            if wait > 0:
-                time.sleep(wait)
-            cls._MOBILE_V4_LAST_REQUEST_AT = time.monotonic()
+            now = time.monotonic()
+            if now < cls._MOBILE_V4_RATE_LIMITED_UNTIL:
+                wait = cls._MOBILE_V4_RATE_LIMITED_UNTIL - now
+                cls._MOBILE_V4_LAST_REQUEST_AT = cls._MOBILE_V4_RATE_LIMITED_UNTIL
+            else:
+                interval = cls._MOBILE_V4_MIN_INTERVAL + random.uniform(0.0, cls._MOBILE_V4_JITTER)
+                wait = max(
+                    0.0,
+                    interval
+                    - (now - cls._MOBILE_V4_LAST_REQUEST_AT),
+                )
+                cls._MOBILE_V4_LAST_REQUEST_AT = max(
+                    now,
+                    cls._MOBILE_V4_LAST_REQUEST_AT + interval,
+                )
+        if wait > 0:
+            time.sleep(wait)
+
+    @classmethod
+    def _mark_mobile_v4_rate_limited(cls):
+        with cls._MOBILE_V4_REQUEST_LOCK:
+            cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS += 1
+            exponent = min(max(cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS - 1, 0), 5)
+            cooldown = min(
+                cls._MOBILE_V4_COOLDOWN_SECONDS * (2 ** exponent),
+                1800.0,
+            )
+            cls._MOBILE_V4_RATE_LIMITED_UNTIL = time.monotonic() + cooldown
+            cls._MOBILE_V4_MIN_INTERVAL = min(
+                cls._MOBILE_V4_MIN_INTERVAL * 2,
+                cls._MOBILE_V4_MAX_INTERVAL,
+            )
+            return cooldown
+
+    @classmethod
+    def _clear_mobile_v4_rate_limit(cls):
+        with cls._MOBILE_V4_REQUEST_LOCK:
+            cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
+            cls._MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
+            cls._MOBILE_V4_MIN_INTERVAL = cls._MOBILE_V4_BASE_INTERVAL
 
     @classmethod
     def _mobile_quality_profile(cls, quality: str):
@@ -804,6 +860,10 @@ class XimalayaDownloadManager:
                 if data.get("ret") not in (None, 0, "0"):
                     break
 
+                # A valid V4 response proves the shared account/device window
+                # has recovered; restore normal request pacing immediately.
+                self._clear_mobile_v4_rate_limit()
+
                 cand, enc, unauth = self._extract_authorized_mobile_url(data, level)
                 if cand:
                     candidate, encrypted_seen, unauthorized_seen = cand, enc, unauth
@@ -831,6 +891,9 @@ class XimalayaDownloadManager:
                         "请把同一次 baseInfo 的 GET 请求行、Cookie、x-tk 与 User-Agent 一起保存"
                     )
                 ret_code = str(data.get("ret"))
+                if ret_code == "1001":
+                    cooldown = self._mark_mobile_v4_rate_limited()
+                    message = f"{message}；全局冷却 {cooldown:.0f} 秒后重新取票"
                 self._record_error(
                     f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})",
                     status_code=401 if ret_code == "50" else None,

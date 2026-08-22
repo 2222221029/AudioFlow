@@ -29,6 +29,27 @@ class FakeResponse:
 
 
 class XimalayaDownloadManagerTest(unittest.TestCase):
+    def setUp(self):
+        self._v4_timing = (
+            XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL,
+            XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL,
+            XimalayaDownloadManager._MOBILE_V4_COOLDOWN_SECONDS,
+            XimalayaDownloadManager._MOBILE_V4_JITTER,
+        )
+        XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = 0.0
+        XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = 0.0
+        XimalayaDownloadManager._MOBILE_V4_COOLDOWN_SECONDS = 0.0
+        XimalayaDownloadManager._MOBILE_V4_JITTER = 0.0
+        XimalayaDownloadManager._clear_mobile_v4_rate_limit()
+
+    def tearDown(self):
+        base, minimum, cooldown, jitter = self._v4_timing
+        XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = base
+        XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = minimum
+        XimalayaDownloadManager._MOBILE_V4_COOLDOWN_SECONDS = cooldown
+        XimalayaDownloadManager._MOBILE_V4_JITTER = jitter
+        XimalayaDownloadManager._clear_mobile_v4_rate_limit()
+
     @staticmethod
     def _mobile_credentials(ticket="member-mobile-ticket"):
         return {
