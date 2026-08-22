@@ -150,7 +150,6 @@ function loginEnvironment() {
 }
 
 let loginCallbackSequence = 0;
-const smsBizKeys = {};
 function loginTimeout(promise, action) {
     return new Promise(function (resolve, reject) {
         let settled = false;
@@ -201,7 +200,10 @@ function loginCallback(onSuccess, onError) {
 function javaMap(values) {
     const HashMap = Java.use('java.util.HashMap');
     const map = HashMap.$new();
-    Object.keys(values).forEach(function (key) { map.put(key, String(values[key])); });
+    Object.keys(values).forEach(function (key) {
+        const value = values[key];
+        map.put(key, value === null || value === undefined ? null : String(value));
+    });
     return map;
 }
 
@@ -215,9 +217,21 @@ function appSendSms(phone) {
                     function (value) {
                         try {
                             loginStage('sms-callback-success');
-                            const bizKey = asText(value);
-                            if (!bizKey) throw new Error('验证码已发送但未返回业务密钥');
-                            smsBizKeys[phone] = bizKey;
+                            // The official send-code endpoint returns BaseResponse
+                            // (ret/msg), not the bizKey used by the final login call.
+                            // Treating Object.toString() as bizKey corrupts the next
+                            // request and can make a valid SMS code look expired.
+                            const BaseResponse = Java.use(
+                                'com.ximalaya.ting.android.loginservice.BaseResponse'
+                            );
+                            const sent = Java.cast(value, BaseResponse);
+                            const ret = Number(sent.getRet());
+                            const message = asText(sent.getMsg());
+                            if (ret !== 0) {
+                                throw new Error(
+                                    (message || '发送验证码失败') + '（SDK 返回码 ' + ret + '）'
+                                );
+                            }
                             resolve({ok: true, message: '验证码已发送'});
                         } catch (error) { reject(error); }
                     },
@@ -288,32 +302,53 @@ function appSmsLogin(phone, code) {
             Java.scheduleOnMainThread(function () {
                 try {
                     captured = {};
+                    loginStage('sms-verify-start');
                     const env = loginEnvironment();
                     const verifyCallback = loginCallback(function (response) {
                         try {
+                            loginStage('sms-verify-success');
                             const VerifySmsResponse = Java.use('com.ximalaya.ting.android.loginservice.model.VerifySmsResponse');
                             const verified = Java.cast(response, VerifySmsResponse);
+                            const ret = Number(verified.getRet());
+                            const verifyMessage = asText(verified.getMsg());
+                            if (ret !== 0) {
+                                throw new Error(
+                                    (verifyMessage || '验证码校验失败') + '（SDK 返回码 ' + ret + '）'
+                                );
+                            }
                             const smsKey = asText(verified.getBizKey());
-                            const bizKey = asText(smsBizKeys[phone]);
-                            if (!smsKey || !bizKey) throw new Error('验证码校验成功但未返回登录密钥');
+                            if (!smsKey) throw new Error('验证码校验成功但未返回 smsKey');
+                            loginStage('sms-final-login-start');
                             const loginCallbackInstance = loginCallback(function () {
-                                delete smsBizKeys[phone];
+                                loginStage('sms-final-login-success');
                                 resolve({ok: true, message: '移动端登录成功'});
                             }, function (errorCode, message) {
-                                reject(new Error(message || ('登录失败：' + errorCode)));
+                                loginStage('sms-final-login-error', errorCode);
+                                reject(new Error(
+                                    (message ? message + '（SDK 错误码 ' + errorCode + '）' :
+                                        ('登录失败：' + errorCode))
+                                ));
                             });
+                            // The ordinary official phone-login flow supplies a null
+                            // verify_bizKey and the smsKey returned by VerifySmsResponse.
+                            // HashMap must receive Java null here, not the string "null".
                             env.request.f.overload(
                                 'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
                                 'com.ximalaya.ting.android.loginservice.base.a'
-                            ).call(env.request, env.provider, javaMap({bizKey: bizKey, smsKey: smsKey}), loginCallbackInstance);
+                            ).call(env.request, env.provider, javaMap({bizKey: null, smsKey: smsKey}), loginCallbackInstance);
                         } catch (error) { reject(error); }
                     }, function (errorCode, message) {
-                        reject(new Error(message || ('验证码错误：' + errorCode)));
+                        loginStage('sms-verify-error', errorCode);
+                        reject(new Error(
+                            (message ? message + '（SDK 错误码 ' + errorCode + '）' :
+                                ('验证码错误：' + errorCode))
+                        ));
                     });
                     env.request.d.overload(
                         'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
                         'com.ximalaya.ting.android.loginservice.base.a'
                     ).call(env.request, env.provider, javaMap({mobile: phone, code: code}), verifyCallback);
+                    loginStage('sms-verify-request-returned');
                 } catch (error) { reject(error); }
             });
         });
