@@ -134,6 +134,31 @@ class XimalayaFridaClient:
                         raise BridgeUnavailable(f"动态取票失败：{exc}") from exc
         raise BridgeUnavailable("动态取票失败")
 
+    def sms_send(self, phone: str) -> Dict[str, Any]:
+        return self._login_rpc("smssend", phone)
+
+    def sms_login(self, phone: str, code: str) -> Dict[str, Any]:
+        return self._login_rpc("smslogin", phone, code)
+
+    def _login_rpc(self, method: str, *args: str) -> Dict[str, Any]:
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    self._ensure_connected()
+                    result = getattr(self._script.exports_sync, method)(*args)
+                    if not isinstance(result, dict):
+                        raise BridgeUnavailable("喜马拉雅 App 登录服务返回格式异常")
+                    if not result.get("ok"):
+                        raise BridgeUnavailable(str(result.get("error") or "喜马拉雅 App 登录失败"))
+                    return result
+                except Exception as exc:
+                    self._clear(str(exc))
+                    if attempt == 1:
+                        if isinstance(exc, BridgeUnavailable):
+                            raise
+                        raise BridgeUnavailable(f"喜马拉雅 App 登录失败：{exc}") from exc
+        raise BridgeUnavailable("喜马拉雅 App 登录失败")
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             if self._script is None:

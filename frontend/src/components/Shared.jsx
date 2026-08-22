@@ -923,7 +923,17 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           </button>
           {platform.key === 'xmly' && (
             <div className="xmly-ticket-editor">
-              <div className="xmly-ticket-label">移动端完整请求头（独立保存、不回显）</div>
+              <div className="xmly-ticket-label">移动端 V4 登录</div>
+              <div className="xmly-ticket-actions">
+                <button
+                  className="btn btn-primary btn-tiny"
+                  onClick={() => setModal({content: <XimalayaMobileLoginModal actions={actions} onDone={actions.loadCookies} onClose={closeModal} />})}
+                >
+                  <Icon id="i-mobile" className="icon icon-sm" />手机号验证码登录
+                </button>
+              </div>
+              <div className="cookie-desc">通过 NAS 上的官方 App 登录服务获取移动端会话，只用于喜马拉雅移动端 V4；不会修改网页登录 Cookie。</div>
+              <div className="xmly-ticket-label">或手动粘贴完整请求头（独立保存、不回显）</div>
               <textarea
                 value={mobileTicket}
                 onChange={(event) => setMobileTicket(event.target.value)}
@@ -955,6 +965,63 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function XimalayaMobileLoginModal({actions, onDone, onClose}) {
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [message, setMessage] = useState('输入喜马拉雅账号绑定的手机号');
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const sendCode = async () => {
+    setSending(true); setError('');
+    try {
+      const data = await actions.sendXimalayaMobileCode(phone.trim());
+      setMessage(data.message || '验证码已发送');
+    } catch (err) { setError(err.message); }
+    finally { setSending(false); }
+  };
+  const login = async () => {
+    setLoggingIn(true); setError('');
+    try {
+      const data = await actions.loginXimalayaMobile(phone.trim(), code.trim());
+      setMessage(data.message || '登录成功');
+      onDone?.();
+      if (!data.needs_playback) onClose();
+    } catch (err) { setError(err.message); }
+    finally { setLoggingIn(false); }
+  };
+
+  return (
+    <div className="lrts-login">
+      <div className="lrts-login-head">
+        <div className="lrts-login-icon"><Icon id="i-mobile" /></div>
+        <div className="lrts-login-copy">
+          <div className="modal-title lrts-title">喜马拉雅移动端登录</div>
+          <div className="modal-sub lrts-sub">{error || message}</div>
+        </div>
+      </div>
+      <div className="lrts-panel">
+        <div className="lrts-inline">
+          <input className="field-input lrts-input" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="手机号" inputMode="tel" autoComplete="tel" />
+          <button className="btn btn-ghost btn-sm lrts-send-btn" disabled={sending || phone.length !== 11} onClick={sendCode}>
+            <BusyIcon busy={sending} icon="i-mobile" />发送验证码
+          </button>
+        </div>
+        <input className="field-input lrts-input" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 8))} placeholder="短信验证码" inputMode="numeric" autoComplete="one-time-code" />
+        {error && <div className="field-hint err">{error}</div>}
+        <div className="lrts-note">验证码由官方喜马拉雅 App 发送和校验。登录成功后自动保存 Cookie、User-Agent 和动态 Ticket 所需账号信息。</div>
+        <div className="modal-actions">
+          <button className="btn btn-primary btn-sm" disabled={loggingIn || phone.length !== 11 || code.length < 4} onClick={login}>
+            <BusyIcon busy={loggingIn} icon="i-check" />登录并保存
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -57,6 +57,23 @@ class BridgeService:
             "host": dynamic.get("host") or self.config.host,
         }
 
+    @staticmethod
+    def _phone(payload: Dict[str, Any]) -> str:
+        phone = str(payload.get("phone") or "").strip()
+        if not (phone.isdigit() and len(phone) == 11):
+            raise ValueError("请输入 11 位手机号")
+        return phone
+
+    def send_sms(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.signer.sms_send(self._phone(payload))
+
+    def sms_login(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        phone = self._phone(payload)
+        code = str(payload.get("code") or "").strip()
+        if not (code.isdigit() and 4 <= len(code) <= 8):
+            raise ValueError("请输入短信验证码")
+        return self.signer.sms_login(phone, code)
+
 
 def make_handler(service: BridgeService):
     class BridgeHandler(BaseHTTPRequestHandler):
@@ -89,7 +106,14 @@ def make_handler(service: BridgeService):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self):
-            if urlparse(self.path).path != "/ximalaya/ticket":
+            path = urlparse(self.path).path
+            routes = {
+                "/ximalaya/ticket": service.issue_ticket,
+                "/ximalaya/login/sms/send": service.send_sms,
+                "/ximalaya/login/sms/verify": service.sms_login,
+            }
+            action = routes.get(path)
+            if action is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             if not service.authorized(self.headers.get("Authorization", "")):
@@ -102,7 +126,7 @@ def make_handler(service: BridgeService):
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 if not isinstance(payload, dict):
                     raise ValueError("请求体必须是 JSON 对象")
-                result = service.issue_ticket(payload)
+                result = action(payload)
                 self._json(HTTPStatus.OK, result)
             except ValueError as exc:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

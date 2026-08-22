@@ -740,6 +740,21 @@ export function useAudioFlowApp() {
     }
   }, [loadCookies, runBusy, showToast]);
 
+  const sendXimalayaMobileCode = useCallback(async (phone) => {
+    return api('/api/cookies/xmly/mobile-login/send-code', {
+      method: 'POST', body: {phone},
+    });
+  }, []);
+
+  const loginXimalayaMobile = useCallback(async (phone, code) => {
+    const data = await api('/api/cookies/xmly/mobile-login/verify', {
+      method: 'POST', body: {phone, code},
+    });
+    showToast(data.message || '喜马拉雅移动端登录成功', 'ok');
+    await loadCookies();
+    return data;
+  }, [loadCookies, showToast]);
+
   const deleteCookie = useCallback(async (platformKey) => {
     await runBusy('cookieDelete:' + platformKey, async () => {
       await api('/api/cookies/' + encodeURIComponent(platformKey), {method: 'DELETE'});
@@ -1074,6 +1089,8 @@ export function useAudioFlowApp() {
       saveCookie,
       saveXimalayaMobileTicket,
       deleteXimalayaMobileTicket,
+      sendXimalayaMobileCode,
+      loginXimalayaMobile,
       deleteCookie,
       loadConfig,
       saveSettings,

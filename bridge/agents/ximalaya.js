@@ -96,16 +96,143 @@ function asText(value) {
     return value === null || value === undefined ? '' : String(value);
 }
 
+function currentFragmentActivity() {
+    const ActivityThread = Java.use('android.app.ActivityThread');
+    const thread = ActivityThread.currentActivityThread();
+    const activitiesField = thread.getClass().getDeclaredField('mActivities');
+    activitiesField.setAccessible(true);
+    const activities = activitiesField.get(thread).values().toArray();
+    for (let i = 0; i < activities.length; i += 1) {
+        const record = activities[i];
+        const pausedField = record.getClass().getDeclaredField('paused');
+        pausedField.setAccessible(true);
+        if (!pausedField.getBoolean(record)) {
+            const activityField = record.getClass().getDeclaredField('activity');
+            activityField.setAccessible(true);
+            return Java.cast(activityField.get(record), Java.use('androidx.fragment.app.FragmentActivity'));
+        }
+    }
+    throw new Error('喜马拉雅 App 当前没有可用页面，请先打开 App');
+}
+
+function loginEnvironment() {
+    const LoginManager = Java.use('com.ximalaya.ting.android.loginservice.j');
+    const manager = LoginManager.a.overload().call(LoginManager);
+    const provider = LoginManager.c.overload().call(manager);
+    return {
+        request: Java.use('com.ximalaya.ting.android.loginservice.LoginRequest'),
+        provider: provider,
+        callback: Java.use('com.ximalaya.ting.android.loginservice.base.a')
+    };
+}
+
+let loginCallbackSequence = 0;
+const smsBizKeys = {};
+function loginCallback(onSuccess, onError) {
+    const env = loginEnvironment();
+    loginCallbackSequence += 1;
+    const Callback = Java.registerClass({
+        name: 'com.audioflow.bridge.LoginCallback' + loginCallbackSequence,
+        implements: [env.callback],
+        methods: {
+            a: [
+                {
+                    returnType: 'void',
+                    argumentTypes: ['java.lang.Object'],
+                    implementation: function (value) { onSuccess(value); }
+                },
+                {
+                    returnType: 'void',
+                    argumentTypes: ['int', 'java.lang.String'],
+                    implementation: function (code, message) { onError(code, asText(message)); }
+                }
+            ]
+        }
+    });
+    return Callback.$new();
+}
+
+function javaMap(values) {
+    const HashMap = Java.use('java.util.HashMap');
+    const map = HashMap.$new();
+    Object.keys(values).forEach(function (key) { map.put(key, String(values[key])); });
+    return map;
+}
+
+function appSendSms(phone) {
+    return new Promise(function (resolve, reject) {
+        Java.perform(function () {
+            try {
+                const env = loginEnvironment();
+                const callback = loginCallback(
+                    function (value) {
+                        const bizKey = asText(value);
+                        if (!bizKey) throw new Error('验证码已发送但未返回业务密钥');
+                        smsBizKeys[phone] = bizKey;
+                        resolve({ok: true, message: '验证码已发送'});
+                    },
+                    function (code, message) { reject(new Error(message || ('发送验证码失败：' + code))); }
+                );
+                env.request.a.overload(
+                    'androidx.fragment.app.FragmentActivity', 'int',
+                    'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
+                    'com.ximalaya.ting.android.loginservice.base.a'
+                ).call(env.request, currentFragmentActivity(), 5, env.provider,
+                    javaMap({mobile: phone, sendType: 1}), callback);
+            } catch (error) { reject(error); }
+        });
+    });
+}
+
+function appSmsLogin(phone, code) {
+    return new Promise(function (resolve, reject) {
+        Java.perform(function () {
+            try {
+                captured = {};
+                const env = loginEnvironment();
+                const verifyCallback = loginCallback(function (response) {
+                    try {
+                        const VerifySmsResponse = Java.use('com.ximalaya.ting.android.loginservice.model.VerifySmsResponse');
+                        const verified = Java.cast(response, VerifySmsResponse);
+                        const smsKey = asText(verified.getBizKey());
+                        const bizKey = asText(smsBizKeys[phone]);
+                        if (!smsKey || !bizKey) throw new Error('验证码校验成功但未返回登录密钥');
+                        const loginCallbackInstance = loginCallback(function () {
+                            delete smsBizKeys[phone];
+                            resolve({ok: true, message: '移动端登录成功'});
+                        }, function (errorCode, message) {
+                            reject(new Error(message || ('登录失败：' + errorCode)));
+                        });
+                        env.request.f.overload(
+                            'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
+                            'com.ximalaya.ting.android.loginservice.base.a'
+                        ).call(env.request, env.provider, javaMap({bizKey: bizKey, smsKey: smsKey}), loginCallbackInstance);
+                    } catch (error) { reject(error); }
+                }, function (errorCode, message) {
+                    reject(new Error(message || ('验证码错误：' + errorCode)));
+                });
+                env.request.d.overload(
+                    'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
+                    'com.ximalaya.ting.android.loginservice.base.a'
+                ).call(env.request, env.provider, javaMap({mobile: phone, code: code}), verifyCallback);
+            } catch (error) { reject(error); }
+        });
+    });
+}
+
 function captureRequest(request) {
     try {
         const url = asText(request.url().toString());
-        if (url.indexOf('/mobile-playpage/track/v4/baseInfo/') < 0) {
+        const headers = request.headers();
+        const cookie = asText(headers.get('Cookie'));
+        const isBaseInfo = url.indexOf('/mobile-playpage/track/v4/baseInfo/') >= 0;
+        const hasLoginCookie = /(?:^|;\s*)1&(?:\*|_)token=[^;]*&[^;]+/i.test(cookie);
+        if (!isBaseInfo && !hasLoginCookie) {
             return;
         }
-        const headers = request.headers();
         const parsedDevice = /[?&]device=(android2?|ios)(?:&|$)/i.exec(url);
         captured = {
-            cookie: asText(headers.get('Cookie')),
+            cookie: cookie,
             user_agent: asText(headers.get('User-Agent')),
             accept_language: asText(headers.get('Accept-Language')),
             api_device: parsedDevice ? parsedDevice[1].toLowerCase() : 'android',
@@ -224,5 +351,13 @@ rpc.exports = {
                 }
             });
         });
+    },
+    smssend: function (phone) {
+        if (!ready) return Promise.reject(lastError || '取票模块尚未就绪');
+        return appSendSms(asText(phone));
+    },
+    smslogin: function (phone, code) {
+        if (!ready) return Promise.reject(lastError || '取票模块尚未就绪');
+        return appSmsLogin(asText(phone), asText(code));
     }
 };

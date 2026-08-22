@@ -29,6 +29,14 @@ class FakeSigner:
             "api_device": "android2",
         }
 
+    def sms_send(self, phone):
+        self.calls.append(("send", phone))
+        return {"ok": True, "message": "验证码已发送"}
+
+    def sms_login(self, phone, code):
+        self.calls.append(("login", phone, code))
+        return {"ok": True, "message": "移动端登录成功"}
+
 
 class BridgeTest(unittest.TestCase):
     def setUp(self):
@@ -73,6 +81,16 @@ class BridgeTest(unittest.TestCase):
             self.service.issue_ticket({"track_id": "abc", "quality_level": 3})
         with self.assertRaisesRegex(ValueError, "仅处理"):
             self.service.issue_ticket({"track_id": "123", "quality_level": 1})
+
+    def test_sms_login_validates_phone_and_delegates_to_official_app(self):
+        sent = self.service.send_sms({"phone": "13800138000"})
+        logged_in = self.service.sms_login({"phone": "13800138000", "code": "123456"})
+        self.assertTrue(sent["ok"])
+        self.assertTrue(logged_in["ok"])
+        self.assertIn(("send", "13800138000"), self.signer.calls)
+        self.assertIn(("login", "13800138000", "123456"), self.signer.calls)
+        with self.assertRaisesRegex(ValueError, "11 位"):
+            self.service.send_sms({"phone": "123"})
 
 
 if __name__ == "__main__":

@@ -3797,6 +3797,81 @@ def api_set_ximalaya_mobile_ticket():
     )
 
 
+def _ximalaya_bridge_request(path, payload):
+    ticket_url = str(os.environ.get("XIMALAYA_TICKET_PROVIDER_URL") or "").strip()
+    token = str(os.environ.get("XIMALAYA_TICKET_PROVIDER_TOKEN") or "").strip()
+    if not ticket_url or not token:
+        raise ValueError("未配置喜马拉雅 Bridge，手机号登录暂不可用")
+    base_url = ticket_url.rsplit("/ximalaya/ticket", 1)[0].rstrip("/")
+    response = requests.post(
+        f"{base_url}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+        timeout=25,
+    )
+    try:
+        body = response.json()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        body = {}
+    if response.status_code >= 400 or not body.get("ok", response.status_code < 400):
+        raise ValueError(str(body.get("error") or f"Bridge HTTP {response.status_code}"))
+    return body
+
+
+@app.post("/api/cookies/xmly/mobile-login/send-code")
+def api_ximalaya_mobile_send_code():
+    payload = request.get_json(silent=True) or {}
+    phone = str(payload.get("phone") or "").strip()
+    if not (phone.isdigit() and len(phone) == 11):
+        return json_error("请输入 11 位手机号")
+    try:
+        result = _ximalaya_bridge_request("/ximalaya/login/sms/send", {"phone": phone})
+    except (requests.RequestException, ValueError) as exc:
+        return json_error(f"发送验证码失败：{exc}")
+    return json_ok(message=result.get("message") or "验证码已发送")
+
+
+@app.post("/api/cookies/xmly/mobile-login/verify")
+def api_ximalaya_mobile_login_verify():
+    payload = request.get_json(silent=True) or {}
+    phone = str(payload.get("phone") or "").strip()
+    code = str(payload.get("code") or "").strip()
+    if not (phone.isdigit() and len(phone) == 11 and code.isdigit()):
+        return json_error("请输入手机号和短信验证码")
+    try:
+        result = _ximalaya_bridge_request(
+            "/ximalaya/login/sms/verify", {"phone": phone, "code": code}
+        )
+        # The official App normally starts account requests immediately after
+        # login. Give the Bridge a short window to capture the new Cookie and
+        # combine it with a freshly generated x-tk.
+        credential = {}
+        for _ in range(8):
+            time.sleep(0.5)
+            try:
+                candidate = _ximalaya_bridge_request(
+                    "/ximalaya/ticket",
+                    {"track_id": "1", "quality_level": 3},
+                )
+                credential = normalize_ximalaya_mobile_credentials(candidate)
+                if ximalaya_mobile_credential_status(credential)["complete"]:
+                    break
+            except (requests.RequestException, ValueError):
+                continue
+        status = ximalaya_mobile_credential_status(credential)
+        if status["complete"]:
+            cookie_manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, credential)
+            search_manager.set_ximalaya_mobile_credentials(credential)
+            return json_ok(message="移动端登录成功，V4 凭证已保存", mobile_credential=status)
+        return json_ok(
+            message=(result.get("message") or "移动端登录成功") + "；请在 App 播放任意一集后再下载一次",
+            mobile_credential=status,
+            needs_playback=True,
+        )
+    except (requests.RequestException, ValueError) as exc:
+        return json_error(f"验证码登录失败：{exc}")
+
+
 @app.delete("/api/cookies/xmly/mobile-ticket")
 def api_delete_ximalaya_mobile_ticket():
     """Delete only the App credential bundle and retain browser login."""
