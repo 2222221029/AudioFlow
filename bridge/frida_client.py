@@ -140,11 +140,27 @@ class XimalayaFridaClient:
     def sms_login(self, phone: str, code: str) -> Dict[str, Any]:
         return self._login_rpc("smslogin", phone, code)
 
+    def _wake_login_activity(self) -> None:
+        """Ask Android itself to create the launcher Activity on headless ReDroid."""
+        self._ensure_connected()
+        try:
+            pid = self._device.spawn([
+                "/system/bin/monkey",
+                "-p", self.config.package_name,
+                "-c", "android.intent.category.LAUNCHER",
+                "1",
+            ])
+            self._device.resume(pid)
+            time.sleep(1.5)
+        except Exception as exc:
+            raise BridgeUnavailable(f"无法唤醒喜马拉雅 App：{exc}") from exc
+
     def _login_rpc(self, method: str, *args: str) -> Dict[str, Any]:
         with self._lock:
             for attempt in range(2):
                 try:
                     self._ensure_connected()
+                    self._wake_login_activity()
                     result = getattr(self._script.exports_sync, method)(*args)
                     if not isinstance(result, dict):
                         raise BridgeUnavailable("喜马拉雅 App 登录服务返回格式异常")
