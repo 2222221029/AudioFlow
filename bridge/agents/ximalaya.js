@@ -223,7 +223,10 @@ function appSendSms(phone) {
                     },
                     function (code, message) {
                         loginStage('sms-callback-error', code);
-                        reject(new Error(message || ('发送验证码失败：' + code)));
+                        reject(new Error(
+                            (message ? message + '（SDK 错误码 ' + code + '）' :
+                                ('发送验证码失败：' + code))
+                        ));
                     }
                 );
                 loginStage('sms-request-start');
@@ -234,11 +237,17 @@ function appSendSms(phone) {
                 // overload used after that UI preflight; it returns the same
                 // bizKey through the same callback without requiring a visible
                 // FragmentActivity.
+                const params = javaMap({mobile: phone, sendType: 1});
+                // The Activity overload performs this private SDK preprocessor
+                // before entering its captcha UI.  It encrypts `mobile` and
+                // adds the `encryptedMobile` field required by the direct send
+                // endpoint, so the headless path must preserve that step.
+                env.request.a.overload('java.util.Map').call(env.request, params);
+                loginStage('sms-params-ready');
                 env.request.a.overload(
                     'int', 'com.ximalaya.ting.android.loginservice.base.d',
                     'java.util.Map', 'com.ximalaya.ting.android.loginservice.base.a'
-                ).call(env.request, 5, env.provider,
-                    javaMap({mobile: phone, sendType: 1}), callback);
+                ).call(env.request, 5, env.provider, params, callback);
                 loginStage('sms-request-returned');
             } catch (error) {
                 loginStage('sms-exception', error);
