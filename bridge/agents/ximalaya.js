@@ -103,16 +103,20 @@ function currentFragmentActivity() {
     activitiesField.setAccessible(true);
     const ArrayMap = Java.use('android.util.ArrayMap');
     const activities = Java.cast(activitiesField.get(thread), ArrayMap);
+    let fallbackActivity = null;
     for (let i = 0; i < activities.size(); i += 1) {
         const record = activities.valueAt(i);
         const pausedField = record.getClass().getDeclaredField('paused');
         pausedField.setAccessible(true);
-        if (!pausedField.getBoolean(record)) {
-            const activityField = record.getClass().getDeclaredField('activity');
-            activityField.setAccessible(true);
-            return Java.cast(activityField.get(record), Java.use('androidx.fragment.app.FragmentActivity'));
-        }
+        const activityField = record.getClass().getDeclaredField('activity');
+        activityField.setAccessible(true);
+        const activity = Java.cast(activityField.get(record), Java.use('androidx.fragment.app.FragmentActivity'));
+        if (!pausedField.getBoolean(record)) return activity;
+        if (!fallbackActivity) fallbackActivity = activity;
     }
+    // Headless ReDroid can keep the task paused even though the Activity is
+    // valid and the login SDK only needs it as a lifecycle owner/context.
+    if (fallbackActivity) return fallbackActivity;
     // ReDroid may restart without restoring a foreground task. Wake the official
     // app so the next login call has the FragmentActivity required by its SDK.
     const application = ActivityThread.currentApplication();
