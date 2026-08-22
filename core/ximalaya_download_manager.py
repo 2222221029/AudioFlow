@@ -432,6 +432,14 @@ class XimalayaDownloadManager:
             "trackQualityLevel": str(quality_level),
             "sign": sign,
         }
+        # The Android client advertises decoder capability together with the
+        # premium quality enum. Without these flags baseInfo silently omits
+        # the level-12/13 entry and returns only ordinary M4A/MP3 URLs even
+        # when the track and account are entitled to spatial audio.
+        if quality_level == 12:
+            params["canPlayDolby"] = "true"
+        elif quality_level == 13:
+            params["canPlayVividSound"] = "true"
         # URLEncoder keeps alphanumerics, '-', '_', '.', and '*', turns spaces
         # into '+', and percent-encodes everything else (including '=').
         query = "&".join(

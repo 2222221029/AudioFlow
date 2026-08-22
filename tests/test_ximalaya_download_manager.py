@@ -256,6 +256,8 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertTrue(ok)
         query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
         self.assertEqual(query["trackQualityLevel"], ["12"])
+        self.assertEqual(query["canPlayDolby"], ["true"])
+        self.assertNotIn("canPlayVividSound", query)
         self.assertEqual(get.call_args_list[1].args[0], "https://audio.example/atmos.m4a")
         self.assertEqual(manager.last_download_source, "mobile_v4_level_12")
         self.assertEqual(manager.last_download_quality_label, "杜比全景声")
@@ -277,6 +279,8 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertTrue(ok)
         query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
         self.assertEqual(query["trackQualityLevel"], ["13"])
+        self.assertEqual(query["canPlayVividSound"], ["true"])
+        self.assertNotIn("canPlayDolby", query)
         self.assertEqual(manager.last_download_source, "mobile_v4_level_13")
 
     def test_dolby_never_accepts_lower_level_or_calls_media_url(self):
