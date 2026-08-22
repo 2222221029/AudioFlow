@@ -101,9 +101,10 @@ function currentFragmentActivity() {
     const thread = ActivityThread.currentActivityThread();
     const activitiesField = thread.getClass().getDeclaredField('mActivities');
     activitiesField.setAccessible(true);
-    const activities = activitiesField.get(thread).values().toArray();
-    for (let i = 0; i < activities.length; i += 1) {
-        const record = activities[i];
+    const ArrayMap = Java.use('android.util.ArrayMap');
+    const activities = Java.cast(activitiesField.get(thread), ArrayMap);
+    for (let i = 0; i < activities.size(); i += 1) {
+        const record = activities.valueAt(i);
         const pausedField = record.getClass().getDeclaredField('paused');
         pausedField.setAccessible(true);
         if (!pausedField.getBoolean(record)) {
