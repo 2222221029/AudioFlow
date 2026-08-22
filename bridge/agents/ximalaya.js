@@ -243,55 +243,31 @@ function appSendSms(phone) {
                         ));
                     }
                 );
-                loginStage('sms-preflight-start');
-                const params = javaMap({mobile: phone, sendType: 1});
-                env.request.a.overload('java.util.Map').call(env.request, params);
-                loginStage('sms-params-ready');
-                // Reproduce the official Activity overload up to its captcha
-                // boundary: first fetch the nonce, then invoke the SDK's own
-                // final-request builder with an empty optional fdsOtp.  This
-                // preserves nonce/biz/signature and the correct k.j() endpoint
-                // while avoiding the headless FragmentActivity deadlock.
-                const SendParent = Java.use(
-                    'com.ximalaya.ting.android.loginservice.LoginRequest$11'
-                );
-                // SmsLoginFragment uses biz=1 for the initial phone-login SMS.
-                // Other values can still deliver a code, but LoginRequest.d
-                // rejects that code as expired because it belongs to a
-                // different verification scene.
-                const parent = SendParent.$new(
-                    callback, 1, params, env.provider, phone, null
-                );
-                const preflightCallback = loginCallback(
-                    function (value) {
-                        try {
-                            const nonce = asText(value);
-                            if (!nonce) throw new Error('短信预检未返回 nonce');
-                            loginStage('sms-nonce-ready');
-                            const FinalRequest = Java.use(
-                                'com.ximalaya.ting.android.loginservice.LoginRequest$11$1'
-                            );
-                            const finalRequest = FinalRequest.$new(parent, nonce);
-                            finalRequest.b.overload('java.lang.String').call(finalRequest, null);
-                            loginStage('sms-request-returned');
-                        } catch (error) {
-                            loginStage('sms-final-request-exception', error);
-                            reject(error);
-                        }
-                    },
-                    function (code, message) {
-                        loginStage('sms-preflight-error', code);
-                        reject(new Error(
-                            (message ? message + '（预检错误码 ' + code + '）' :
-                                ('短信预检失败：' + code))
-                        ));
+                Java.scheduleOnMainThread(function () {
+                    try {
+                        loginStage('sms-official-request-start');
+                        const activity = currentFragmentActivity();
+                        const params = javaMap({mobile: phone, sendType: 1});
+                        // Follow SmsLoginFragment -> BaseLoginFragment exactly.
+                        // The Activity overload obtains both the nonce and the
+                        // fdsOtp risk token before it sends the SMS.  Bypassing
+                        // that step can still deliver a text message, but the
+                        // verify endpoint rejects its code as expired (31010).
+                        env.request.a.overload(
+                            'androidx.fragment.app.FragmentActivity',
+                            'int',
+                            'com.ximalaya.ting.android.loginservice.base.d',
+                            'java.util.Map',
+                            'com.ximalaya.ting.android.loginservice.base.a'
+                        ).call(
+                            env.request, activity, 1, env.provider, params, callback
+                        );
+                        loginStage('sms-official-request-returned');
+                    } catch (error) {
+                        loginStage('sms-official-request-exception', error);
+                        reject(error);
                     }
-                );
-                env.request.a.overload(
-                    'com.ximalaya.ting.android.loginservice.base.d',
-                    'com.ximalaya.ting.android.loginservice.base.a'
-                ).call(env.request, env.provider, preflightCallback);
-                loginStage('sms-preflight-returned');
+                });
             } catch (error) {
                 loginStage('sms-exception', error);
                 reject(error);
