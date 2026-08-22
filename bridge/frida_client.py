@@ -145,10 +145,9 @@ class XimalayaFridaClient:
         self._ensure_connected()
         try:
             pid = self._device.spawn([
-                "/system/bin/monkey",
-                "-p", self.config.package_name,
-                "-c", "android.intent.category.LAUNCHER",
-                "1",
+                "/system/bin/sh", "-c",
+                "exec /system/bin/monkey -p " + self.config.package_name
+                + " -c android.intent.category.LAUNCHER 1",
             ])
             self._device.resume(pid)
             time.sleep(1.5)
