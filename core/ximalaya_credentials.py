@@ -356,6 +356,38 @@ def _mobile_cookie_uid(cookie: str) -> str:
     return ""
 
 
+def ximalaya_mobile_cookie_identity(value: Any) -> Dict[str, str]:
+    """Extract the logged-in UID and stable Android identity from an App Cookie.
+
+    A locally generated x-tk is tied to the App Cookie's device UUID.  Keeping
+    that UUID stable matches the official client and avoids the account risk of
+    rotating fabricated devices to evade server-side request limits.
+    """
+    credential = normalize_ximalaya_mobile_credentials(value)
+    cookie = credential.get("cookie", "")
+    identity = {
+        "uid": _mobile_cookie_uid(cookie),
+        "platform": "",
+        "device_id": "",
+        "app_version": "",
+    }
+    for key, raw_value in _segments(cookie):
+        name = key.strip().lower()
+        if not (name.endswith("&_device") or name == "_device"):
+            continue
+        parts = str(raw_value or "").split("&")
+        if parts:
+            identity["platform"] = parts[0].strip().lower()
+        if len(parts) > 1:
+            compact = parts[1].strip().replace("-", "")
+            if re.fullmatch(r"[0-9a-fA-F]{32}", compact):
+                identity["device_id"] = compact.lower()
+        if len(parts) > 2:
+            identity["app_version"] = parts[2].strip()
+        break
+    return identity
+
+
 def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
     """Return non-secret structural status for UI and download gating."""
     credential = normalize_ximalaya_mobile_credentials(value)
@@ -368,10 +400,18 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
     ticket_business = ticket_metadata.get("business", "")
     ticket_scene = ticket_metadata.get("scene", "")
     cookie_uid = _mobile_cookie_uid(cookie)
+    cookie_identity = ximalaya_mobile_cookie_identity(credential)
     has_login_cookie = bool(cookie_uid)
+    local_ticket_ready = bool(
+        has_login_cookie
+        and cookie_identity.get("platform") == "android"
+        and cookie_identity.get("device_id")
+    )
     account_match = bool(ticket_uid and cookie_uid and ticket_uid == cookie_uid)
 
-    if not ticket:
+    if not ticket and local_ticket_ready:
+        state, message = "local_ready", "已登录 App Cookie 可在本地生成 x-tk，无需模拟器"
+    elif not ticket:
         state, message = "missing_ticket", "缺少已登录 App 实际请求头中的 x-tk"
     elif _looks_like_mobile_v4_sign(ticket):
         state, message = "sign_as_ticket", "当前值看起来是 URL 查询参数 sign，不是请求头 x-tk"
@@ -391,13 +431,15 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
     return {
         "state": state,
         "message": message,
-        "complete": state == "complete",
+        "complete": state in {"complete", "local_ready"},
+        "local_ticket_ready": local_ticket_ready,
         "has_ticket": bool(ticket),
         "has_mobile_cookie": bool(cookie),
         "has_login_cookie": has_login_cookie,
         "has_user_agent": bool(user_agent),
         "device": credential.get("device", "android"),
         "api_device": credential.get("api_device", ""),
+        "cookie_app_version": cookie_identity.get("app_version", ""),
         "ticket_has_account": bool(ticket_uid and ticket_uid != "0"),
         "account_match": account_match if ticket_uid and cookie_uid else None,
         "ticket_scope": (

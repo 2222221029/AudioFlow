@@ -12,6 +12,7 @@ from core.ximalaya_credentials import (
     save_ximalaya_mobile_ticket,
     ximalaya_mobile_credential_status,
     ximalaya_mobile_ticket_metadata,
+    ximalaya_mobile_cookie_identity,
     ximalaya_mobile_ticket_uid,
 )
 
@@ -96,6 +97,38 @@ def test_play_track_ticket_from_real_base_info_request_is_accepted():
     assert status["ticket_scope"] == "playTrack/play"
     assert status["account_match"] is True
     assert status["complete"] is True
+
+
+def test_android_app_cookie_alone_is_ready_for_local_ticket_generation():
+    cookie = (
+        "channel=android; "
+        "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.3.33.3; "
+        "1&_token=123456&mobile-session"
+    )
+    credential = normalize_ximalaya_mobile_credentials(cookie)
+    identity = ximalaya_mobile_cookie_identity(credential)
+    status = ximalaya_mobile_credential_status(credential)
+
+    assert identity == {
+        "uid": "123456",
+        "platform": "android",
+        "device_id": "2201597135cb4c99bb32b3be8cf79608",
+        "app_version": "9.3.33.3",
+    }
+    assert status["state"] == "local_ready"
+    assert status["local_ticket_ready"] is True
+    assert status["has_ticket"] is False
+    assert status["complete"] is True
+
+
+def test_login_cookie_without_stable_android_device_is_not_local_ready():
+    status = ximalaya_mobile_credential_status(
+        "channel=android; 1&_token=123456&mobile-session"
+    )
+
+    assert status["state"] == "missing_ticket"
+    assert status["local_ticket_ready"] is False
+    assert status["complete"] is False
 
 
 def test_full_http_request_preserves_android2_sign_variant():

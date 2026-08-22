@@ -2,8 +2,8 @@
 
 This module does not create or bypass a login session.  It only reproduces the
 official client's XUID/Ticket transformation from a previously authenticated
-mobile Cookie and matching Ticket bundle.  Callers must retain the Bridge as a
-fallback for initial login and session renewal.
+mobile Cookie.  A previously captured ticket is optional and is used only to
+preserve the exact SDK/App version suffix when available.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Mapping
 
 from .ximalaya_credentials import (
     normalize_ximalaya_mobile_credentials,
-    ximalaya_mobile_credential_status,
+    ximalaya_mobile_cookie_identity,
     ximalaya_mobile_ticket_metadata,
 )
 
@@ -28,7 +28,6 @@ _TICKET_KEY = bytes.fromhex(
     "b0b1a8ac34e66efa95c7f4157cf8b6ba33dfc2075e41fb964f2e12dcaa"
 )
 _XUID_SIGN_INDEXES = (3, 6, 9, 12, 19, 22, 25, 28)
-_DEVICE_RE = re.compile(r"(?:^|;\s*)1&_device=android&([0-9a-fA-F-]{32,36})&")
 _UA_VERSION_RE = re.compile(r"ting[_/](\d+(?:\.\d+){2,3})", re.I)
 _TICKET_SUFFIX_RE = re.compile(
     r"com\.ximalaya\.ting\.android!([^!]+)!([^!]+)!b=[^&!]+&s=[^&!]+&u=\d+"
@@ -60,24 +59,27 @@ def _session_versions(credentials: Mapping[str, str]) -> tuple[str, str]:
     if match:
         return match.group(1), match.group(2)
     ua_match = _UA_VERSION_RE.search(credentials.get("user_agent", ""))
-    return "1.3.27", ua_match.group(1) if ua_match else "9.4.52.3"
+    if ua_match:
+        return "1.3.27", ua_match.group(1)
+    cookie_version = ximalaya_mobile_cookie_identity(credentials).get("app_version", "")
+    return "1.3.27", cookie_version or "9.4.52.3"
 
 
 def generate_mobile_ticket(value, business: str = "playTrack", scene: str = "play") -> str:
     credentials = normalize_ximalaya_mobile_credentials(value)
-    status = ximalaya_mobile_credential_status(credentials)
-    if not status.get("complete"):
-        raise LocalTicketError(status.get("message") or "移动端登录会话不可用")
-
+    identity = ximalaya_mobile_cookie_identity(credentials)
     metadata = ximalaya_mobile_ticket_metadata(credentials.get("x_tk", ""))
-    uid = str(metadata.get("uid") or "").strip()
+    cookie_uid = str(identity.get("uid") or "").strip()
+    ticket_uid = str(metadata.get("uid") or "").strip()
+    if ticket_uid and ticket_uid != "0" and cookie_uid and ticket_uid != cookie_uid:
+        raise LocalTicketError("现有移动端 Ticket 与 App Cookie 属于不同账号")
+    uid = cookie_uid or ticket_uid
     if not uid.isdigit() or uid == "0":
-        raise LocalTicketError("现有移动端 Ticket 不包含已登录 UID")
+        raise LocalTicketError("移动端 Cookie 不包含已登录账号 UID")
 
-    device_match = _DEVICE_RE.search(credentials.get("cookie", ""))
-    if not device_match:
+    if identity.get("platform") != "android" or not identity.get("device_id"):
         raise LocalTicketError("移动端 Cookie 缺少稳定 Android 设备 ID")
-    stable_hex = device_match.group(1).replace("-", "")
+    stable_hex = identity["device_id"]
     try:
         stable_id = bytes.fromhex(stable_hex)
     except ValueError as exc:

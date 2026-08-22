@@ -734,7 +734,7 @@ export function useAudioFlowApp() {
     try {
       await runBusy('xmlyMobileTicket', async () => {
         await api('/api/cookies/xmly/mobile-ticket', {method: 'POST', body: {credentials: credentials.trim()}});
-        showToast('移动端完整请求头已独立保存', 'ok');
+        showToast('移动端会话已保存；可用时将本地生成 x-tk', 'ok');
         await loadCookies();
       });
       return true;
@@ -748,7 +748,7 @@ export function useAudioFlowApp() {
     try {
       await runBusy('xmlyMobileTicketDelete', async () => {
         await api('/api/cookies/xmly/mobile-ticket', {method: 'DELETE'});
-        showToast('已删除移动端请求头，网页登录保留', 'ok');
+        showToast('已删除移动端会话，网页登录保留', 'ok');
         await loadCookies();
       });
       return true;

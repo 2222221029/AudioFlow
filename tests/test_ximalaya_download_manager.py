@@ -11,6 +11,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from core.ximalaya_download_manager import XimalayaDownloadManager
+from core.ximalaya_credentials import ximalaya_mobile_ticket_metadata
 from core.ximalaya_local_ticket import LocalTicketError
 
 
@@ -193,6 +194,30 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             ))
 
         self.assertEqual(manager._mobile_ticket(), "fresh-local-ticket")
+        post.assert_not_called()
+
+    def test_cookie_only_local_mode_generates_ticket_without_bridge(self):
+        manager = XimalayaDownloadManager(mobile_credentials={
+            "cookie": (
+                "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.3.33.3;"
+                "1&_token=123456&session"
+            ),
+        })
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "local",
+            "XIMALAYA_TICKET_PROVIDER_URL": "",
+        }), mock.patch("core.ximalaya_download_manager.requests.post") as post:
+            self.assertTrue(manager._refresh_mobile_credentials_from_provider(
+                "123", 3, 1786632464075, "android2"
+            ))
+
+        self.assertEqual(manager._last_mobile_ticket_source, "local")
+        self.assertEqual(manager.mobile_credentials["api_device"], "android2")
+        self.assertIn("9.3.33.3", manager.mobile_credentials["user_agent"])
+        self.assertEqual(
+            ximalaya_mobile_ticket_metadata(manager._mobile_ticket())["uid"],
+            "123456",
+        )
         post.assert_not_called()
 
     def test_auto_ticket_mode_falls_back_to_bridge_when_local_session_is_unusable(self):

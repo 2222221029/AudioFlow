@@ -21,6 +21,7 @@ from .ximalaya_credentials import (
     MOBILE_V4_ANONYMOUS_TICKET,
     has_ximalaya_mobile_credentials,
     normalize_ximalaya_mobile_credentials,
+    ximalaya_mobile_cookie_identity,
     ximalaya_mobile_credential_status,
 )
 from .ximalaya_local_ticket import LocalTicketError, generate_mobile_ticket
@@ -334,11 +335,12 @@ class XimalayaDownloadManager:
         cache.  The provider may return either an allow-listed credential
         mapping or ``{"headers": {...}}``.
         """
-        ticket_mode = str(os.environ.get("XIMALAYA_TICKET_MODE") or "bridge").strip().lower()
+        ticket_mode = str(os.environ.get("XIMALAYA_TICKET_MODE") or "auto").strip().lower()
         if ticket_mode not in {"bridge", "local", "auto"}:
             ticket_mode = "bridge"
         if force_bridge:
             ticket_mode = "bridge"
+        local_error = None
         if ticket_mode in {"local", "auto"}:
             try:
                 fresh_ticket = generate_mobile_ticket(
@@ -347,16 +349,31 @@ class XimalayaDownloadManager:
                     scene="play",
                 )
                 self.mobile_credentials["x_tk"] = fresh_ticket
+                identity = ximalaya_mobile_cookie_identity(self.mobile_credentials)
+                if not self.mobile_credentials.get("user_agent"):
+                    app_version = identity.get("app_version") or "9.4.52.3"
+                    self.mobile_credentials["user_agent"] = (
+                        f"ting_{app_version}(com.ximalaya.ting.android,Android)"
+                    )
+                if not self.mobile_credentials.get("api_device"):
+                    self.mobile_credentials["api_device"] = "android2"
                 self._last_mobile_ticket_source = "local"
                 return True
             except LocalTicketError as exc:
+                local_error = exc
                 if ticket_mode == "local":
                     self._record_error(f"喜马拉雅本地 Ticket 生成失败：{exc}")
                     return False
 
         provider_url = self._ticket_provider_url()
         if not provider_url:
-            return self._has_mobile_credentials()
+            if self._mobile_ticket() and self._has_mobile_credentials():
+                return True
+            if local_error is not None:
+                self._record_error(f"喜马拉雅本地 Ticket 生成失败：{local_error}")
+            else:
+                self._record_error("未配置 Bridge，且没有可用的本地 x-tk")
+            return False
 
         request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
         provider_token = str(os.environ.get("XIMALAYA_TICKET_PROVIDER_TOKEN") or "").strip()
@@ -913,7 +930,7 @@ class XimalayaDownloadManager:
                 if (
                     str(data.get("ret")) in {"50", "1001"}
                     and getattr(self, "_last_mobile_ticket_source", "") == "local"
-                    and str(os.environ.get("XIMALAYA_TICKET_MODE") or "bridge").strip().lower() == "auto"
+                    and str(os.environ.get("XIMALAYA_TICKET_MODE") or "auto").strip().lower() == "auto"
                     and self._ticket_provider_url()
                 ):
                     print("   ♻️ 本地 Ticket 被 V4 拒绝，自动回退现有 Bridge 重新取票")

@@ -941,7 +941,9 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               <span
                 className={`xmly-credential-pill ${info.has_mobile_ticket ? 'ready' : (mobileCredential.has_ticket ? 'warning' : '')}`}
                 title={mobileCredential.message || ''}
-              >移动音质：{mobileCredential.dynamic_provider ? 'Bridge 已配置' : (info.has_mobile_ticket ? '格式完整' : (mobileCredential.has_ticket ? '凭证不完整' : '未设置'))}</span>
+              >移动音质：{mobileCredential.local_ticket_ready
+                ? (mobileCredential.dynamic_provider ? '本地出票（Bridge 兜底）' : '本地出票就绪')
+                : (mobileCredential.dynamic_provider ? 'Bridge 已配置' : (info.has_mobile_ticket ? '格式完整' : (mobileCredential.has_ticket ? '凭证不完整' : '未设置')))}</span>
             </div>
           )}
           <div className="cookie-actions">
@@ -970,11 +972,11 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
                 </button>
               </div>
               <div className="cookie-desc">通过 NAS 上的官方 App 登录服务获取移动端会话，只用于喜马拉雅移动端 V4；不会修改网页登录 Cookie。</div>
-              <div className="xmly-ticket-label">或手动粘贴完整请求头（独立保存、不回显）</div>
+              <div className="xmly-ticket-label">或粘贴 App Cookie / 完整请求头（独立保存、不回显）</div>
               <textarea
                 value={mobileTicket}
                 onChange={(event) => setMobileTicket(event.target.value)}
-                placeholder={'请连同第一行 GET /mobile-playpage/track/v4/baseInfo/...?device=android2... 一起复制，然后粘贴：\nCookie: ...\nUser-Agent: ...\nx-tk: ...\n注意：URL 查询参数 sign 不是 x-tk'}
+                placeholder={'最简方式（无需 x-tk）：\nCookie: 1&_device=android&...; 1&_token=账号UID&...\n\n也兼容完整请求：\nGET /mobile-playpage/track/v4/baseInfo/...?device=android2...\nCookie: ...\nUser-Agent: ...\nx-tk: ...'}
                 autoComplete="off"
                 spellCheck="false"
               />
@@ -986,7 +988,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
                     if (await actions.saveXimalayaMobileTicket(mobileTicket)) setMobileTicket('');
                   }}
                 >
-                  <BusyIcon busy={busy.xmlyMobileTicket} icon="i-key" />解析并保存请求头
+                  <BusyIcon busy={busy.xmlyMobileTicket} icon="i-key" />解析并保存移动端会话
                 </button>
                 {(info.has_mobile_ticket || mobileCredential.has_ticket || mobileCredential.has_mobile_cookie) && (
                   <button className="btn btn-danger btn-tiny" disabled={busy.xmlyMobileTicketDelete} onClick={actions.deleteXimalayaMobileTicket}>
@@ -997,7 +999,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               {mobileCredential.message && mobileCredential.state !== 'missing_ticket' && (
                 <div className={`cookie-note ${info.has_mobile_ticket ? 'ok' : 'warn'}`}>{mobileCredential.message}</div>
               )}
-              <div className="cookie-desc">请把 <code>GET /mobile-playpage/track/v4/baseInfo/...?device=...</code> 请求行和同一请求的 <code>x-tk</code>、<code>Cookie</code>、<code>User-Agent</code> 一起粘贴。请求行里的 <code>device=android</code> 或 <code>device=android2</code> 会参与 sign，必须与官方请求一致；只粘贴请求头时项目会自动尝试两个 Android 签名分支。URL 中的 <code>sign</code> 不能当作 <code>x-tk</code>。</div>
+              <div className="cookie-desc">推荐粘贴已登录 Android App 的 <code>Cookie</code>；其中必须包含账号 token、稳定的 <code>1&amp;_device=android&amp;设备ID</code>。AudioFlow 会按官方算法为每次请求本地生成 <code>x-tk</code>，无需模拟器。原来的完整请求头与 Bridge 仍兼容并可作为自动兜底。请勿随机更换设备 ID，以免触发账号风控。</div>
             </div>
           )}
         </>

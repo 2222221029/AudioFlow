@@ -3617,10 +3617,15 @@ def api_get_cookies():
             )
             dynamic_provider = bool(str(os.environ.get("XIMALAYA_TICKET_PROVIDER_URL") or "").strip())
             if dynamic_provider:
+                local_ready = bool(mobile_status.get("local_ticket_ready"))
                 mobile_status = {
                     **mobile_status,
-                    "state": "dynamic_provider",
-                    "message": "已配置 AudioFlow Bridge，下载时会为每次请求动态获取 x-tk",
+                    "state": "local_with_bridge" if local_ready else "dynamic_provider",
+                    "message": (
+                        "已启用本地 x-tk，Bridge 将在本地会话失效时自动兜底"
+                        if local_ready else
+                        "已配置 AudioFlow Bridge，下载时会为每次请求动态获取 x-tk"
+                    ),
                     "complete": True,
                     "dynamic_provider": True,
                 }
@@ -3778,7 +3783,7 @@ def api_set_cookie():
 
 @app.post("/api/cookies/xmly/mobile-ticket")
 def api_set_ximalaya_mobile_ticket():
-    """Save a complete captured App request independently from browser Cookie."""
+    """Save an App Cookie or complete captured request independently."""
     payload = request.get_json(silent=True) or {}
     incoming = payload.get("credentials", payload.get("ticket", ""))
     credential = normalize_ximalaya_mobile_credentials(incoming)
