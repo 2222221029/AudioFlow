@@ -113,7 +113,19 @@ function currentFragmentActivity() {
             return Java.cast(activityField.get(record), Java.use('androidx.fragment.app.FragmentActivity'));
         }
     }
-    throw new Error('喜马拉雅 App 当前没有可用页面，请先打开 App');
+    // ReDroid may restart without restoring a foreground task. Wake the official
+    // app so the next login call has the FragmentActivity required by its SDK.
+    const application = ActivityThread.currentApplication();
+    if (application) {
+        const intent = application.getPackageManager().getLaunchIntentForPackage('com.ximalaya.ting.android');
+        if (intent) {
+            const Intent = Java.use('android.content.Intent');
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK.value);
+            application.startActivity(intent);
+            throw new Error('已自动打开喜马拉雅 App，请等待几秒后重试');
+        }
+    }
+    throw new Error('喜马拉雅 App 当前没有可用页面，且无法自动打开 App');
 }
 
 function loginEnvironment() {
