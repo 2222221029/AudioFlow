@@ -129,6 +129,29 @@ function loginEnvironment() {
 
 let loginCallbackSequence = 0;
 const smsBizKeys = {};
+function loginTimeout(promise, action) {
+    return new Promise(function (resolve, reject) {
+        let settled = false;
+        const timer = setTimeout(function () {
+            if (!settled) {
+                settled = true;
+                reject(new Error(action + '超时，请确认喜马拉雅 App 已停留在可见页面后重试'));
+            }
+        }, 15000);
+        promise.then(function (value) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        }, function (error) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
+
 function loginCallback(onSuccess, onError) {
     const env = loginEnvironment();
     loginCallbackSequence += 1;
@@ -161,64 +184,68 @@ function javaMap(values) {
 }
 
 function appSendSms(phone) {
-    return new Promise(function (resolve, reject) {
+    return loginTimeout(new Promise(function (resolve, reject) {
         Java.perform(function () {
-            try {
-                const env = loginEnvironment();
-                const callback = loginCallback(
-                    function (value) {
-                        const bizKey = asText(value);
-                        if (!bizKey) throw new Error('验证码已发送但未返回业务密钥');
-                        smsBizKeys[phone] = bizKey;
-                        resolve({ok: true, message: '验证码已发送'});
-                    },
-                    function (code, message) { reject(new Error(message || ('发送验证码失败：' + code))); }
-                );
-                env.request.a.overload(
-                    'androidx.fragment.app.FragmentActivity', 'int',
-                    'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
-                    'com.ximalaya.ting.android.loginservice.base.a'
-                ).call(env.request, currentFragmentActivity(), 5, env.provider,
-                    javaMap({mobile: phone, sendType: 1}), callback);
-            } catch (error) { reject(error); }
+            Java.scheduleOnMainThread(function () {
+                try {
+                    const env = loginEnvironment();
+                    const callback = loginCallback(
+                        function (value) {
+                            const bizKey = asText(value);
+                            if (!bizKey) throw new Error('验证码已发送但未返回业务密钥');
+                            smsBizKeys[phone] = bizKey;
+                            resolve({ok: true, message: '验证码已发送'});
+                        },
+                        function (code, message) { reject(new Error(message || ('发送验证码失败：' + code))); }
+                    );
+                    env.request.a.overload(
+                        'androidx.fragment.app.FragmentActivity', 'int',
+                        'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
+                        'com.ximalaya.ting.android.loginservice.base.a'
+                    ).call(env.request, currentFragmentActivity(), 5, env.provider,
+                        javaMap({mobile: phone, sendType: 1}), callback);
+                } catch (error) { reject(error); }
+            });
         });
-    });
+    }), '发送验证码');
 }
 
 function appSmsLogin(phone, code) {
-    return new Promise(function (resolve, reject) {
+    return loginTimeout(new Promise(function (resolve, reject) {
         Java.perform(function () {
-            try {
-                captured = {};
-                const env = loginEnvironment();
-                const verifyCallback = loginCallback(function (response) {
-                    try {
-                        const VerifySmsResponse = Java.use('com.ximalaya.ting.android.loginservice.model.VerifySmsResponse');
-                        const verified = Java.cast(response, VerifySmsResponse);
-                        const smsKey = asText(verified.getBizKey());
-                        const bizKey = asText(smsBizKeys[phone]);
-                        if (!smsKey || !bizKey) throw new Error('验证码校验成功但未返回登录密钥');
-                        const loginCallbackInstance = loginCallback(function () {
-                            delete smsBizKeys[phone];
-                            resolve({ok: true, message: '移动端登录成功'});
-                        }, function (errorCode, message) {
-                            reject(new Error(message || ('登录失败：' + errorCode)));
-                        });
-                        env.request.f.overload(
-                            'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
-                            'com.ximalaya.ting.android.loginservice.base.a'
-                        ).call(env.request, env.provider, javaMap({bizKey: bizKey, smsKey: smsKey}), loginCallbackInstance);
-                    } catch (error) { reject(error); }
-                }, function (errorCode, message) {
-                    reject(new Error(message || ('验证码错误：' + errorCode)));
-                });
-                env.request.d.overload(
-                    'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
-                    'com.ximalaya.ting.android.loginservice.base.a'
-                ).call(env.request, env.provider, javaMap({mobile: phone, code: code}), verifyCallback);
-            } catch (error) { reject(error); }
+            Java.scheduleOnMainThread(function () {
+                try {
+                    captured = {};
+                    const env = loginEnvironment();
+                    const verifyCallback = loginCallback(function (response) {
+                        try {
+                            const VerifySmsResponse = Java.use('com.ximalaya.ting.android.loginservice.model.VerifySmsResponse');
+                            const verified = Java.cast(response, VerifySmsResponse);
+                            const smsKey = asText(verified.getBizKey());
+                            const bizKey = asText(smsBizKeys[phone]);
+                            if (!smsKey || !bizKey) throw new Error('验证码校验成功但未返回登录密钥');
+                            const loginCallbackInstance = loginCallback(function () {
+                                delete smsBizKeys[phone];
+                                resolve({ok: true, message: '移动端登录成功'});
+                            }, function (errorCode, message) {
+                                reject(new Error(message || ('登录失败：' + errorCode)));
+                            });
+                            env.request.f.overload(
+                                'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
+                                'com.ximalaya.ting.android.loginservice.base.a'
+                            ).call(env.request, env.provider, javaMap({bizKey: bizKey, smsKey: smsKey}), loginCallbackInstance);
+                        } catch (error) { reject(error); }
+                    }, function (errorCode, message) {
+                        reject(new Error(message || ('验证码错误：' + errorCode)));
+                    });
+                    env.request.d.overload(
+                        'com.ximalaya.ting.android.loginservice.base.d', 'java.util.Map',
+                        'com.ximalaya.ting.android.loginservice.base.a'
+                    ).call(env.request, env.provider, javaMap({mobile: phone, code: code}), verifyCallback);
+                } catch (error) { reject(error); }
+            });
         });
-    });
+    }), '验证码登录');
 }
 
 function captureRequest(request) {
