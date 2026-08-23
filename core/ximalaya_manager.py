@@ -9,11 +9,45 @@ import requests
 import time
 import base64
 import json
+import re
 import urllib.parse
 import threading
 from typing import List, Dict, Optional, Tuple
 from .safe_logging import log_context, log_event, platform_verbose_enabled
 from .time_api import get_timestamp_ms_str
+
+
+_XIMALAYA_ALBUM_PATH_RE = re.compile(r"/(?:album|soundbook)/(\d+)(?:[/?#]|$)", re.I)
+
+
+def parse_ximalaya_album_id(value) -> Optional[str]:
+    """Extract an exact album ID from a Ximalaya album ID or share URL."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return text
+
+    candidate = text if "://" in text else f"https://{text}"
+    try:
+        parsed = urllib.parse.urlparse(candidate)
+    except ValueError:
+        return None
+    hostname = str(parsed.hostname or "").lower().rstrip(".")
+    if hostname != "ximalaya.com" and not hostname.endswith(".ximalaya.com"):
+        return None
+
+    match = _XIMALAYA_ALBUM_PATH_RE.search(parsed.path or "")
+    if match:
+        return match.group(1)
+
+    query = urllib.parse.parse_qs(parsed.query)
+    for key in ("albumId", "album_id"):
+        values = query.get(key) or []
+        if values and str(values[0]).isdigit():
+            return str(values[0])
+    return None
+
 
 class XimalayaManager:
     """喜马拉雅管理器"""

@@ -52,7 +52,7 @@ from core.platform_config import (
     project_root,
     pwa_enabled,
 )
-from core.subscription_manager import SubscriptionManager, chapter_key
+from core.subscription_manager import SubscriptionManager, canonical_subscription_platform, chapter_key
 from core.ximalaya_credentials import (
     MOBILE_CREDENTIAL_PLATFORM,
     extract_ximalaya_mobile_ticket,
@@ -169,6 +169,13 @@ wecom_session_lock = threading.Lock()
 wecom_sessions = {}
 WECOM_SESSION_TTL_SECONDS = int(os.getenv("WECOM_SESSION_TTL_SECONDS", "600") or "600")
 WECOM_SESSION_MAX_ITEMS = int(os.getenv("WECOM_SESSION_MAX_ITEMS", "500") or "500")
+XMLY_WEB_SUBSCRIPTION_QUALITY = "喜马拉雅网页版接口"
+XMLY_SUBSCRIPTION_QUALITIES = {
+    XMLY_WEB_SUBSCRIPTION_QUALITY,
+    "喜马拉雅移动端接口（自动最高音质）",
+    "杜比全景声优先（自动降级）",
+    "无损优先（自动降级）",
+}
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
 BACKGROUND_EVENTS_FILE = log_dir() / "events.jsonl"
@@ -373,6 +380,23 @@ migrate_runtime_file(data_dir() / "tasks.json", TASKS_FILE)
 subscription_manager = SubscriptionManager(config_dir=config_dir())
 
 notification_manager = NotificationManager(config_dir() / "notifications.json")
+
+
+def ximalaya_subscription_quality(album, value=None, *, default_web=False):
+    """Validate a per-album Ximalaya subscription profile."""
+    platform = canonical_subscription_platform(
+        (album or {}).get("platform") or (album or {}).get("source")
+    )
+    if platform != "喜马拉雅":
+        if value not in (None, ""):
+            raise ValueError("只有喜马拉雅订阅支持单独选择网页版、杜比或无损")
+        return None
+    quality = str(value or "").strip()
+    if not quality and default_web:
+        quality = XMLY_WEB_SUBSCRIPTION_QUALITY
+    if quality and quality not in XMLY_SUBSCRIPTION_QUALITIES:
+        raise ValueError("不支持的喜马拉雅订阅下载方式")
+    return quality or None
 
 
 def _json_safe(value):
@@ -631,7 +655,12 @@ def _sync_personal_ximalaya_subscriptions(force=False):
         for album in albums:
             sid = subscription_manager.subscription_id(album)
             existed = bool(subscription_manager.get(sid))
-            item = subscription_manager.add_or_update(album, [], active_download_dir())
+            item = subscription_manager.add_or_update(
+                album,
+                [],
+                active_download_dir(),
+                subscription_quality=None if existed else XMLY_WEB_SUBSCRIPTION_QUALITY,
+            )
             if not existed:
                 added += 1
                 try:
@@ -829,18 +858,23 @@ def subscription_download_options(item, album, voice=None):
     """
     item = item or {}
     album = album or {}
-    platform = str(album.get("platform") or item.get("platform") or "").strip()
+    platform = canonical_subscription_platform(album.get("platform") or item.get("platform"))
     explicit_quality = str(
         item.get("subscription_quality")
         or album.get("subscription_quality")
         or ""
     ).strip()
 
-    if explicit_quality:
+    if platform == "喜马拉雅":
+        # Imported or legacy records may contain a global bitrate label that is
+        # not a valid Ximalaya route. Keep those records usable and conservative.
+        quality = (
+            explicit_quality
+            if explicit_quality in XMLY_SUBSCRIPTION_QUALITIES
+            else XMLY_WEB_SUBSCRIPTION_QUALITY
+        )
+    elif explicit_quality:
         quality = explicit_quality
-    elif platform == "喜马拉雅":
-        # Subscription downloads intentionally default to the web endpoint.
-        quality = "喜马拉雅网页版接口"
     elif platform == "酷我听书":
         # Do not let the generic M4A value normalize to Kuwo lossless.  Standard
         # mode itself falls back 128 -> 192 -> 320 when a bitrate is unavailable.
@@ -1255,6 +1289,17 @@ def merge_album_detail(album, detail):
     if _to_int(merged.get("episodes")) <= 0 and _to_int(normalized.get("episodes")) > 0:
         merged["episodes"] = normalized["episodes"]
     return normalize_album(merged)
+
+
+def ximalaya_album_identity_error(album):
+    album = album or {}
+    if album.get("platform") != "喜马拉雅":
+        return ""
+    requested_id = str(album.get("requested_album_id") or "").strip()
+    actual_id = str(album.get("id") or album.get("album_id") or album.get("book_id") or "").strip()
+    if requested_id and requested_id != actual_id:
+        return f"喜马拉雅专辑ID不一致：请求 {requested_id}，实际任务 {actual_id}，已拒绝创建任务"
+    return ""
 
 
 def parse_duration_seconds(value):
@@ -1677,6 +1722,13 @@ def album_library_summary(album):
     return {
         "subscribed": subscribed,
         "subscription_id": sid,
+        "subscription_quality": (
+            subscription.get("subscription_quality") if subscribed else ""
+        ) or (
+            XMLY_WEB_SUBSCRIPTION_QUALITY
+            if subscribed and canonical_subscription_platform(normalized.get("platform")) == "喜马拉雅"
+            else ""
+        ),
         "total": total,
         "downloaded": downloaded,
         "missing": max(0, total - downloaded - restricted),
@@ -1910,6 +1962,11 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     album = normalize_album(album)
     chapters = list(chapters or [])
     options = dict(options or {})
+    album_id = str(album.get("id") or album.get("album_id") or album.get("book_id") or "")
+    requested_album_id = str(album.get("requested_album_id") or "").strip()
+    identity_error = ximalaya_album_identity_error(album)
+    if identity_error:
+        raise ValueError(identity_error)
     previous_task = task_snapshot(task_id)
     active_chapters = active_task_chapter_tasks(album)
     pending_chapters = [chapter for chapter in chapters if chapter_key(chapter) not in active_chapters]
@@ -1929,6 +1986,25 @@ def start_download_task(task_id, album, chapters, options, source="web"):
         expected = _to_int(album.get("episodes"))
         if expected > 0 and len(chapters) < expected:
             warning = f"懒人听书目录可能未完整加载：当前任务 {len(chapters)}/{expected} 章。"
+    quality = str(options.get("quality") or "M4A 96K")
+    download_route = quality
+    if album.get("platform") == "喜马拉雅" and quality == XMLY_WEB_SUBSCRIPTION_QUALITY:
+        download_route = "旧版 V3 Level 2（仅在接口确认受限时切换网页授权接口）"
+    with log_context(
+        platform=album.get("platform") or "未知平台",
+        operation="创建下载任务",
+        task_id=task_id,
+        album_id=album_id,
+    ):
+        log_event(
+            "INFO",
+            "下载任务身份与路由已确认",
+            requested_album_id=requested_album_id or album_id,
+            quality=quality,
+            route=download_route,
+            chapters=len(chapters),
+            source=source,
+        )
     set_task(
         task_id,
         status="queued",
@@ -2414,7 +2490,8 @@ def _wecom_help_text():
         "搜索 关键词：全平台搜索（结果以卡片推送）\n"
         "搜索 平台 关键词：指定平台搜索，如「搜索 喜马拉雅 三体」\n"
         "下一页 / 上一页：翻看搜索结果\n"
-        "订阅 序号：订阅最近一次搜索结果\n"
+        "订阅 序号：按网页版接口订阅最近一次搜索结果\n"
+        "订阅 序号 杜比 / 无损：为该喜马拉雅专辑单独使用移动端 V4\n"
         "下载 序号：下载最近一次搜索结果全部章节\n"
         "示例：搜索 三体 / 搜索 喜马拉雅 三体"
     )
@@ -2615,22 +2692,46 @@ def _wecom_async_command(service_id, user_id, text):
             _wecom_push(service_id, user_id, articles=_wecom_search_articles(session.get("keyword", ""), session.get("platform", "all"), results, page))
             _wecom_push_page_hint(service_id, user_id, results, page)
             return
-        m_sub = re.match(r"^(订阅|subscribe|/subscribe)\s+(\d+)$", text, re.I)
+        m_sub = re.match(
+            r"^(订阅|subscribe|/subscribe)\s+(\d+)(?:\s+(网页版?|网页|杜比(?:全景声)?|全景声|无损))?$",
+            text,
+            re.I,
+        )
         if m_sub:
             album = _wecom_get_cached_album(service_id, user_id, m_sub.group(2))
             album, chapters, voice = _wecom_load_album_chapters(album)
             if voice:
                 album["voice"] = voice
-            item = subscription_manager.add_or_update(album, chapters, active_download_dir())
+            quality_alias = str(m_sub.group(3) or "").strip()
+            requested_quality = {
+                "杜比": "杜比全景声优先（自动降级）",
+                "杜比全景声": "杜比全景声优先（自动降级）",
+                "全景声": "杜比全景声优先（自动降级）",
+                "无损": "无损优先（自动降级）",
+            }.get(quality_alias, XMLY_WEB_SUBSCRIPTION_QUALITY)
+            subscription_quality = ximalaya_subscription_quality(
+                album,
+                requested_quality if album.get("platform") == "喜马拉雅" else (requested_quality if quality_alias else None),
+                default_web=True,
+            )
+            item = subscription_manager.add_or_update(
+                album,
+                chapters,
+                active_download_dir(),
+                subscription_quality=subscription_quality,
+            )
             job = None
             if subscription_manager.settings().get("enabled", True):
                 ensure_subscription_scheduler()
                 job = start_subscription_job(item["id"], queue_missing=subscription_manager.settings().get("auto_download_missing", True))
             tpl = notification_manager.get_wecom_templates()
             fields = {"title": album.get("title") or "", "episodes": len(chapters), "job_suffix": (f"\n检测任务：{job.get('id')}" if job else "")}
+            description = _wecom_render(tpl["subscribe_desc"], **fields)
+            if subscription_quality:
+                description += f"\n下载方式：{subscription_quality}"
             _wecom_push(service_id, user_id, articles=_wecom_result_card(
                 _wecom_render(tpl["subscribe_title"], **fields),
-                _wecom_render(tpl["subscribe_desc"], **fields),
+                description,
                 album.get("cover"), album.get("platform")))
             return
         m_dl = re.match(r"^(下载|download|/download)\s+(\d+)$", text, re.I)
@@ -2671,7 +2772,7 @@ def _wecom_handle_text_command(service_id, user_id, text):
     if re.match(r"^(下一页|上一页|next|prev|/next|/prev)$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
         return "⏳ 正在翻页…"
-    if re.match(r"^(订阅|subscribe|/subscribe)\s+\d+$", text, re.I):
+    if re.match(r"^(订阅|subscribe|/subscribe)\s+\d+(?:\s+(?:网页版?|网页|杜比(?:全景声)?|全景声|无损))?$", text, re.I):
         threading.Thread(target=_wecom_async_command, args=(service_id, user_id, text), daemon=True).start()
         return tpl["processing_subscribe"]
     if re.match(r"^(下载|download|/download)\s+\d+$", text, re.I):
@@ -3265,6 +3366,9 @@ def api_proxy_audio():
 def api_download():
     payload = request.get_json(silent=True) or {}
     album = normalize_album(payload.get("album") or {})
+    identity_error = ximalaya_album_identity_error(album)
+    if identity_error:
+        return json_error(identity_error)
     download_all = bool(payload.get("all_chapters") or payload.get("allChapters"))
     options = payload.get("options") or {}
     options["download_dir"] = resolve_download_dir(options.get("download_dir"))
@@ -3833,7 +3937,22 @@ def api_subscribe():
         return json_error("缺少专辑信息")
     if voice:
         album["voice"] = voice
-    item = subscription_manager.add_or_update(album, chapters, active_download_dir())
+    try:
+        with subscription_manager.locked():
+            existing = subscription_manager.get(subscription_manager.subscription_id(album))
+            subscription_quality = ximalaya_subscription_quality(
+                album,
+                payload.get("subscription_quality") if "subscription_quality" in payload else None,
+                default_web=not existing,
+            )
+            item = subscription_manager.add_or_update(
+                album,
+                chapters,
+                active_download_dir(),
+                subscription_quality=subscription_quality,
+            )
+    except ValueError as exc:
+        return json_error(str(exc))
     job = None
     settings = subscription_manager.settings()
     if settings.get("enabled", True) or load_all:
@@ -3853,6 +3972,31 @@ def api_subscribe():
 def api_unsubscribe(sid):
     ok = subscription_manager.cancel(sid)
     return json_ok(cancelled=ok)
+
+
+@app.patch("/api/subscriptions/<path:sid>")
+def api_update_subscription(sid):
+    payload = request.get_json(silent=True) or {}
+    quality_value = str(payload.get("subscription_quality") or "").strip()
+    if not quality_value:
+        return json_error("请选择订阅下载方式")
+    try:
+        with subscription_manager.locked():
+            item = subscription_manager.get(sid)
+            if not item:
+                return json_error("订阅不存在", 404)
+            album = normalize_album(item.get("album") or item)
+            quality = ximalaya_subscription_quality(album, quality_value)
+            updated = subscription_manager.set_subscription_quality(sid, quality)
+    except ValueError as exc:
+        return json_error(str(exc))
+    append_background_event(
+        "subscription",
+        "订阅下载方式已更新",
+        f"{updated.get('title') or sid}：{quality}",
+        {"sid": sid, "subscription_quality": quality},
+    )
+    return json_ok(subscription=updated)
 
 
 @app.post("/api/subscriptions/<path:sid>/check")

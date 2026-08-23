@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.append(str(Path(__file__).parent))
 
 # 暂时使用现有的管理器
-from .ximalaya_manager import XimalayaManager
+from .ximalaya_manager import XimalayaManager, parse_ximalaya_album_id
 from .lrts_manager import LRTSManager
 from .fanqie_manager import FanqieManager
 from .fanqie_tingshu_manager import get_fanqie_tingshu_manager, parse_book_id
@@ -445,8 +445,23 @@ class EnhancedSearchManager:
     def _search_books(self, keyword: str, platform: str = 'all') -> List[Dict]:
         """Search one platform or aggregate first-page results concurrently."""
         keyword_stripped = str(keyword or '').strip()
+        parsed_ximalaya_id = (
+            parse_ximalaya_album_id(keyword_stripped)
+            if platform in ('喜马拉雅', 'all')
+            else None
+        )
         parsed_tingshu_id = parse_book_id(keyword_stripped) if platform in ('番茄听书', 'all') else None
         parsed_qimao_id = parse_qimao_book_id(keyword_stripped) if platform in ('七猫听书', 'all') else None
+
+        # A Ximalaya share URL identifies one exact album. Do not feed the full
+        # URL to keyword search or fan it out to unrelated platforms.
+        if parsed_ximalaya_id and not keyword_stripped.isdigit():
+            results = self.search_by_id(parsed_ximalaya_id, '喜马拉雅')
+            for album in results:
+                album['requested_album_id'] = parsed_ximalaya_id
+                album['source_url'] = keyword_stripped
+            return results
+
         is_id_search = keyword_stripped.isdigit() or (
             platform == '番茄听书' and parsed_tingshu_id is not None
         ) or (
@@ -635,31 +650,43 @@ class EnhancedSearchManager:
     def get_ximalaya_album_by_id(self, album_id: str) -> Optional[Dict]:
         """通过ID获取喜马拉雅专辑详情"""
         try:
-            print(f"🔍 喜马拉雅ID搜索: {album_id}")
+            requested_id = parse_ximalaya_album_id(album_id) or str(album_id or '').strip()
+            if not requested_id.isdigit():
+                print(f"❌ 喜马拉雅ID格式无效: {album_id}")
+                return None
+            print(f"🔍 喜马拉雅ID搜索: {requested_id}")
             
             # 直接调用喜马拉雅搜索API，但是用ID作为关键词
             # 这样可以得到完整的书籍信息格式
-            search_results = self.ximalaya_manager.search_albums(album_id, page=1, page_size=1)
+            search_results = self.ximalaya_manager.search_albums(requested_id, page=1, page_size=20)
             
             if search_results:
                 # 从搜索结果中找到匹配的专辑
                 for album in search_results:
-                    if str(album.get('id', '')) == str(album_id):
+                    result_id = str(album.get('id') or album.get('album_id') or '').strip()
+                    if result_id == requested_id:
                         print(f"✅ 喜马拉雅找到匹配专辑: {album.get('title', '未知')}")
+                        album['id'] = requested_id
+                        album['requested_album_id'] = requested_id
                         return album
-                
-                # 如果没找到精确匹配，返回第一个结果
-                if search_results:
-                    result = search_results[0]
-                    print(f"✅ 喜马拉雅返回第一个搜索结果: {result.get('title', '未知')}")
-                    return result
+                result_ids = [
+                    str(album.get('id') or album.get('album_id') or '').strip()
+                    for album in search_results
+                ]
+                print(
+                    f"⚠️ 喜马拉雅ID搜索只返回了非精确结果 {result_ids}，"
+                    f"不会替代请求的专辑 {requested_id}"
+                )
             
-            # 如果搜索没找到，尝试直接调用专辑详情API
-            print(f"🔍 搜索未找到，尝试直接获取专辑详情: {album_id}")
-            album_info = self.ximalaya_manager.get_album_detail(album_id)
+            # 搜索没有精确命中时，只允许按原 ID 调详情接口，绝不返回同名首条。
+            print(f"🔍 搜索未精确命中，尝试直接获取专辑详情: {requested_id}")
+            album_info = self.ximalaya_manager.get_album_detail(requested_id)
             
             if album_info:
                 print(f"✅ 喜马拉雅专辑详情获取成功: {album_info.get('title', '未知')}")
+                album_info['id'] = requested_id
+                album_info['requested_album_id'] = requested_id
+                album_info['platform'] = '喜马拉雅'
                 return album_info
             else:
                 print(f"❌ 喜马拉雅专辑详情获取失败")

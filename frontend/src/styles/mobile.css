@@ -694,6 +694,10 @@ html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-s
 .sub-stats span.ok{color:var(--success)}
 .sub-stats span.warn{color:var(--warning)}
 .sub-times{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;font-size:10.5px;color:var(--text-faint)}
+.sub-quality-control{display:flex;flex-direction:column;align-items:stretch;gap:5px;margin-top:8px;color:var(--text-mute);font-size:11px}
+.sub-quality-control select{width:100%;min-width:0;height:38px;padding:0 9px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi);color:var(--text);font:inherit;outline:none}
+.sub-quality-control select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
+.sub-quality-control select:disabled{opacity:.6;cursor:not-allowed}
 .sub-actions{justify-content:flex-start}
 .sub-actions .btn{height:32px;padding:0 11px;font-size:12px}
 

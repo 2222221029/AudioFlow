@@ -13,6 +13,7 @@ import os
 import time
 import threading
 import random
+import struct
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -1804,9 +1805,11 @@ class XimalayaDownloadManager:
             return False
         if not self._flag_enabled(data.get('isPublic')):
             return False
+        if 'isPaid' not in data or self._flag_enabled(data.get('isPaid')):
+            return False
 
         restricted_flags = (
-            'isPaid', 'isVip', 'isVipFree', 'hqNeedVip', 'needVip',
+            'isVip', 'isVipFree', 'needVip',
             'vipOnly', 'isSample', 'isSampleAlbumTimeLimited',
         )
         if any(self._flag_enabled(data.get(key)) for key in restricted_flags):
@@ -1814,7 +1817,7 @@ class XimalayaDownloadManager:
 
         restricted_levels = (
             'paidType', 'priceTypeId', 'priceTypeEnum', 'vipFreeType',
-            'vipFirstStatus', 'sampleDuration',
+            'vipFirstStatus',
         )
         for key in restricted_levels:
             value = data.get(key)
@@ -1836,6 +1839,64 @@ class XimalayaDownloadManager:
                 'playUrl64', 'playUrl32', 'downloadAacUrl', 'downloadUrl',
             )
         )
+
+    @staticmethod
+    def _m4a_duration_seconds(path: Path) -> Optional[float]:
+        """Read the MP4 movie-header duration without requiring ffprobe."""
+        try:
+            source = path.open('rb')
+        except OSError:
+            return None
+
+        with source:
+            tail = b''
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    return None
+                payload = tail + chunk
+                marker_at = 0
+                while True:
+                    marker_at = payload.find(b'mvhd', marker_at)
+                    if marker_at < 0:
+                        break
+                    if marker_at >= 4:
+                        try:
+                            atom_size = struct.unpack_from('>I', payload, marker_at - 4)[0]
+                            version = payload[marker_at + 4]
+                            if atom_size >= 28 and version == 0:
+                                timescale = struct.unpack_from('>I', payload, marker_at + 16)[0]
+                                duration = struct.unpack_from('>I', payload, marker_at + 20)[0]
+                            elif atom_size >= 40 and version == 1:
+                                timescale = struct.unpack_from('>I', payload, marker_at + 24)[0]
+                                duration = struct.unpack_from('>Q', payload, marker_at + 28)[0]
+                            else:
+                                timescale = duration = 0
+                            if timescale > 0 and duration > 0:
+                                return duration / timescale
+                        except (IndexError, struct.error):
+                            pass
+                    marker_at += 4
+                tail = payload[-64:]
+
+    @staticmethod
+    def _public_quality_label(source_field: str, total_size: int = 0,
+                              duration: Optional[float] = None) -> str:
+        if total_size >= 128 * 1024 and duration and duration > 0:
+            measured_kbps = total_size * 8 / duration / 1000
+            nominal_kbps = min((24, 32, 48, 64, 96, 128), key=lambda value: abs(value - measured_kbps))
+            audio_format = 'MP3' if source_field in ('playUrl64', 'playUrl32', 'downloadUrl') else 'AAC'
+            return f'公开 {audio_format} {nominal_kbps}K'
+        labels = {
+            'playPathHq': '公开高音质',
+            'playPathAacv224': '公开 AAC 24K',
+            'playPathAacv164': '公开 AAC 64K',
+            'playUrl64': '公开 MP3 64K',
+            'playUrl32': '公开 MP3 32K',
+            'downloadAacUrl': '公开 AAC',
+            'downloadUrl': '公开音频',
+        }
+        return labels.get(source_field, source_field)
 
     def _fetch_anonymous_public_track_info(self, track_id: str) -> Optional[Dict]:
         """Read public track metadata without touching logged-in paid/VIP APIs."""
@@ -1872,8 +1933,8 @@ class XimalayaDownloadManager:
         if quality in ('96K', '128K', '192K'):
             fields = (
                 ('playPathHq', 'playHqSize'),
-                ('playPathAacv224', 'playPathAacv224Size'),
                 ('playPathAacv164', 'playPathAacv164Size'),
+                ('playPathAacv224', 'playPathAacv224Size'),
                 ('playUrl64', 'playUrl64Size'),
                 ('playUrl32', 'playUrl32Size'),
                 ('downloadAacUrl', 'downloadAacSize'),
@@ -1881,8 +1942,8 @@ class XimalayaDownloadManager:
             )
         elif quality in ('64K', '48K'):
             fields = (
-                ('playPathAacv224', 'playPathAacv224Size'),
                 ('playPathAacv164', 'playPathAacv164Size'),
+                ('playPathAacv224', 'playPathAacv224Size'),
                 ('playUrl64', 'playUrl64Size'),
                 ('playUrl32', 'playUrl32Size'),
                 ('downloadAacUrl', 'downloadAacSize'),
@@ -1899,6 +1960,10 @@ class XimalayaDownloadManager:
         candidates = []
         seen = set()
         for url_field, size_field in fields:
+            if url_field == 'playPathHq' and XimalayaDownloadManager._flag_enabled(
+                data.get('hqNeedVip')
+            ):
+                continue
             url = str(data.get(url_field) or '').strip()
             if not url.startswith(('http://', 'https://')) or url in seen:
                 continue
@@ -1911,28 +1976,47 @@ class XimalayaDownloadManager:
         return candidates
 
     def _download_confirmed_public_fallback(self, track_id: str, audio_quality: str,
-                                            save_path: str, progress_callback=None) -> bool:
+                                            save_path: str, progress_callback=None,
+                                            public_info: Optional[Dict] = None) -> bool:
         """Download only an anonymously confirmed public/free track URL."""
-        data = self._fetch_anonymous_public_track_info(track_id)
+        data = public_info or self._fetch_anonymous_public_track_info(track_id)
+        if data and not self._is_confirmed_public_free_track(data):
+            data = None
         if not data:
             return False
 
         candidates = self._public_fallback_candidates(data, audio_quality)
-        print(f"   ℹ️ 免费重定向不可用；已确认是公开免费声音，尝试 {len(candidates)} 个公开直链")
+        print(f"   INFO: 已确认是公开免费声音，尝试 {len(candidates)} 个免费接口直链")
         headers = {
             'User-Agent': 'XimalayaFM/8.6.93 (iPhone; iOS 16.6; Scale/3.00)',
             'Accept': '*/*',
             'Referer': 'https://www.ximalaya.com/',
         }
 
+        final_path = Path(save_path)
+        temp_path = final_path.with_name(final_path.name + '.part')
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            expected_duration = float(data.get('duration') or 0)
+        except (TypeError, ValueError):
+            expected_duration = 0.0
+        try:
+            sample_duration = float(data.get('sampleDuration') or 0)
+        except (TypeError, ValueError):
+            sample_duration = 0.0
+
         for source_field, public_url, expected_size in candidates:
             try:
+                temp_path.unlink(missing_ok=True)
                 response = self.session.get(
                     public_url, headers=headers, stream=True,
                     allow_redirects=True, timeout=60,
                 )
                 if response.status_code != 200:
                     print(f"   ⚠️ 公开直链 {source_field} 返回 HTTP {response.status_code}")
+                    close = getattr(response, 'close', None)
+                    if close:
+                        close()
                     continue
 
                 iterator = response.iter_content(chunk_size=512000)
@@ -1945,12 +2029,14 @@ class XimalayaDownloadManager:
                     or prefix.startswith((b'{', b'<html', b'<!doctype'))
                 ):
                     print(f"   ⚠️ 公开直链 {source_field} 返回的不是音频")
+                    close = getattr(response, 'close', None)
+                    if close:
+                        close()
                     continue
 
-                Path(save_path).parent.mkdir(parents=True, exist_ok=True)
                 total_size = 0
                 content_length = int(response.headers.get('content-length') or expected_size or 0)
-                with open(save_path, 'wb') as output:
+                with temp_path.open('wb') as output:
                     if first_chunk:
                         output.write(first_chunk)
                         total_size += len(first_chunk)
@@ -1964,26 +2050,58 @@ class XimalayaDownloadManager:
                         if progress_callback:
                             progress_callback(total_size, content_length)
 
+                close = getattr(response, 'close', None)
+                if close:
+                    close()
+
+                validation_error = ''
                 if total_size <= 1024:
-                    if os.path.exists(save_path):
-                        os.remove(save_path)
-                    print(f"   ⚠️ 公开直链 {source_field} 文件过小: {total_size} 字节")
+                    validation_error = f'文件过小（{total_size} 字节）'
+                elif content_length and total_size != content_length:
+                    validation_error = (
+                        f'文件不完整（应为 {content_length} 字节，实际 {total_size} 字节）'
+                    )
+                elif expected_size and total_size < expected_size * 0.98:
+                    validation_error = (
+                        f'文件不完整（接口标记 {expected_size} 字节，实际 {total_size} 字节）'
+                    )
+
+                media_duration = self._m4a_duration_seconds(temp_path)
+                if not validation_error and expected_duration > 0:
+                    minimum_duration = max(expected_duration * 0.9, expected_duration - 10.0)
+                    if media_duration is not None and media_duration < minimum_duration:
+                        validation_error = (
+                            f'疑似试听片段（应约 {expected_duration:.0f} 秒，'
+                            f'实际 {media_duration:.0f} 秒）'
+                        )
+                    elif media_duration is None and sample_duration > 0:
+                        validation_error = (
+                            '接口包含试听时长标记，且无法验证文件完整时长'
+                        )
+
+                if validation_error:
+                    temp_path.unlink(missing_ok=True)
+                    print(f"   WARN: 免费接口 {source_field} {validation_error}，已拒绝保存")
                     continue
 
+                os.replace(temp_path, final_path)
                 self.last_error = ''
                 self.last_error_type = ''
                 self.last_download_source = f'public_base_info:{source_field}'
                 self.last_download_size = total_size
                 self.last_download_expected_size = expected_size
-                self.last_download_quality_label = source_field
-                print(f"✅ 公开免费声音下载成功 ({source_field}, {total_size / 1024 / 1024:.2f}MB)")
+                self.last_download_quality_label = self._public_quality_label(
+                    source_field, total_size, media_duration
+                )
+                self.last_download_path = str(final_path)
+                duration_text = f", {media_duration:.0f}秒" if media_duration else ''
+                print(
+                    f"✅ 免费接口下载成功 "
+                    f"({self.last_download_quality_label}, {total_size / 1024 / 1024:.2f}MB{duration_text})"
+                )
                 return True
             except Exception as exc:
-                if os.path.exists(save_path):
-                    try:
-                        os.remove(save_path)
-                    except OSError:
-                        pass
+                temp_path.unlink(missing_ok=True)
                 print(f"   ⚠️ 公开直链 {source_field} 下载失败: {exc}")
 
         self._record_error('公开免费声音直链下载失败')
@@ -2029,13 +2147,75 @@ class XimalayaDownloadManager:
             )
 
         if str(quality or "").strip() == self.WEB_AUTO_QUALITY:
-            print("🌐 网页模式默认使用旧版 V3 直连接口")
+            print("🌐 网页模式：检查公开免费与会员高音质线路")
+            public_info = self._fetch_anonymous_public_track_info(track_id)
+            if public_info:
+                needs_member_hq = self._flag_enabled(public_info.get('hqNeedVip'))
+                legacy_attempted = False
+                if needs_member_hq and self.cookie_string:
+                    print("   INFO: 免费章节的高音质需要会员，先尝试旧版 Cookie 直连")
+                    legacy_attempted = True
+                    if self._download_m4a_direct_api(
+                        track_id,
+                        "96K",
+                        save_path,
+                        chapter_title,
+                        progress_callback=progress_callback,
+                        allow_public_fallback=False,
+                    ):
+                        return True
+                    self.last_error = ""
+                    self.last_error_type = ""
+
+                if needs_member_hq and self._has_mobile_credentials():
+                    print("   INFO: 旧版会员直连未取得音频，尝试本地移动 V4 高音质")
+                    if self._download_mobile_best_available(
+                        track_id,
+                        save_path,
+                        chapter_title,
+                        progress_callback=progress_callback,
+                    ):
+                        return True
+                    self.last_error = ""
+                    self.last_error_type = ""
+
+                print("   INFO: 使用公开免费音质保底；免费章节不调用新版 Web V3")
+                if self._download_confirmed_public_fallback(
+                    track_id,
+                    "64K",
+                    save_path,
+                    progress_callback=progress_callback,
+                    public_info=public_info,
+                ):
+                    return True
+
+                if not legacy_attempted:
+                    print("   WARN: 公开免费音频校验失败，最后尝试旧版直连")
+                    self.last_error = ""
+                    self.last_error_type = ""
+                    return self._download_m4a_direct_api(
+                        track_id,
+                        "96K",
+                        save_path,
+                        chapter_title,
+                        progress_callback=progress_callback,
+                        allow_public_fallback=False,
+                    )
+                return False
+
+            # A failed/negative anonymous probe is not an entitlement result.
+            # Preserve the established legacy and authorized routing for every
+            # track that was not safely downloaded from a public CDN URL.
+            self.last_error = ""
+            self.last_error_type = ""
+            print("🌐 当前章节未走免费接口，继续使用旧版 V3 直连接口")
             if self._download_m4a_direct_api(
                 track_id,
                 "96K",
                 save_path,
                 chapter_title,
                 progress_callback=progress_callback,
+                allow_public_fallback=False,
             ):
                 self.last_error = ""
                 self.last_error_type = ""
@@ -2098,7 +2278,9 @@ class XimalayaDownloadManager:
                 return False
             return self._download_default(audio_urls, save_path, album_title, chapter_title)
     
-    def _download_m4a_direct_api(self, track_id: str, audio_quality: str, save_path: str, chapter_title: str, progress_callback=None) -> bool:
+    def _download_m4a_direct_api(self, track_id: str, audio_quality: str, save_path: str,
+                                 chapter_title: str, progress_callback=None,
+                                 allow_public_fallback: bool = True) -> bool:
         """
         使用直接下载API下载M4A格式音频（根据映射规则md和实际测试结果）
         API格式: http://mobile.ximalaya.com/mobile/redirect/free/play/{track_id}/{quality_level}
@@ -2179,7 +2361,7 @@ class XimalayaDownloadManager:
                     if close:
                         close()
                     if error_data.get('ret') == 130:
-                        if self._download_confirmed_public_fallback(
+                        if allow_public_fallback and self._download_confirmed_public_fallback(
                             track_id,
                             audio_quality,
                             save_path,

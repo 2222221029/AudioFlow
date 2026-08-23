@@ -21,6 +21,12 @@ const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
   {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
 ];
+const XMLY_SUBSCRIPTION_QUALITY_OPTIONS = [
+  {value: XMLY_WEB_INTERFACE, label: '网页版接口（默认）'},
+  {value: XMLY_MOBILE_INTERFACE, label: '移动端 V4 · 自动最高音质'},
+  {value: '杜比全景声优先（自动降级）', label: '移动端 V4 · 杜比全景声优先'},
+  {value: '无损优先（自动降级）', label: '移动端 V4 · 无损优先'},
+];
 const XMLY_MOBILE_QUALITY_HELP = {
   [XMLY_MOBILE_INTERFACE]: '按无损、128/96K、64K、24K 的顺序选择该曲目可用的最高传统音质；不会自动改选空间音频。',
   '杜比全景声优先（自动降级）': '每集按杜比全景声 → 无损 → 128/96K → 64K → 24K 下载。专辑中没有全景声的单集会立即降级，文件名按实际音质标记。',
@@ -410,7 +416,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, ximalayaInterface, setXimalayaInterface, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, ximalayaInterface, setXimalayaInterface, subscriptionQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
   const library = selectedAlbum.library || {};
@@ -457,6 +463,17 @@ export function AlbumDetail({app, mobile = false}) {
               </select>
             </>
           )}
+          <label htmlFor="xmlySubscriptionQuality">订阅下载方式</label>
+          <select
+            id="xmlySubscriptionQuality"
+            value={subscriptionQuality}
+            disabled={loading || busy.subscribe || busy[`subscription:${library.subscription_id}:quality`]}
+            onChange={(event) => actions.chooseSubscriptionQuality(event.target.value)}
+          >
+            {XMLY_SUBSCRIPTION_QUALITY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
           <span>{ximalayaInterface === XMLY_WEB_INTERFACE
             ? '默认使用稳定的网页版下载链路，由接口自动提供可用音频；无需额外选择音质，适合连续批量下载。'
             : XMLY_MOBILE_QUALITY_HELP[downloadQuality] || XMLY_MOBILE_QUALITY_HELP[XMLY_MOBILE_INTERFACE]}</span>
@@ -765,7 +782,6 @@ const TASK_DETAIL_FILTERS = [
   {key: 'downloading', label: '下载中'},
   {key: 'pending', label: '待下载'},
 ];
-
 function DownloadTaskDetailModal({taskId}) {
   const [detail, setDetail] = useState(null);
   const [filter, setFilter] = useState('all');
@@ -999,6 +1015,7 @@ export function SubscriptionsPage({app, onNavigate}) {
           <span>个人订阅同步：{subscriptionScheduler.personal_sync_running ? '同步中' : personalSyncEnabled ? '已启用' : '未启用'}</span>
           <span>最近同步：{personalSyncLastRun}</span>
           <span>上次新增：{Number(subscriptionScheduler.personal_sync_last_added || 0)}</span>
+          <span>喜马拉雅默认：网页版接口</span>
           {subscriptionScheduler.personal_sync_last_error && <span style={{color: 'var(--danger)'}}>同步错误：{subscriptionScheduler.personal_sync_last_error}</span>}
         </div>
       </div>
@@ -1025,6 +1042,7 @@ export function SubscriptionsPage({app, onNavigate}) {
           const completeBusy = jobBusy || busy[`subscription:${sub.id}:complete`];
           const title = sub.title || album.title || '未知专辑';
           const platform = sub.platform || album.platform;
+          const subscriptionQuality = sub.subscription_quality || XMLY_WEB_INTERFACE;
           const author = sub.author || sub.anchor || album.author || album.anchor || '未知作者';
           const total = Number(stats.total || sub.total || album.episodes || album.chapter_count || album.track_count || 0);
           const downloaded = Number(stats.downloaded || 0);
@@ -1064,6 +1082,21 @@ export function SubscriptionsPage({app, onNavigate}) {
                     <span>上次检测 {lastCheck}</span>
                     <span>下次检测 {nextCheck}</span>
                   </div>
+                  {platform === '喜马拉雅' && (
+                    <label className="sub-quality-control">
+                      <span>自动下载方式</span>
+                      <select
+                        value={subscriptionQuality}
+                        disabled={jobBusy || busy[`subscription:${sub.id}:quality`]}
+                        onChange={(event) => actions.updateSubscriptionQuality(sub.id, event.target.value)}
+                        aria-label={`《${title}》自动下载方式`}
+                      >
+                        {XMLY_SUBSCRIPTION_QUALITY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                 </div>
                 <div className="sub-actions">
                   <button className="btn btn-ghost btn-sm" disabled={checkBusy} onClick={() => actions.checkSubscription(sub.id, false)}><BusyIcon busy={checkBusy} icon="i-refresh" />立即检测</button>

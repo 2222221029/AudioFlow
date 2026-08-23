@@ -1,6 +1,7 @@
 import base64
 import contextlib
 import io
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,18 @@ class FakeResponse:
 
 
 class XimalayaDownloadManagerTest(unittest.TestCase):
+    @staticmethod
+    def _m4a_with_duration(duration_seconds, timescale=1000, payload_size=4096):
+        duration = int(duration_seconds * timescale)
+        mvhd_payload = (
+            b'\x00\x00\x00\x00'
+            + struct.pack('>IIII', 0, 0, timescale, duration)
+            + (b'\x00' * 80)
+        )
+        mvhd = struct.pack('>I', len(mvhd_payload) + 8) + b'mvhd' + mvhd_payload
+        ftyp = struct.pack('>I', 24) + b'ftyp' + b'M4A ' + (b'\x00' * 12)
+        return ftyp + mvhd + (b'audio' * max(1, payload_size // 5))
+
     def setUp(self):
         self._web_v3_timing = (
             XimalayaDownloadManager._WEB_V3_BASE_INTERVAL,
@@ -1221,8 +1234,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                     manager.session,
                     "get",
                     side_effect=[
-                        legacy_restricted,
                         protected_info,
+                        legacy_restricted,
                         FakeResponse(),
                         track_info,
                         audio,
@@ -1238,7 +1251,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_download_source, "web_v3")
         self.assertEqual(manager.last_download_path, str(save_path))
         self.assertEqual(
-            get.call_args_list[0].args[0],
+            get.call_args_list[1].args[0],
             "https://mobile.ximalaya.com/mobile/redirect/free/play/265392006/2",
         )
         api_query = parse_qs(urlparse(get.call_args_list[3].args[0]).query)
@@ -1536,7 +1549,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 self.assertTrue(save_path.exists())
 
         self.assertTrue(ok)
-        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_count, 3)
         authorized.assert_not_called()
         self.assertEqual(manager.last_error, "")
         self.assertEqual(manager.last_error_type, "")
@@ -1544,7 +1557,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_download_quality_label, "96K")
         self.assertEqual(manager.last_download_path, str(save_path))
         self.assertEqual(
-            get.call_args.args[0],
+            get.call_args_list[2].args[0],
             "https://mobile.ximalaya.com/mobile/redirect/free/play/261300454/2",
         )
 
@@ -1566,7 +1579,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 )
 
         self.assertFalse(ok)
-        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_count, 4)
         authorized.assert_not_called()
         self.assertEqual(manager.last_error_type, "download_failed")
         self.assertIn("HTTP 503", manager.last_error)
@@ -1676,10 +1689,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
             "priceTypes": [],
             "playPathHq": "",
             "playPathAacv224": "https://audio.example/free-track.mp3",
-            "playPathAacv224Size": 4096,
+            "playPathAacv224Size": 5003,
         })
         audio = FakeResponse(
-            headers={"content-type": "audio/mpeg", "content-length": "4096"},
+            headers={"content-type": "audio/mpeg", "content-length": "5003"},
             body=b"ID3" + (b"audio" * 1000),
         )
 
@@ -1702,6 +1715,183 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertIn("device=ios", get.call_args_list[1].args[0])
         self.assertNotIn("Cookie", get.call_args_list[1].kwargs["headers"])
         self.assertEqual(get.call_args_list[2].args[0], "https://audio.example/free-track.mp3")
+
+    def test_web_auto_routes_public_track_through_free_api_first(self):
+        audio_body = self._m4a_with_duration(813)
+        public_info = FakeResponse(json_data={
+            "ret": 0,
+            "isPublic": True,
+            "isPaid": False,
+            "isFree": False,
+            "isVip": False,
+            "isVipFree": False,
+            "hqNeedVip": True,
+            "paidType": 0,
+            "sampleDuration": 180,
+            "duration": 813,
+            "priceTypes": [],
+            "playPathAacv164": "https://audio.example/full-free-track.m4a",
+            "playPathAacv164Size": len(audio_body),
+        })
+        audio = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(audio_body))},
+            body=audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(manager.session, "get", side_effect=[public_info, audio]) as get:
+                    ok = manager.download_audio_by_quality(
+                        "421619265", manager.WEB_AUTO_QUALITY, str(save_path)
+                    )
+                self.assertEqual(save_path.read_bytes(), audio_body)
+                self.assertFalse(Path(str(save_path) + ".part").exists())
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("/v1/track/baseInfo", get.call_args_list[0].args[0])
+        self.assertEqual(manager.last_download_source, "public_base_info:playPathAacv164")
+        self.assertEqual(manager.last_download_quality_label, "公开 AAC 64K")
+
+    def test_web_auto_free_member_hq_uses_legacy_cookie_before_public_cdn(self):
+        audio_body = self._m4a_with_duration(605)
+        public_info = FakeResponse(json_data={
+            "ret": 0,
+            "isPublic": True,
+            "isPaid": False,
+            "isVipFree": False,
+            "hqNeedVip": True,
+            "paidType": 0,
+            "sampleDuration": 180,
+            "duration": 605,
+            "priceTypes": [],
+            "playPathAacv164": "https://audio.example/public-48k.m4a",
+        })
+        legacy_audio = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(audio_body))},
+            body=audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    manager.session, "get", side_effect=[public_info, legacy_audio]
+                ) as get, mock.patch.object(
+                    manager, "_download_mobile_best_available"
+                ) as mobile, mock.patch.object(
+                    manager, "_download_web_authorized"
+                ) as authorized:
+                    ok = manager.download_audio_by_quality(
+                        "422815097", manager.WEB_AUTO_QUALITY, str(save_path)
+                    )
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("/mobile/redirect/free/play/", get.call_args_list[1].args[0])
+        self.assertEqual(get.call_args_list[1].kwargs["headers"]["Cookie"], "_token=member")
+        self.assertEqual(manager.last_download_source, "legacy_web_redirect")
+        mobile.assert_not_called()
+        authorized.assert_not_called()
+
+    def test_web_auto_free_member_hq_falls_back_without_new_web_v3(self):
+        public_audio_body = self._m4a_with_duration(605)
+        public_info = FakeResponse(json_data={
+            "ret": 0,
+            "isPublic": True,
+            "isPaid": False,
+            "isVipFree": False,
+            "hqNeedVip": True,
+            "paidType": 0,
+            "sampleDuration": 180,
+            "duration": 605,
+            "priceTypes": [],
+            "playPathAacv164": "https://audio.example/public-48k.m4a",
+            "playPathAacv164Size": len(public_audio_body),
+        })
+        legacy_restricted = FakeResponse(
+            headers={"content-type": "application/json"},
+            body=b'{"ret":130,"msg":"VIP required"}',
+        )
+        public_audio = FakeResponse(
+            headers={
+                "content-type": "audio/mp4",
+                "content-length": str(len(public_audio_body)),
+            },
+            body=public_audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=member",
+                mobile_credentials=self._mobile_credentials(),
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[public_info, legacy_restricted, public_audio],
+                ) as get, mock.patch.object(
+                    manager, "_download_mobile_best_available", return_value=False
+                ) as mobile, mock.patch.object(
+                    manager, "_download_web_authorized"
+                ) as authorized:
+                    ok = manager.download_audio_by_quality(
+                        "422815097", manager.WEB_AUTO_QUALITY, str(save_path)
+                    )
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(manager.last_download_source, "public_base_info:playPathAacv164")
+        mobile.assert_called_once()
+        authorized.assert_not_called()
+
+    def test_web_auto_rejects_public_preview_and_continues_legacy_route(self):
+        preview_body = self._m4a_with_duration(180)
+        complete_body = self._m4a_with_duration(813)
+        public_info = FakeResponse(json_data={
+            "ret": 0,
+            "isPublic": True,
+            "isPaid": False,
+            "isVipFree": False,
+            "hqNeedVip": False,
+            "paidType": 0,
+            "sampleDuration": 180,
+            "duration": 813,
+            "priceTypes": [],
+            "playPathAacv164": "https://audio.example/preview.m4a",
+            "playPathAacv164Size": len(preview_body),
+        })
+        preview = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(preview_body))},
+            body=preview_body,
+        )
+        legacy = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(complete_body))},
+            body=complete_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    manager.session, "get", side_effect=[public_info, preview, legacy]
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "421619265", manager.WEB_AUTO_QUALITY, str(save_path)
+                    )
+                self.assertEqual(save_path.read_bytes(), complete_body)
+                self.assertFalse(Path(str(save_path) + ".part").exists())
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 3)
+        self.assertIn("/mobile/redirect/free/play/", get.call_args_list[2].args[0])
+        self.assertEqual(manager.last_download_source, "legacy_web_redirect")
 
     def test_paid_track_never_uses_public_cdn_fallback(self):
         redirect_error = FakeResponse(

@@ -65,6 +65,12 @@ function sendBrowserNotification(title, body) {
 const DEFAULT_QUALITY = 'M4A 96K';
 const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
 const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
+const XMLY_SUBSCRIPTION_QUALITIES = new Set([
+  XMLY_WEB_INTERFACE,
+  XMLY_MOBILE_INTERFACE,
+  '杜比全景声优先（自动降级）',
+  '无损优先（自动降级）',
+]);
 const XMLY_DOWNLOAD_QUALITIES = new Set([
   XMLY_MOBILE_INTERFACE,
   'M4A 128K',
@@ -80,6 +86,10 @@ const XMLY_DOWNLOAD_QUALITIES = new Set([
 
 function ximalayaDownloadQuality(value) {
   return XMLY_DOWNLOAD_QUALITIES.has(value) ? value : XMLY_MOBILE_INTERFACE;
+}
+
+function ximalayaSubscriptionQuality(value) {
+  return XMLY_SUBSCRIPTION_QUALITIES.has(value) ? value : XMLY_WEB_INTERFACE;
 }
 
 function initialMobileView() {
@@ -158,6 +168,7 @@ export function useAudioFlowApp() {
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [downloadQuality, setDownloadQuality] = useState(XMLY_MOBILE_INTERFACE);
   const [ximalayaInterface, setXimalayaInterface] = useState(XMLY_WEB_INTERFACE);
+  const [subscriptionQuality, setSubscriptionQuality] = useState(XMLY_WEB_INTERFACE);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
   const [downloadPagination, setDownloadPagination] = useState({page: 1, limit: 20, total: 0, total_pages: 1});
   const [downloadSummary, setDownloadSummary] = useState({total: 0, active_count: 0, completed_count: 0, failed_count: 0, interrupted_count: 0});
@@ -429,6 +440,9 @@ export function useAudioFlowApp() {
     setSelectedChapters(new Set());
     setVoices([]);
     setSelectedVoice(null);
+    setSubscriptionQuality(ximalayaSubscriptionQuality(
+      album.library?.subscription_quality || album.subscription_quality,
+    ));
     setDownloadQuality(
       album.platform === '喜马拉雅'
         ? ximalayaDownloadQuality(config.quality)
@@ -437,6 +451,11 @@ export function useAudioFlowApp() {
     api('/api/album/detail', {method: 'POST', body: {album}}).then((detailData) => {
       if (requestId !== albumRequestRef.current || !detailData.album) return;
       setSelectedAlbum((current) => current ? {...current, ...detailData.album} : detailData.album);
+      if (album.platform === '喜马拉雅') {
+        setSubscriptionQuality(ximalayaSubscriptionQuality(
+          detailData.album.library?.subscription_quality || detailData.album.subscription_quality,
+        ));
+      }
     }).catch(() => {});
 
     await runBusy('album', async () => {
@@ -453,6 +472,11 @@ export function useAudioFlowApp() {
       const data = await api('/api/album/chapters', {method: 'POST', body: {album, voice, page: 1, page_size: 100}});
       if (requestId !== albumRequestRef.current) return;
       setSelectedAlbum((current) => ({...(current || album), ...(data.album || {})}));
+      if (album.platform === '喜马拉雅' && data.album) {
+        setSubscriptionQuality(ximalayaSubscriptionQuality(
+          data.album.library?.subscription_quality || data.album.subscription_quality,
+        ));
+      }
       setChapters(data.chapters || []);
       setChapterPagination(data.pagination || DEFAULT_CHAPTER_PAGINATION);
       if (data.warning) showToast(data.warning, 'err');
@@ -625,7 +649,13 @@ export function useAudioFlowApp() {
     await runBusy('subscribe', async () => {
       const data = await api('/api/subscriptions', {
         method: 'POST',
-          body: {album: selectedAlbum, chapters, voice: selectedVoice || undefined, load_all: true},
+        body: {
+          album: selectedAlbum,
+          chapters,
+          voice: selectedVoice || undefined,
+          load_all: true,
+          ...(selectedAlbum.platform === '喜马拉雅' ? {subscription_quality: subscriptionQuality} : {}),
+        },
       });
       if (data.library) {
         setSelectedAlbum((current) => current ? {...current, library: data.library} : current);
@@ -635,13 +665,20 @@ export function useAudioFlowApp() {
             : album
         )));
       }
-      showToast('订阅成功', 'ok');
+      const savedQuality = data.subscription?.subscription_quality || data.library?.subscription_quality || subscriptionQuality;
+      if (selectedAlbum.platform === '喜马拉雅') setSubscriptionQuality(ximalayaSubscriptionQuality(savedQuality));
+      showToast(
+        selectedAlbum.platform === '喜马拉雅'
+          ? `订阅成功，自动下载使用${savedQuality === XMLY_WEB_INTERFACE ? '网页版接口' : savedQuality}`
+          : '订阅成功',
+        'ok',
+      );
       if (data.job) setSubscriptionJobs((prev) => ({...prev, [data.job.id]: data.job}));
       setTimeout(loadSubscriptions, 800);
     }).catch((error) => {
       showToast(error.message, 'err');
     });
-  }, [chapters, loadSubscriptions, runBusy, selectedAlbum, selectedVoice, showToast]);
+  }, [chapters, loadSubscriptions, runBusy, selectedAlbum, selectedVoice, showToast, subscriptionQuality]);
 
   const playChapter = useCallback(async (chapter) => {
     if (!selectedAlbum || !chapter) return;
@@ -802,6 +839,39 @@ export function useAudioFlowApp() {
       showToast(error.message, 'err');
     }
   }, [loadSubscriptions, showToast]);
+
+  const updateSubscriptionQuality = useCallback(async (id, subscriptionQuality) => {
+    await runBusy('subscription:' + id + ':quality', async () => {
+      const data = await api('/api/subscriptions/' + encodeURIComponent(id), {
+        method: 'PATCH',
+        body: {subscription_quality: subscriptionQuality},
+      });
+      const updated = data.subscription || {};
+      setSubscriptions((current) => current.map((item) => (
+        item.id === id ? {...item, ...updated, subscription_quality: subscriptionQuality} : item
+      )));
+      setSelectedAlbum((current) => {
+        if (!current || current.library?.subscription_id !== id) return current;
+        return {...current, library: {...current.library, subscription_quality: subscriptionQuality}};
+      });
+      if (selectedAlbum?.library?.subscription_id === id) {
+        setSubscriptionQuality(ximalayaSubscriptionQuality(subscriptionQuality));
+      }
+      showToast('该专辑的订阅下载方式已保存', 'ok');
+    }).catch((error) => {
+      showToast('保存失败：' + error.message, 'err');
+    });
+  }, [runBusy, selectedAlbum, showToast]);
+
+  const chooseSubscriptionQuality = useCallback((quality) => {
+    const normalized = ximalayaSubscriptionQuality(quality);
+    const sid = selectedAlbum?.library?.subscription_id;
+    if (selectedAlbum?.library?.subscribed && sid) {
+      return updateSubscriptionQuality(sid, normalized);
+    }
+    setSubscriptionQuality(normalized);
+    return Promise.resolve();
+  }, [selectedAlbum, updateSubscriptionQuality]);
 
   const batchSubscriptions = useCallback(async (action, ids = []) => {
     await runBusy('subscriptionBatch:' + action, async () => {
@@ -1159,6 +1229,7 @@ export function useAudioFlowApp() {
     setDownloadQuality,
     ximalayaInterface,
     setXimalayaInterface,
+    subscriptionQuality,
     downloads,
     downloadPagination,
     downloadSummary,
@@ -1237,6 +1308,8 @@ export function useAudioFlowApp() {
       rebuildSubscriptionIndex,
       checkSubscription,
       cancelSubscription,
+      updateSubscriptionQuality,
+      chooseSubscriptionQuality,
       batchSubscriptions,
       loadCookies,
       exportCookies,

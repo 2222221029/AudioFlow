@@ -10,6 +10,29 @@ from core.subscription_manager import SubscriptionManager
 
 
 class SubscriptionManagerTest(unittest.TestCase):
+    def test_subscription_quality_is_persisted_and_preserved_on_refresh(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "album-quality", "title": "空间音频专辑", "platform": "喜马拉雅"}
+
+            created = manager.add_or_update(
+                album,
+                [],
+                subscription_quality="杜比全景声优先（自动降级）",
+            )
+            refreshed = manager.add_or_update({**album, "author": "主播"}, [])
+
+            self.assertEqual(created["subscription_quality"], "杜比全景声优先（自动降级）")
+            self.assertEqual(refreshed["subscription_quality"], "杜比全景声优先（自动降级）")
+            self.assertEqual(refreshed["album"]["subscription_quality"], "杜比全景声优先（自动降级）")
+
+            updated = manager.set_subscription_quality(created["id"], "无损优先（自动降级）")
+            reloaded = SubscriptionManager(config_tmp).get(created["id"])
+
+            self.assertEqual(updated["subscription_quality"], "无损优先（自动降级）")
+            self.assertEqual(reloaded["subscription_quality"], "无损优先（自动降级）")
+            self.assertEqual(reloaded["album"]["subscription_quality"], "无损优先（自动降级）")
+
     def test_diff_detects_deleted_local_chapter_file(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
             manager = SubscriptionManager(config_tmp)

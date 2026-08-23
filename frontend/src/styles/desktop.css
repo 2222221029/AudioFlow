@@ -940,6 +940,11 @@ html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-s
 .sub-stats span.ok{color:var(--success)}
 .sub-stats span.warn{color:var(--warning)}
 .sub-times{display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--text-faint)}
+.sub-quality-control{display:flex;align-items:center;gap:9px;margin-top:9px;color:var(--text-mute);font-size:11.5px}
+.sub-quality-control>span{flex:0 0 auto}
+.sub-quality-control select{min-width:230px;max-width:100%;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi);color:var(--text);font:inherit;outline:none}
+.sub-quality-control select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
+.sub-quality-control select:disabled{opacity:.6;cursor:not-allowed}
 .sub-actions{margin-top:auto}
 .sub-actions .btn{white-space:nowrap}
 

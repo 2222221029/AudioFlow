@@ -895,12 +895,22 @@ class SubscriptionManager:
         item = self.data.get("subscriptions", {}).get(sid)
         return bool(item and item.get("status", "active") == "active")
 
-    def add_or_update(self, album, chapters=None, download_dir=None):
+    def add_or_update(self, album, chapters=None, download_dir=None, subscription_quality=None):
         chapters = list(chapters or [])
         sid = self.subscription_id(album)
         now = utc_now_iso()
         old = self.data.setdefault("subscriptions", {}).get(sid, {})
         record = dict(old)
+        if subscription_quality is None and isinstance(album, dict) and "subscription_quality" in album:
+            subscription_quality = album.get("subscription_quality")
+        stored_album = dict(old.get("album") or {})
+        stored_album.update(album or {})
+        if subscription_quality is not None:
+            normalized_quality = str(subscription_quality or "").strip()
+            if normalized_quality:
+                stored_album["subscription_quality"] = normalized_quality
+            else:
+                stored_album.pop("subscription_quality", None)
         record.update({
             "id": sid,
             "album_id": str(album.get("id") or album.get("album_id") or album.get("book_id") or ""),
@@ -924,7 +934,7 @@ class SubscriptionManager:
                 or old.get("cover") or ""
             ),
             "source_url": album.get("url") or album.get("link") or album.get("source_url") or old.get("source_url") or "",
-            "album": dict(album or old.get("album") or {}),
+            "album": stored_album,
             "chapters": self.snapshot_chapters(chapters or old.get("chapters") or []),
             "downloaded": {} if old.get("status") == "cancelled" else old.get("downloaded") or {},
             "created_at": old.get("created_at") or now,
@@ -934,9 +944,34 @@ class SubscriptionManager:
             "status": "active",
             "download_dir": download_dir or old.get("download_dir") or "",
         })
+        if subscription_quality is not None:
+            normalized_quality = str(subscription_quality or "").strip()
+            if normalized_quality:
+                record["subscription_quality"] = normalized_quality
+            else:
+                record.pop("subscription_quality", None)
         self.data["subscriptions"][sid] = record
         self.save()
         return record
+
+    def set_subscription_quality(self, subscription_id, subscription_quality):
+        item = self.data.setdefault("subscriptions", {}).get(subscription_id)
+        if not item:
+            return None
+        quality = str(subscription_quality or "").strip()
+        if quality:
+            item["subscription_quality"] = quality
+        else:
+            item.pop("subscription_quality", None)
+        album = item.get("album")
+        if isinstance(album, dict):
+            if quality:
+                album["subscription_quality"] = quality
+            else:
+                album.pop("subscription_quality", None)
+        item["updated_at"] = utc_now_iso()
+        self.save()
+        return item
 
     def cancel(self, subscription_id):
         item = self.data.setdefault("subscriptions", {}).get(subscription_id)

@@ -245,6 +245,33 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertTrue(library["subscribed"])
         self.assertEqual((library["downloaded"], library["total"], library["missing"]), (2, 3, 1))
 
+    def test_download_task_rejects_mismatched_exact_ximalaya_album_id(self):
+        album = {
+            "id": "50069461",
+            "requested_album_id": "34390396",
+            "title": "我的老千江湖",
+            "platform": "喜马拉雅",
+        }
+
+        with self.assertRaisesRegex(ValueError, "请求 34390396，实际任务 50069461"):
+            web_server.start_download_task(
+                "web-mismatch",
+                album,
+                [{"id": "track-1", "title": "One"}],
+                {"quality": web_server.XMLY_WEB_SUBSCRIPTION_QUALITY},
+            )
+
+        with web_server.app.test_request_context(
+            "/api/downloads",
+            method="POST",
+            json={"album": album, "all_chapters": True},
+        ):
+            response = web_server.api_download()
+
+        payload = (response[0] if isinstance(response, tuple) else response).get_json()
+        self.assertFalse(payload["ok"])
+        self.assertIn("请求 34390396，实际任务 50069461", payload["error"])
+
     def test_album_chapters_include_download_status(self):
         album = {
             "id": "album-1",
@@ -332,6 +359,15 @@ class SubscriptionJobsTest(unittest.TestCase):
 
         self.assertEqual(options["quality"], "喜马拉雅网页版接口")
 
+    def test_subscription_download_rejects_stale_ximalaya_quality_from_import(self):
+        album = {"id": "1", "platform": "喜马拉雅"}
+
+        options = web_server.subscription_download_options(
+            {"subscription_quality": "M4A 96K"}, album
+        )
+
+        self.assertEqual(options["quality"], "喜马拉雅网页版接口")
+
     def test_subscription_download_does_not_map_generic_quality_to_kuwo_lossless(self):
         album = {"id": "2", "platform": "酷我听书"}
         with mock.patch.object(web_server.subscription_manager, "settings", return_value={"quality": "M4A 96K"}):
@@ -348,6 +384,156 @@ class SubscriptionJobsTest(unittest.TestCase):
 
         self.assertEqual(options["quality"], "kuwo:high")
         self.assertEqual(options["voice"], {"name": "voice"})
+
+    def test_subscription_check_queues_missing_chapters_with_saved_ximalaya_quality(self):
+        sid = "喜马拉雅:album-quality"
+        chapter = {"id": "track-1", "title": "One"}
+        album = {"id": "album-quality", "title": "Example", "platform": "喜马拉雅"}
+        item = {
+            "id": sid,
+            "album": album,
+            "platform": "喜马拉雅",
+            "subscription_quality": "杜比全景声优先（自动降级）",
+            "chapters": [],
+        }
+        diff = {
+            "missing": [chapter],
+            "restricted_count": 0,
+            "deferred_failed_count": 0,
+        }
+        with (
+            mock.patch.object(web_server.subscription_manager, "get", return_value=item),
+            mock.patch.object(web_server.search_manager, "get_album_chapters", return_value=[chapter]),
+            mock.patch.object(web_server.subscription_manager, "diff_chapters", return_value=diff),
+            mock.patch.object(web_server.subscription_manager, "update_check_result"),
+            mock.patch.object(web_server.subscription_manager, "stats_for", return_value={}),
+            mock.patch.object(web_server, "active_task_chapter_keys", return_value=set()),
+            mock.patch.object(web_server, "get_album_voices", return_value=[]),
+            mock.patch.object(web_server, "start_download_task") as start_download,
+            mock.patch.object(web_server.notification_manager, "notify"),
+        ):
+            result = web_server._run_subscription_check(sid, queue_missing=True)
+
+        self.assertTrue(result["queued"])
+        options = start_download.call_args.args[3]
+        self.assertEqual(options["quality"], "杜比全景声优先（自动降级）")
+
+    def test_new_ximalaya_subscription_defaults_to_web_without_resetting_existing_override(self):
+        album = {"id": "album-quality", "title": "Example", "platform": "喜马拉雅"}
+        record = {"id": "喜马拉雅:album-quality", "album": album, "status": "active"}
+        for existing, expected in (
+            (None, web_server.XMLY_WEB_SUBSCRIPTION_QUALITY),
+            ({**record, "subscription_quality": "杜比全景声优先（自动降级）"}, None),
+        ):
+            with self.subTest(existing=bool(existing)):
+                with (
+                    web_server.app.test_request_context(
+                        "/api/subscriptions",
+                        method="POST",
+                        json={"album": album, "chapters": []},
+                    ),
+                    mock.patch.object(web_server.subscription_manager, "get", return_value=existing),
+                    mock.patch.object(web_server.subscription_manager, "add_or_update", return_value=record) as add,
+                    mock.patch.object(web_server.subscription_manager, "settings", return_value={"enabled": False}),
+                    mock.patch.object(web_server, "album_library_summary", return_value={"subscribed": True}),
+                ):
+                    response = web_server.api_subscribe()
+
+                self.assertTrue(response.get_json()["ok"])
+                self.assertEqual(add.call_args.kwargs["subscription_quality"], expected)
+
+    def test_personal_sync_defaults_new_ximalaya_album_without_resetting_existing_override(self):
+        albums = [
+            {"id": "new-album", "title": "New", "platform": "喜马拉雅"},
+            {"id": "saved-album", "title": "Saved", "platform": "喜马拉雅"},
+        ]
+        saved = {
+            "id": "喜马拉雅:saved-album",
+            "album": albums[1],
+            "subscription_quality": "杜比全景声优先（自动降级）",
+            "status": "active",
+        }
+
+        def get_subscription(sid):
+            return saved if sid == saved["id"] else None
+
+        def add_subscription(album, _chapters, _download_dir, subscription_quality=None):
+            return {
+                "id": f"喜马拉雅:{album['id']}",
+                "album": album,
+                "subscription_quality": subscription_quality,
+                "status": "active",
+            }
+
+        with (
+            mock.patch.object(
+                web_server.subscription_manager,
+                "settings",
+                return_value={"auto_download_missing": False},
+            ),
+            mock.patch.object(web_server, "_load_ximalaya_personal", return_value=albums),
+            mock.patch.object(
+                web_server.subscription_manager,
+                "get",
+                side_effect=get_subscription,
+            ),
+            mock.patch.object(
+                web_server.subscription_manager,
+                "add_or_update",
+                side_effect=add_subscription,
+            ) as add,
+            mock.patch.object(web_server, "active_download_dir", return_value="downloads"),
+            mock.patch.object(web_server, "start_subscription_job", return_value={"id": "job-new"}),
+        ):
+            result = web_server._sync_personal_ximalaya_subscriptions(force=True)
+
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(
+            [call.kwargs["subscription_quality"] for call in add.call_args_list],
+            [web_server.XMLY_WEB_SUBSCRIPTION_QUALITY, None],
+        )
+
+    def test_subscription_quality_api_updates_one_album(self):
+        sid = "喜马拉雅:album-quality"
+        album = {"id": "album-quality", "title": "Example", "platform": "喜马拉雅"}
+        current = {"id": sid, "album": album, "status": "active"}
+        updated = {**current, "subscription_quality": "无损优先（自动降级）"}
+        with (
+            web_server.app.test_request_context(
+                f"/api/subscriptions/{sid}",
+                method="PATCH",
+                json={"subscription_quality": "无损优先（自动降级）"},
+            ),
+            mock.patch.object(web_server.subscription_manager, "get", return_value=current),
+            mock.patch.object(web_server.subscription_manager, "set_subscription_quality", return_value=updated) as setter,
+            mock.patch.object(web_server, "append_background_event") as append_event,
+        ):
+            response = web_server.api_update_subscription(sid)
+
+        self.assertTrue(response.get_json()["ok"])
+        setter.assert_called_once_with(sid, "无损优先（自动降级）")
+        append_event.assert_called_once()
+
+    def test_wecom_subscription_defaults_to_web_and_accepts_dolby_override(self):
+        album = {"id": "album-quality", "title": "Example", "platform": "喜马拉雅"}
+        chapters = [{"id": "track-1", "title": "One"}]
+        record = {"id": "喜马拉雅:album-quality", "album": album, "status": "active"}
+        for command, expected in (
+            ("订阅 1", web_server.XMLY_WEB_SUBSCRIPTION_QUALITY),
+            ("订阅 1 杜比", "杜比全景声优先（自动降级）"),
+            ("订阅 1 无损", "无损优先（自动降级）"),
+        ):
+            with self.subTest(command=command):
+                with (
+                    mock.patch.object(web_server, "_wecom_get_cached_album", return_value=album),
+                    mock.patch.object(web_server, "_wecom_load_album_chapters", return_value=(album, chapters, None)),
+                    mock.patch.object(web_server.subscription_manager, "add_or_update", return_value=record) as add,
+                    mock.patch.object(web_server.subscription_manager, "settings", return_value={"enabled": False}),
+                    mock.patch.object(web_server, "_wecom_push"),
+                ):
+                    web_server._wecom_async_command("service", "user", command)
+
+                self.assertEqual(add.call_args.kwargs["subscription_quality"], expected)
 
 
 if __name__ == "__main__":
