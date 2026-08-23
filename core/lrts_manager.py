@@ -620,7 +620,7 @@ class LRTSManager:
         )
         return entity_type, _to_int(entity_id)
 
-    def search_books(self, keyword):
+    def search_books(self, keyword, limit=20):
         entity_type, entity_id = self._parse_entity_ref(keyword, fallback_type=0)
         if entity_id and str(keyword or "").strip().startswith(("http://", "https://")):
             detail = self.get_book_detail(self._entity_ref(entity_type, entity_id)) or {}
@@ -645,9 +645,10 @@ class LRTSManager:
 
         client = self._client_or_guest()
         responses = []
+        page_size = max(1, min(_to_int(limit, 20), 50))
         for name in ("book_search", "search_batch", "search_album"):
             try:
-                data = getattr(client, name)(keyword, page_size=50)
+                data = getattr(client, name)(keyword, page_size=page_size)
                 print(f"[lrts] {name}: status={data.get('status')} msg={data.get('msg', '')}")
                 responses.append(data)
                 if data.get("status") == 0:
@@ -687,7 +688,7 @@ class LRTSManager:
                     "_lrts_entity_id": entity_id,
                 })
         print(f"[lrts] search results: {len(books)}")
-        return books
+        return books[:page_size]
 
     def get_book_detail(self, book_id):
         client = self._client_or_guest()

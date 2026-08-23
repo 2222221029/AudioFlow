@@ -84,7 +84,12 @@ def _session_versions(credentials: Mapping[str, str]) -> tuple[str, str]:
     return "1.3.27", cookie_version or "9.4.52.3"
 
 
-def generate_mobile_ticket(value, business: str = "playTrack", scene: str = "play") -> str:
+def generate_mobile_ticket(
+    value,
+    business: str = "playTrack",
+    scene: str = "play",
+    force_fresh: bool = False,
+) -> str:
     credentials = normalize_ximalaya_mobile_credentials(value)
     identity = ximalaya_mobile_cookie_identity(credentials)
     metadata = ximalaya_mobile_ticket_metadata(credentials.get("x_tk", ""))
@@ -129,7 +134,7 @@ def generate_mobile_ticket(value, business: str = "playTrack", scene: str = "pla
         return ticket
 
     ttl = _ticket_cache_ttl()
-    if ttl <= 0:
+    if force_fresh or ttl <= 0:
         return mint_ticket()
 
     cookie_digest = hashlib.sha256(

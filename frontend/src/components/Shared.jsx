@@ -2,7 +2,7 @@ import {useEffect, useRef, useState} from 'react';
 import {Icon} from './Icons.jsx';
 import {AppLogo} from './AppLogo.jsx';
 import PlatformLogo, {PlatformTag} from './PlatformLogo.jsx';
-import {albumEpisodeText, chapterId, chapterTitle, coverOf, fmtDuration, taskStatusText} from '../utils/format.js';
+import {albumEpisodeText, chapterId, chapterStatusText, chapterTitle, coverOf, fmtDuration, taskStatusText} from '../utils/format.js';
 import {COOKIE_PLATFORMS, NO_COOKIE_KEYS, PERSONAL_FEATURES, SEARCH_PLATFORMS} from '../utils/platforms.js';
 import {applyTheme, persistTheme, savedTheme, THEMES} from '../utils/themes.js';
 import {api} from '../services/api.js';
@@ -105,7 +105,7 @@ export function Modal({modal, onClose}) {
   if (!modal) return null;
   return (
     <div className="modal-backdrop show" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="modal" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="audioflow-modal-title" aria-label="操作对话框" tabIndex={-1}>
+      <div className={`modal ${modal.className || ''}`} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="audioflow-modal-title" aria-label="操作对话框" tabIndex={-1}>
         {modal.close !== false && (
           <button className="modal-close-btn" onClick={onClose} title="关闭" aria-label="关闭对话框">
             <Icon id="i-close" className="icon icon-sm" />
@@ -221,6 +221,12 @@ export function PlatformSelect({platform, setPlatform, mobile = false}) {
 
 export function ResultCard({album, onOpen, mobile = false}) {
   const cover = coverOf(album);
+  const library = album.library || {};
+  const localTotal = Number(library.total || album.episodes || album.chapter_count || 0);
+  const localDownloaded = Number(library.downloaded || 0);
+  const localText = localTotal > 0 && localDownloaded >= localTotal
+    ? '本地已下载'
+    : `本地 ${localDownloaded}/${localTotal || '?'}`;
   return (
     <button className={mobile ? 'result-card' : 'result-row'} onClick={onOpen}>
       <div className="result-cover" style={cover ? {backgroundImage: `url("${cover}")`} : undefined}>
@@ -228,11 +234,19 @@ export function ResultCard({album, onOpen, mobile = false}) {
       </div>
       <div className="result-info">
         <div className="result-title">{album.title || '未知专辑'}</div>
-        <div className="result-platform"><PlatformTag value={album.platform} /></div>
+        <div className="result-platform">
+          <PlatformTag value={album.platform} />
+          {library.subscribed && <span className="library-badge subscribed">已订阅</span>}
+          {(library.subscribed || localDownloaded > 0) && <span className={`library-badge ${localTotal > 0 && localDownloaded >= localTotal ? 'complete' : ''}`}>{localText}</span>}
+        </div>
         <div className="result-meta">{album.author || album.anchor || '未知作者'} · {albumEpisodeText(album)}</div>
       </div>
     </button>
   );
+}
+
+function ChapterStatusBadge({status = 'pending', error = ''}) {
+  return <span className={`chapter-status-badge chapter-status-${status}`} title={error || chapterStatusText(status)}>{chapterStatusText(status)}</span>;
 }
 
 export function ChapterList({chapters, selected, onToggle, onPlay, mobile = false}) {
@@ -249,6 +263,7 @@ export function ChapterList({chapters, selected, onToggle, onPlay, mobile = fals
             <span className="chapter-index">{chapter.order_num || index + 1}</span>
             <span className="chapter-title" title={title}>{title}</span>
             <span className="chapter-duration">{fmtDuration(chapter.duration || chapter.duration_sec)}</span>
+            <ChapterStatusBadge status={chapter.download_status || 'pending'} error={chapter.download_error} />
             <button className="icon-btn" onClick={(event) => { event.stopPropagation(); onPlay(chapter); }} title="试听" aria-label={`试听 ${chapterTitle(chapter)}`}><Icon id="i-play" /></button>
           </div>
         );
@@ -274,14 +289,16 @@ function formatCheckTime(value, fallback = '从未') {
   });
 }
 
-function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterList, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions}) {
+function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterList, chapterPagination, chapterSort, setChapterSort, downloadRange, setDownloadRange, subscribed, actions}) {
   const [showRange, setShowRange] = useState(false);
+  const pg = chapterPagination || {page: 1, total_pages: 1, total: chapters.length, has_more: false};
+  const canNext = pg.has_more || pg.page < pg.total_pages;
   return (
     <div className="chapter-toolbar">
       {/* 主操作 */}
       <button className="btn btn-primary btn-sm" disabled={busy.download || loading} onClick={() => actions.startDownload()}><BusyIcon busy={busy.download} icon="i-download" />下载选中</button>
-      <button className="btn btn-ghost btn-sm" disabled={busy.download || loading || !viewChapters.length} onClick={() => actions.startDownload(viewChapters)}><Icon id="i-bolt" className="icon icon-sm" />下载全部</button>
-      <button className="btn btn-ghost btn-sm" disabled={busy.subscribe || loading} onClick={actions.subscribeAlbum}><BusyIcon busy={busy.subscribe} icon="i-star" />订阅追更</button>
+      <button className="btn btn-ghost btn-sm" disabled={busy.download || loading || !viewChapters.length} onClick={() => actions.startDownload([], {all: true})}><Icon id="i-bolt" className="icon icon-sm" />下载全部</button>
+      <button className="btn btn-ghost btn-sm" disabled={busy.subscribe || loading || subscribed} onClick={actions.subscribeAlbum}><BusyIcon busy={busy.subscribe} icon={subscribed ? 'i-check' : 'i-star'} />{subscribed ? '已订阅' : '订阅追更'}</button>
       <div className="toolbar-sep" />
       {/* 排序 */}
       <div className="seg-control">
@@ -293,6 +310,13 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
       <button className="btn btn-ghost btn-sm" disabled={loading || !selectedChapterList.length} onClick={() => actions.selectAllChapters(false)}>清空</button>
       <button className="btn btn-ghost btn-sm" disabled={loading || !chapters.length} onClick={actions.invertChapterSelection}>反选</button>
       <span className="ch-summary">{loading ? '加载中...' : `${selectedChapterList.length}/${viewChapters.length}`}</span>
+      {(pg.total_pages > 1 || pg.has_more) && (
+        <div className="chapter-pager">
+          <button className="icon-btn" disabled={loading || pg.page <= 1} onClick={() => actions.loadChapterPage(pg.page - 1)} title="上一页" aria-label="上一页"><Icon id="i-arrow-left" /></button>
+          <span>{pg.page}/{pg.total_pages || '?'}</span>
+          <button className="icon-btn" disabled={loading || !canNext} onClick={() => actions.loadChapterPage(pg.page + 1)} title="下一页" aria-label="下一页"><Icon id="i-arrow-right" /></button>
+        </div>
+      )}
       {/* 折叠：范围下载 */}
       <button className="btn btn-ghost btn-sm" disabled={loading || !chapters.length} onClick={() => setShowRange((v) => !v)}>
         <Icon id="i-list" className="icon icon-sm" />{showRange ? '收起范围' : '范围下载'}
@@ -309,9 +333,12 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, ximalayaInterface, setXimalayaInterface, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, ximalayaInterface, setXimalayaInterface, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
+  const library = selectedAlbum.library || {};
+  const libraryTotal = Number(library.total || chapters.length || selectedAlbum.episodes || 0);
+  const libraryDownloaded = Number(library.downloaded || 0);
   const loading = busy.album || busy.voice;
   const viewChapters = displayChapters || chapters;
   return (
@@ -321,6 +348,12 @@ export function AlbumDetail({app, mobile = false}) {
         <div className={mobile ? 'detail-info' : 'album-info'}>
           <div className={mobile ? 'detail-title' : 'album-title'}>{selectedAlbum.title || '未知专辑'}</div>
           <div className={mobile ? 'detail-meta' : 'album-meta'}><PlatformTag value={selectedAlbum.platform} /> {selectedAlbum.author || selectedAlbum.anchor || '未知作者'}<br />{albumEpisodeText(selectedAlbum)} · {selectedAlbum.status || '连载中'}</div>
+          {(library.subscribed || libraryDownloaded > 0) && (
+            <div className="album-library-state">
+              {library.subscribed && <span className="library-badge subscribed"><Icon id="i-check" className="icon icon-sm" />已订阅</span>}
+              <span className={`library-badge ${libraryTotal > 0 && libraryDownloaded >= libraryTotal ? 'complete' : ''}`}>{libraryTotal > 0 && libraryDownloaded >= libraryTotal ? '本地已全部下载' : `本地已下载 ${libraryDownloaded}/${libraryTotal || '?'}`}</span>
+            </div>
+          )}
         </div>
       </div>
       {!!voices.length && (
@@ -358,13 +391,15 @@ export function AlbumDetail({app, mobile = false}) {
         chapters={chapters}
         viewChapters={viewChapters}
         selectedChapterList={selectedChapterList}
+        chapterPagination={chapterPagination}
         chapterSort={chapterSort}
         setChapterSort={setChapterSort}
         downloadRange={downloadRange}
         setDownloadRange={setDownloadRange}
+        subscribed={Boolean(library.subscribed)}
         actions={actions}
       />
-      {loading ? <div className="empty"><span className="loading" /> 正在加载章节</div> : <ChapterList chapters={viewChapters} selected={selectedChapters} onToggle={actions.toggleChapter} onPlay={actions.playChapter} mobile={mobile} />}
+      {loading && !viewChapters.length ? <div className="empty"><span className="loading" /> 正在加载章节</div> : <ChapterList chapters={viewChapters} selected={selectedChapters} onToggle={actions.toggleChapter} onPlay={actions.playChapter} mobile={mobile} />}
     </div>
   );
 }
@@ -373,6 +408,7 @@ export function DownloadsPage({app, onNavigate}) {
   const {downloads, downloadPagination, downloadStatusFilter, metrics, actions, setModal, closeModal, busy} = app;
   const confirmDelete = (id) => setModal({content: <ConfirmModal icon="i-trash" title="清除任务记录" message="只清除历史记录，不会删除已下载文件。" okText="清除" danger onClose={closeModal} onOk={() => { closeModal(); actions.deleteDownload(id); }} />});
   const confirmCleanup = (statuses) => setModal({content: <ConfirmModal icon="i-trash" title="批量清理任务" message="将清理符合条件的历史任务记录，不会删除已下载文件。" okText="清理" danger onClose={closeModal} onOk={() => { closeModal(); actions.cleanupDownloads(statuses); }} />});
+  const openDetails = (id) => setModal({className: 'modal-wide', content: <DownloadTaskDetailModal taskId={id} />});
 
   // 状态筛选改由后端分页：切换即回到第 1 页并带上 status 重新拉取
   const STATUS_FILTERS = [
@@ -419,7 +455,7 @@ export function DownloadsPage({app, onNavigate}) {
       <div id="downloadList">
         {!downloads.length
           ? <div className="empty empty-action"><Icon id="i-download" /><span>{pg.total ? '该筛选条件下暂无任务' : '暂无下载任务'}</span><button className="btn btn-primary btn-sm" onClick={pg.total ? () => actions.loadDownloads(1, 'all') : onNavigate}>{pg.total ? '清除筛选' : '前往搜索'}</button></div>
-          : downloads.map((task) => <TaskCard key={task.id} task={task} actions={actions} busy={busy} onDelete={confirmDelete} />)}
+          : downloads.map((task) => <TaskCard key={task.id} task={task} actions={actions} busy={busy} onDelete={confirmDelete} onDetails={openDetails} />)}
       </div>
       {pg.total_pages > 1 && (
         <div className="glass glass-pad" style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px'}}>
@@ -593,10 +629,105 @@ export function PersonalPage({app, mobile = false}) {
   );
 }
 
-function TaskCard({task, actions, busy, onDelete}) {
+const TASK_DETAIL_FILTERS = [
+  {key: 'all', label: '全部'},
+  {key: 'success', label: '成功'},
+  {key: 'failed', label: '失败'},
+  {key: 'downloading', label: '下载中'},
+  {key: 'pending', label: '待下载'},
+];
+
+function DownloadTaskDetailModal({taskId}) {
+  const [detail, setDetail] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const load = async () => {
+      try {
+        const data = await api('/api/downloads/' + encodeURIComponent(taskId));
+        if (cancelled) return;
+        setDetail(data.task || null);
+        setError('');
+        if (['queued', 'running', 'paused', 'stopping'].includes(data.task?.status)) {
+          timer = setTimeout(load, 2000);
+        }
+      } catch (loadError) {
+        if (!cancelled) setError(loadError.message || '加载失败');
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [taskId]);
+
+  if (error) {
+    return <><div className="modal-title"><Icon id="i-alert" />任务详情</div><div className="empty small">{error}</div></>;
+  }
+  if (!detail) {
+    return <><div className="modal-title"><Icon id="i-list" />任务详情</div><div className="empty small"><span className="loading" />正在加载</div></>;
+  }
+
+  const album = detail.album || {title: detail.title, platform: detail.platform};
+  const cover = coverOf(album);
+  const counts = detail.counts || {};
+  const chapters = detail.chapters || [];
+  const visibleChapters = filter === 'all'
+    ? chapters
+    : chapters.filter((chapter) => (chapter.download_status || 'pending') === filter);
+  return (
+    <div className="task-detail-modal">
+      <div className="modal-title"><Icon id="i-list" />专辑下载详情</div>
+      <div className="task-detail-hero">
+        <div className="task-detail-cover" style={cover ? {backgroundImage: `url("${cover}")`} : undefined}>{cover ? '' : <Icon id="i-music" />}</div>
+        <div className="task-detail-heading">
+          <strong title={detail.title || taskId}>{detail.title || taskId}</strong>
+          <span><PlatformTag value={album.platform || detail.platform} />{taskStatusText(detail.status)}</span>
+        </div>
+      </div>
+      <div className="task-count-grid">
+        <div><span>成功</span><strong className="status-text-ok">{counts.success || 0}</strong></div>
+        <div><span>失败</span><strong className="status-text-danger">{counts.failed || 0}</strong></div>
+        <div><span>下载中</span><strong>{counts.downloading || 0}</strong></div>
+        <div><span>待下载</span><strong>{counts.pending || 0}</strong></div>
+      </div>
+      {detail.detail_available === false && <div className="task-detail-notice"><Icon id="i-alert" className="icon icon-sm" />完整章节明细已过保留期，仅保留失败摘要。</div>}
+      {detail.failure_reason && <div className="task-detail-notice danger">{detail.failure_reason}</div>}
+      <div className="task-detail-toolbar">
+        <div className="seg-control">
+          {TASK_DETAIL_FILTERS.map((item) => <button key={item.key} className={filter === item.key ? 'active' : ''} onClick={() => setFilter(item.key)}>{item.label}</button>)}
+        </div>
+        <span>{visibleChapters.length}/{chapters.length} 章</span>
+      </div>
+      <div className="task-detail-list">
+        {!visibleChapters.length
+          ? <div className="empty small">该状态下暂无章节</div>
+          : visibleChapters.map((chapter, index) => {
+            const status = chapter.download_status || 'pending';
+            return (
+              <div className="task-detail-row" key={chapterId(chapter, String(index + 1))}>
+                <span className="task-detail-index">{chapter.order_num || index + 1}</span>
+                <div><strong title={chapterTitle(chapter)}>{chapterTitle(chapter)}</strong>{chapter.download_error && <small title={chapter.download_error}>{chapter.download_error}</small>}</div>
+                <ChapterStatusBadge status={status} error={chapter.download_error} />
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
+
+function TaskCard({task, actions, busy, onDelete, onDetails}) {
   const pct = Math.max(0, Math.min(100, task.percent || 0));
   const status = task.status || 'queued';
+  const successCount = Number(task.success || 0);
   const failedCount = Number(task.failed ?? task.failed_chapters?.length ?? 0) || 0;
+  const downloadingCount = Number(task.downloading || 0);
+  const pendingCount = Number(task.pending ?? Math.max(Number(task.total || 0) - successCount - failedCount - downloadingCount, 0));
   const canPause = status === 'running';
   const canResume = ['paused', 'stopping'].includes(status);
   const canStop = ['queued', 'running', 'paused', 'stopping'].includes(status);
@@ -627,7 +758,7 @@ function TaskCard({task, actions, busy, onDelete}) {
     <div className="task-card">
       <div className="task-head"><div className="task-title" title={task.title || task.id}>{task.title || task.id}</div><span className={`task-state state-${status}`}>{taskStatusText(status)}</span></div>
       <div className="progress-bar"><div className="progress-fill" style={{width: `${pct}%`}} /></div>
-      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{failedCount > 0 ? <span style={{color: 'var(--danger)'}}>失败 {failedCount} 章</span> : null}</div>
+      <div className="task-meta task-counts"><span className="ok">成功 {successCount}</span><span className="danger">失败 {failedCount}</span>{downloadingCount > 0 && <span>下载中 {downloadingCount}</span>}<span>待下载 {pendingCount}</span><span>{pct}%</span></div>
       {hasDiagnostics && (
         <details className="task-error-details">
           <summary><Icon id="i-alert" className="icon icon-sm" />查看失败详情</summary>
@@ -641,6 +772,7 @@ function TaskCard({task, actions, busy, onDelete}) {
         </details>
       )}
       <div className="task-actions">
+        <button className="btn btn-ghost btn-tiny" onClick={() => onDetails(task.id)}><Icon id="i-list" className="icon icon-sm" />专辑详情</button>
         {canPause && <button className="btn btn-ghost btn-tiny" disabled={busy[`${busyPrefix}pause`]} onClick={() => actions.controlDownload(task.id, 'pause')}><BusyIcon busy={busy[`${busyPrefix}pause`]} icon="i-pause" />暂停</button>}
         {canResume && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}resume`]} onClick={() => actions.controlDownload(task.id, 'resume')}><BusyIcon busy={busy[`${busyPrefix}resume`]} icon="i-play" />继续</button>}
         {canStop && <button className="btn btn-danger btn-tiny" disabled={busy[`${busyPrefix}stop`]} onClick={() => actions.controlDownload(task.id, 'stop')}><BusyIcon busy={busy[`${busyPrefix}stop`]} icon="i-close" />停止</button>}

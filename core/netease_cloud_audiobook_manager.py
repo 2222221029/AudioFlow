@@ -162,21 +162,13 @@ class NeteaseCloudAudiobookManager:
         if not radio_id:
             return []
         print(f"📚 获取网易云听书节目列表: {radio_id}")
-        first = self._fetch_program_page(radio_id, offset=0, limit=min(max(page_size, 1), 1000))
-        programs = list(first.get("programs") or [])
-        total = int(first.get("count") or len(programs) or 0)
+        page = max(1, int(page or 1))
         limit = min(max(page_size, 1), 1000)
-        offset = len(programs)
-        while offset < total and offset < 10000:
-            data = self._fetch_program_page(radio_id, offset=offset, limit=limit)
-            page_programs = data.get("programs") or []
-            if not page_programs:
-                break
-            programs.extend(page_programs)
-            offset += len(page_programs)
-            time.sleep(0.12)
-        chapters = [self._normalize_program(item, radio_id, idx) for idx, item in enumerate(programs, 1)]
-        print(f"✅ 网易云听书章节加载完成，共 {len(chapters)} 章")
+        offset = (page - 1) * limit
+        data = self._fetch_program_page(radio_id, offset=offset, limit=limit)
+        programs = list(data.get("programs") or [])
+        chapters = [self._normalize_program(item, radio_id, offset + idx) for idx, item in enumerate(programs, 1)]
+        print(f"✅ 网易云听书章节加载完成，第 {page} 页 {len(chapters)} 章")
         return chapters
 
     def _fetch_program_page(self, radio_id: str, offset: int = 0, limit: int = 1000) -> Dict:

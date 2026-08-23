@@ -142,9 +142,9 @@ function DiscoverView({app, switchView, searchAndShowResults}) {
       <div className="native-section">
         <div className="native-section-head">
           <span>搜索结果</span>
-          <em>{results.length ? `${results.length} 条` : '输入关键词后搜索'}</em>
+          <em>{busy.search ? `搜索中 · ${results.length} 条` : (results.length ? `${results.length} 条` : '输入关键词后搜索')}</em>
         </div>
-        {busy.search
+        {busy.search && !results.length
           ? <div className="empty"><span className="loading" /> 正在搜索</div>
           : !results.length
             ? <div className="empty"><Icon id="i-search" />开始搜索发现有声书</div>

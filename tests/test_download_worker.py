@@ -276,6 +276,18 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertTrue(result)
         sleep.assert_any_call(15)
 
+    def test_chapter_retry_emits_downloading_state(self):
+        worker = self.make_worker()
+        chapter = {"id": "1", "title": "第一章"}
+        events = []
+        worker.chapter_status_updated.connect(lambda *args: events.append(args))
+
+        with mock.patch.object(worker, "_download_single_chapter", return_value=True):
+            result = worker._download_chapter_with_retry(chapter, 1)
+
+        self.assertTrue(result)
+        self.assertEqual(events, [("task-1", chapter, "downloading")])
+
 
 if __name__ == "__main__":
     unittest.main()

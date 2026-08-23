@@ -25,6 +25,7 @@ class DownloadWorker(QThread):
     realtime_progress_updated = pyqtSignal(str, int, int, int)  # task_id, completed, total, percent
     download_completed = pyqtSignal(str, int, int, list, list)  # task_id, success, fail, success_chapters, failed_chapters
     task_info_updated = pyqtSignal(str, dict)  # task_id, task_info
+    chapter_status_updated = pyqtSignal(str, dict, str)  # task_id, chapter, status
 
     def __init__(self, chapters, download_dir, quality, album_title, album_id, platform, task_id,
                  parent=None, search_manager=None, voice_config=None, coin_reference_id=None):
@@ -406,11 +407,13 @@ class DownloadWorker(QThread):
                         if success:
                             self.success_count += 1
                             self.success_chapters.append(chapter)
+                            self.chapter_status_updated.emit(self.task_id, chapter, 'success')
                         else:
                             self.failed_count += 1
                             if not chapter.get('_error'):
                                 chapter['_error'] = '下载失败'
                             self.failed_chapters.append(chapter)
+                            self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
                             print(f"   ❌ 章节下载失败: {chapter.get('title', '未知章节')} - "
                                   f"{chapter.get('_error', '未知错误')}")
                     except TimeoutError:
@@ -418,11 +421,13 @@ class DownloadWorker(QThread):
                         self.failed_count += 1
                         chapter['_error'] = '下载超时（2分钟）'
                         self.failed_chapters.append(chapter)
+                        self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
                     except Exception as e:
                         print(f"   ❌ 下载章节时出错: {e}")
                         self.failed_count += 1
                         chapter['_error'] = f'下载异常: {str(e)[:50]}'
                         self.failed_chapters.append(chapter)
+                        self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
 
                     # 进度上报失败绝不能中断下载循环（否则文件继续下完、进度却卡在中途）
                     try:
@@ -476,6 +481,7 @@ class DownloadWorker(QThread):
 
     def _download_chapter_with_retry(self, chapter, chapter_index):
         """带自动重试的章节下载入口（在线程池中执行）。"""
+        self.chapter_status_updated.emit(self.task_id, chapter, 'downloading')
         # 动态导入异常类型，避免循环依赖
         try:
             from core.lrts_manager import RateLimitError as _RateLimitError

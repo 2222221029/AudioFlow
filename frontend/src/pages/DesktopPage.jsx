@@ -19,7 +19,7 @@ import {
   ThemesPage,
   Toast,
 } from '../components/Shared.jsx';
-import {SEARCH_PLATFORMS} from '../utils/platforms.js';
+import {AGGREGATE_SEARCH_PLATFORMS} from '../utils/platforms.js';
 
 const NAV = [
   ['search', 'i-search', '聚合搜索'],
@@ -131,7 +131,7 @@ function PageShell({title, subtitle, action, children}) {
 
 function SearchPage({app}) {
   const {results, selectedAlbum, subscriptions, metrics, config, status, serviceState, actions, searchHistory, query, setQuery} = app;
-  const platformCount = Math.max(SEARCH_PLATFORMS.length - 1, 0);
+  const platformCount = AGGREGATE_SEARCH_PLATFORMS.length;
 
   const handleHistoryClick = (keyword) => {
     setQuery(keyword);

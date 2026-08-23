@@ -1,13 +1,15 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, login, logout, setAuthRequiredHandler} from '../services/api.js';
 import {chapterId, chapterTitle, coverOf} from '../utils/format.js';
-import {NO_COOKIE_KEYS, PLATFORM_COOKIE_KEY} from '../utils/platforms.js';
+import {AGGREGATE_SEARCH_PLATFORMS, NO_COOKIE_KEYS, PLATFORM_COOKIE_KEY} from '../utils/platforms.js';
 
 // ── 搜索历史
 const SEARCH_HISTORY_KEY = 'audioflow_search_history';
 const MAX_SEARCH_HISTORY = 12;
 const DOWNLOADS_CACHE_KEY = 'audioflow_downloads_cache';
 const SUBSCRIPTIONS_CACHE_KEY = 'audioflow_subscriptions_cache';
+const VOICE_PLATFORMS = new Set(['番茄畅听', '番茄听书', '七猫听书']);
+const DEFAULT_CHAPTER_PAGINATION = {page: 1, page_size: 100, total: 0, total_pages: 1, has_more: false};
 function loadSearchHistory() {
   try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
 }
@@ -148,6 +150,7 @@ export function useAudioFlowApp() {
   const [results, setResults] = useState([]);
   const [selectedAlbum, setSelectedAlbum] = useState(null);
   const [chapters, setChapters] = useState([]);
+  const [chapterPagination, setChapterPagination] = useState(DEFAULT_CHAPTER_PAGINATION);
   const [chapterSort, setChapterSort] = useState('asc');
   const [downloadRange, setDownloadRange] = useState('');
   const [selectedChapters, setSelectedChapters] = useState(new Set());
@@ -182,6 +185,8 @@ export function useAudioFlowApp() {
   const audioRef = useRef(null);
   const prevDownloadStatusRef = useRef({});
   const foregroundRefreshRef = useRef(0);
+  const searchRequestRef = useRef(0);
+  const albumRequestRef = useRef(0);
   const hasCachedDataRef = useRef(downloads.length > 0 || subscriptions.length > 0);
   const initializedRef = useRef(false);
 
@@ -373,25 +378,52 @@ export function useAudioFlowApp() {
     if (!ensurePlatformLogin()) return;
     pushSearchHistory(keyword);
     setSearchHistory(loadSearchHistory());
+    const requestId = ++searchRequestRef.current;
     await runBusy('search', async () => {
-      const data = await api('/api/search?q=' + encodeURIComponent(keyword) + '&platform=' + encodeURIComponent(platform));
-      setResults(data.results || []);
+      if (platform !== 'all') {
+        const data = await api('/api/search?q=' + encodeURIComponent(keyword) + '&platform=' + encodeURIComponent(platform));
+        if (requestId === searchRequestRef.current) setResults(data.results || []);
+        return;
+      }
+
+      const grouped = new Map();
+      let completed = 0;
+      let succeeded = 0;
+      await Promise.all(AGGREGATE_SEARCH_PLATFORMS.map(async ({value}) => {
+        try {
+          const data = await api('/api/search?q=' + encodeURIComponent(keyword) + '&platform=' + encodeURIComponent(value));
+          grouped.set(value, data.results || []);
+          succeeded += 1;
+        } catch {
+          grouped.set(value, []);
+        } finally {
+          completed += 1;
+          if (requestId === searchRequestRef.current && (succeeded > 0 || completed === AGGREGATE_SEARCH_PLATFORMS.length)) {
+            setResults(AGGREGATE_SEARCH_PLATFORMS.flatMap(({value: item}) => grouped.get(item) || []));
+          }
+        }
+      }));
+      if (!succeeded) throw new Error('全部平台均未返回结果');
     }).catch((error) => {
-      showToast('搜索失败：' + error.message, 'err');
+      if (requestId === searchRequestRef.current) showToast('搜索失败：' + error.message, 'err');
     });
   }, [ensurePlatformLogin, platform, query, runBusy, showToast]);
 
   const openAlbum = useCallback(async (album) => {
     if (!album) {
+      albumRequestRef.current += 1;
       setSelectedAlbum(null);
       setChapters([]);
+      setChapterPagination(DEFAULT_CHAPTER_PAGINATION);
       setChapterSort('asc');
       setDownloadRange('');
       setSelectedChapters(new Set());
       return;
     }
+    const requestId = ++albumRequestRef.current;
     setSelectedAlbum(album);
     setChapters([]);
+    setChapterPagination(DEFAULT_CHAPTER_PAGINATION);
     setChapterSort('asc');
     setDownloadRange('');
     setSelectedChapters(new Set());
@@ -402,17 +434,27 @@ export function useAudioFlowApp() {
         ? ximalayaDownloadQuality(config.quality)
         : (config.quality || DEFAULT_QUALITY),
     );
+    api('/api/album/detail', {method: 'POST', body: {album}}).then((detailData) => {
+      if (requestId !== albumRequestRef.current || !detailData.album) return;
+      setSelectedAlbum((current) => current ? {...current, ...detailData.album} : detailData.album);
+    }).catch(() => {});
+
     await runBusy('album', async () => {
-      const voiceData = await api('/api/album/voices', {method: 'POST', body: {album}}).catch(() => ({voices: []}));
+      const voiceData = VOICE_PLATFORMS.has(album.platform)
+        ? await api('/api/album/voices', {method: 'POST', body: {album}}).catch(() => ({voices: []}))
+        : {voices: []};
+      if (requestId !== albumRequestRef.current) return;
       const nextVoices = voiceData.voices || [];
       const albumKey = album.id || album.title;
       const remembered = recallVoice(albumKey);
       const voice = (remembered && nextVoices.find((v) => (v.name || v.title) === remembered)) || nextVoices[0] || null;
       setVoices(nextVoices);
       setSelectedVoice(voice);
-      const data = await api('/api/album/chapters', {method: 'POST', body: {album, voice}});
-      setSelectedAlbum(data.album || album);
+      const data = await api('/api/album/chapters', {method: 'POST', body: {album, voice, page: 1, page_size: 100}});
+      if (requestId !== albumRequestRef.current) return;
+      setSelectedAlbum((current) => ({...(current || album), ...(data.album || {})}));
       setChapters(data.chapters || []);
+      setChapterPagination(data.pagination || DEFAULT_CHAPTER_PAGINATION);
       if (data.warning) showToast(data.warning, 'err');
     }).catch((error) => {
       showToast('加载详情失败：' + error.message, 'err');
@@ -421,22 +463,52 @@ export function useAudioFlowApp() {
 
   const changeVoice = useCallback(async (voice) => {
     if (!selectedAlbum) return;
+    const requestId = ++albumRequestRef.current;
     setSelectedVoice(voice);
     setChapters([]);
+    setChapterPagination(DEFAULT_CHAPTER_PAGINATION);
     setChapterSort('asc');
     setDownloadRange('');
     setSelectedChapters(new Set());
     const albumKey = selectedAlbum.id || selectedAlbum.title;
     rememberVoice(albumKey, (voice && (voice.name || voice.title)) || '');
     await runBusy('voice', async () => {
-      const data = await api('/api/album/chapters', {method: 'POST', body: {album: selectedAlbum, voice}});
+      const data = await api('/api/album/chapters', {method: 'POST', body: {album: selectedAlbum, voice, page: 1, page_size: 100}});
+      if (requestId !== albumRequestRef.current) return;
       setChapters(data.chapters || []);
-      if (data.album) setSelectedAlbum(data.album);
+      setChapterPagination(data.pagination || DEFAULT_CHAPTER_PAGINATION);
+      if (data.album) setSelectedAlbum((current) => ({...(current || selectedAlbum), ...data.album}));
       if (data.warning) showToast(data.warning, 'err');
     }).catch((error) => {
       showToast('切换音色失败：' + error.message, 'err');
     });
   }, [runBusy, selectedAlbum, showToast]);
+
+  const loadChapterPage = useCallback(async (nextPage) => {
+    if (!selectedAlbum) return;
+    const targetPage = Math.max(1, Number(nextPage || 1));
+    if (chapterPagination.total_pages && targetPage > chapterPagination.total_pages) return;
+    const requestId = ++albumRequestRef.current;
+    await runBusy('album', async () => {
+      const data = await api('/api/album/chapters', {
+        method: 'POST',
+        body: {
+          album: selectedAlbum,
+          voice: selectedVoice || undefined,
+          page: targetPage,
+          page_size: chapterPagination.page_size || 100,
+        },
+      });
+      if (requestId !== albumRequestRef.current) return;
+      setChapters(data.chapters || []);
+      setSelectedChapters(new Set());
+      setChapterPagination(data.pagination || {...DEFAULT_CHAPTER_PAGINATION, page: targetPage});
+      if (data.album) setSelectedAlbum((current) => ({...(current || selectedAlbum), ...data.album}));
+      if (data.warning) showToast(data.warning, 'err');
+    }).catch((error) => {
+      if (requestId === albumRequestRef.current) showToast('加载章节失败：' + error.message, 'err');
+    });
+  }, [chapterPagination.page_size, chapterPagination.total_pages, runBusy, selectedAlbum, selectedVoice, showToast]);
 
   const toggleChapter = useCallback((id) => {
     setSelectedChapters((prev) => {
@@ -472,18 +544,20 @@ export function useAudioFlowApp() {
     [displayChapters, selectedChapters],
   );
 
-  const startDownload = useCallback(async (items = selectedChapterList) => {
-    if (!selectedAlbum || !items.length) {
+  const startDownload = useCallback(async (items = selectedChapterList, options = {}) => {
+    const downloadAll = Boolean(options.all);
+    if (!selectedAlbum || (!downloadAll && !items.length)) {
       showToast('请先选择章节', 'err');
       return;
     }
-    const slimChapters = items.map((chapter, index) => slimChapterForDownload(chapter, index));
+    const slimChapters = downloadAll ? [] : items.map((chapter, index) => slimChapterForDownload(chapter, index));
     await runBusy('download', async () => {
       await api('/api/downloads', {
         method: 'POST',
         body: {
           album: selectedAlbum,
           chapters: slimChapters,
+          all_chapters: downloadAll,
           options: {
             quality: selectedAlbum.platform === '喜马拉雅'
               ? (ximalayaInterface === XMLY_WEB_INTERFACE
@@ -495,7 +569,7 @@ export function useAudioFlowApp() {
           },
         },
       });
-      showToast('已加入下载 ' + items.length + ' 章', 'ok');
+      showToast(downloadAll ? '整本下载正在加载目录' : '已加入下载 ' + items.length + ' 章', 'ok');
       setPage('downloads');
       setMobileView('downloads');
       setTimeout(loadDownloads, 500);
@@ -536,8 +610,16 @@ export function useAudioFlowApp() {
     await runBusy('subscribe', async () => {
       const data = await api('/api/subscriptions', {
         method: 'POST',
-        body: {album: selectedAlbum, chapters, voice: selectedVoice || undefined},
+          body: {album: selectedAlbum, chapters, voice: selectedVoice || undefined, load_all: true},
       });
+      if (data.library) {
+        setSelectedAlbum((current) => current ? {...current, library: data.library} : current);
+        setResults((current) => current.map((album) => (
+          album.library?.subscription_id === data.library.subscription_id
+            ? {...album, library: data.library}
+            : album
+        )));
+      }
       showToast('订阅成功', 'ok');
       if (data.job) setSubscriptionJobs((prev) => ({...prev, [data.job.id]: data.job}));
       setTimeout(loadSubscriptions, 800);
@@ -1046,6 +1128,7 @@ export function useAudioFlowApp() {
     results,
     selectedAlbum,
     chapters,
+    chapterPagination,
     displayChapters,
     chapterSort,
     setChapterSort,
@@ -1100,13 +1183,16 @@ export function useAudioFlowApp() {
       clearSearchHistory,
       openAlbum,
       closeAlbum: () => {
+        albumRequestRef.current += 1;
         setSelectedAlbum(null);
         setChapters([]);
+        setChapterPagination(DEFAULT_CHAPTER_PAGINATION);
         setChapterSort('asc');
         setDownloadRange('');
         setSelectedChapters(new Set());
       },
       changeVoice,
+      loadChapterPage,
       toggleChapter,
       selectAllChapters,
       invertChapterSelection,

@@ -126,13 +126,14 @@ class KuwoManager:
             "Secret": self._fixed_secret,
         }
     
-    def search_books(self, keyword: str) -> List[Dict]:
+    def search_books(self, keyword: str, limit: int = 20) -> List[Dict]:
         """搜索书籍"""
         try:
             print(f"🔍 酷我听书搜索: {keyword}")
             
             # 构建搜索URL
-            search_url = f"https://search.kuwo.cn/r.s?client=kt&all={quote(keyword)}&pn=0&rn=100&uid=2740589762&ver=kwplayer_ar_11.1.6.1&ft=album&correct=1&vipver=1&show_copyright_off=1&isstar=1&starver=1&newsearch=1&newver=3&searchNo=2740589762{quote(keyword)}{int(time.time() * 1000)}&cluster=0&encoding=utf8&rformat=json&mobi=1&strategy=2012&presell=1&q36=2687b446c2e07697f0f33fb510001a41920e&spPrivilege=0&sortby=0"
+            result_limit = max(1, min(int(limit or 20), 100))
+            search_url = f"https://search.kuwo.cn/r.s?client=kt&all={quote(keyword)}&pn=0&rn={result_limit}&uid=2740589762&ver=kwplayer_ar_11.1.6.1&ft=album&correct=1&vipver=1&show_copyright_off=1&isstar=1&starver=1&newsearch=1&newver=3&searchNo=2740589762{quote(keyword)}{int(time.time() * 1000)}&cluster=0&encoding=utf8&rformat=json&mobi=1&strategy=2012&presell=1&q36=2687b446c2e07697f0f33fb510001a41920e&spPrivilege=0&sortby=0"
             
             response = self.session.get(search_url, timeout=15)
             response.encoding = 'utf-8'
@@ -147,7 +148,7 @@ class KuwoManager:
                 
                 # 转换为统一格式
                 books = []
-                for album in albums:
+                for album in albums[:result_limit]:
                     books.append({
                         'id': str(album.get('albumid', '')),
                         'title': album.get('name', ''),
@@ -251,94 +252,74 @@ class KuwoManager:
             return {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
     
     def get_chapters(self, album_id: str, page: int = 1, page_size: int = 50) -> List[Dict]:
-        """获取章节列表 - 并发优化版：使用多线程并行加载"""
+        """按 UI 页范围获取章节；整本请求仍会并发抓取所需的全部 API 页。"""
         try:
             print(f"📚 获取酷我听书章节: {album_id}, 页码: {page}")
-            
-            # 重置 Cookie 为初始值
             self._safe_set_cookie(
                 name="Hm_Iuvt_cdb524f42f23cer9b268564v7y735ewrq2324",
                 value=self._fixed_cookie_value,
                 domain=".kuwo.cn"
             )
-            
-            # 第一步：获取第一页，确定总章节数
+
+            page = max(1, int(page or 1))
+            page_size = max(1, int(page_size or 50))
             first_page_result = self._fetch_single_page(album_id, 1)
             if not first_page_result['success']:
                 print(f"❌ 获取第一页失败")
                 return []
-            
-            total_chapters = first_page_result['total']
-            required_pages = (total_chapters + 23) // 24  # 向上取整
-            print(f"📊 总章节数: {total_chapters}，需要 {required_pages} 页，开始并发加载...")
-            
-            # 存储所有页面的结果
-            page_results = {1: first_page_result}
-            
-            # 第二步：并发获取剩余页面
-            if required_pages > 1:
-                # 使用线程池并发获取，最大并发数为10
-                max_workers = min(10, required_pages - 1)
-                remaining_pages = list(range(2, required_pages + 1))
-                
-                start_time = time.time()
+
+            api_page_size = 24
+            total_chapters = int(first_page_result.get('total') or len(first_page_result.get('music_list') or []))
+            start_index = (page - 1) * page_size
+            if total_chapters and start_index >= total_chapters:
+                return []
+            end_index = min(start_index + page_size, total_chapters) if total_chapters else start_index + page_size
+            first_api_page = start_index // api_page_size + 1
+            last_api_page = max(first_api_page, (max(end_index, 1) - 1) // api_page_size + 1)
+            requested_pages = list(range(first_api_page, last_api_page + 1))
+            page_results = {1: first_page_result} if 1 in requested_pages else {}
+            remaining_pages = [item for item in requested_pages if item != 1]
+
+            if remaining_pages:
+                max_workers = min(10, len(remaining_pages))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # 提交所有任务
                     future_to_page = {
                         executor.submit(self._fetch_single_page, album_id, p): p 
                         for p in remaining_pages
                     }
-                    
-                    # 收集结果
-                    completed = 0
                     for future in concurrent.futures.as_completed(future_to_page):
                         page_num = future_to_page[future]
                         try:
-                            result = future.result()
-                            page_results[page_num] = result
-                            completed += 1
-                            if completed % 20 == 0:  # 每20页打印一次进度
-                                print(f"⏳ 并发加载进度: {completed}/{len(remaining_pages)} 页")
+                            page_results[page_num] = future.result()
                         except Exception as e:
                             print(f"❌ 第 {page_num} 页获取异常: {e}")
                             page_results[page_num] = {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
-                
-                elapsed = time.time() - start_time
-                print(f"⚡ 并发加载完成！耗时: {elapsed:.2f}秒，平均 {elapsed/len(remaining_pages)*1000:.1f}ms/页")
-            
-            # 第三步：按页码顺序合并所有章节
-            all_chapters = []
+
+            chapters = []
             for page_num in sorted(page_results.keys()):
                 result = page_results[page_num]
                 if result['success']:
                     music_list = result['music_list']
-                    base_index = (page_num - 1) * 24  # 计算起始序号
-                    
+                    base_index = (page_num - 1) * api_page_size
                     for idx, chapter in enumerate(music_list):
+                        global_index = base_index + idx
+                        if global_index < start_index or global_index >= end_index:
+                            continue
                         duration = chapter.get('duration', 0)
                         duration_formatted = f"{duration // 60:02d}:{duration % 60:02d}" if duration > 0 else "00:00"
-                        
-                        all_chapters.append({
+                        chapters.append({
                             'id': str(chapter.get('rid', '')),
                             'title': chapter.get('name', ''),
                             'duration': duration_formatted,
                             'size': '',
                             'plays': 0,
                             'album': album_id,
-                            'order_num': base_index + idx + 1,  # 正确计算序号
-                            # 酷我特有字段
+                            'order_num': global_index + 1,
                             'kuwo_rid': chapter.get('rid', ''),
                         })
-            
-            print(f"✅ 酷我听书章节加载完成，共 {len(all_chapters)}/{total_chapters} 章")
-            
-            # 分页返回
-            if page > 1 or page_size < len(all_chapters):
-                start_index = (page - 1) * page_size
-                end_index = start_index + page_size
-                return all_chapters[start_index:end_index]
-            
-            return all_chapters
+
+            print(f"✅ 酷我听书章节加载完成，本页 {len(chapters)}/{total_chapters} 章")
+            return chapters
             
         except Exception as e:
             print(f"❌ 获取酷我听书章节失败: {e}")

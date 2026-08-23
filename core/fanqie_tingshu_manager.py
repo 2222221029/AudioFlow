@@ -508,7 +508,7 @@ class FanqieTingshuManager:
             return None
         return self.get_book_detail(bid)
 
-    def search_books(self, keyword: str, max_pages: int = 30) -> List[Dict]:
+    def search_books(self, keyword: str, max_pages: int = 1, enrich_covers: bool = True) -> List[Dict]:
         """并行搜索书籍 Tab + 听书 Tab，按 API 顺序交错展示，再按书名去重"""
         bid = parse_book_id(keyword)
         if bid:
@@ -540,7 +540,8 @@ class FanqieTingshuManager:
         books = _dedupe_books_by_title(books)
         if before != len(books):
             print(f"📋 书名去重: {before} → {len(books)} 本")
-        self._enrich_covers(books)
+        if enrich_covers:
+            self._enrich_covers(books)
         print(
             f"✅ 番茄听书搜索完成: 书籍 Tab {len(book_items)} + 听书 Tab {len(audio_items)}"
             f" → 交错 {before} 本 → 去重后 {len(books)} 本"

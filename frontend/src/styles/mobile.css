@@ -610,6 +610,8 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
   display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .chapter-toolbar .btn{height:34px;padding:0 12px;font-size:12px;white-space:nowrap}
 .chapter-toolbar .ch-summary{margin-left:auto;color:var(--text-mute);font-size:11.5px;font-variant-numeric:tabular-nums}
+.chapter-pager{display:inline-flex;align-items:center;gap:6px;color:var(--text-mute);font-size:11.5px;font-variant-numeric:tabular-nums}
+.chapter-pager .icon-btn{width:34px;height:34px;min-height:34px;flex:0 0 34px}
 .seg-control{height:34px;padding:3px;display:inline-flex;align-items:center;gap:2px;border-radius:var(--radius-pill);background:var(--panel-hi);border:1px solid var(--border);box-sizing:border-box}
 .seg-control button{height:26px;padding:0 11px;border:0;border-radius:var(--radius-pill);background:transparent;color:var(--text-mute);font-size:12px;font-weight:700;white-space:nowrap}
 .seg-control button.active{background:linear-gradient(135deg,var(--aurora-a),var(--aurora-b));color:#fff;box-shadow:0 6px 16px -10px var(--aurora-a)}
@@ -1553,6 +1555,49 @@ html[data-theme-mode="light"],html[data-theme-mode="dark"]{
 .task-error-content p strong{display:block;color:var(--text)}
 .task-error-content pre{max-height:180px;margin:0 0 8px;padding:8px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text);background:var(--panel);border-radius:6px}
 .task-record-action{margin-left:auto}
+
+/* Download and library state surfaces */
+.result-platform{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden;margin-top:4px;margin-bottom:2px}
+.result-platform .platform-tag{flex:0 1 auto;min-width:0;margin:0}
+.library-badge{display:inline-flex;align-items:center;gap:3px;flex:0 0 auto;height:20px;padding:0 6px;border:1px solid var(--border);border-radius:999px;background:var(--panel-hi);color:var(--text-mute);font-size:9.5px;font-weight:750;line-height:1;white-space:nowrap}
+.library-badge.subscribed{color:var(--primary);background:var(--primary-soft)}
+.library-badge.complete{color:var(--success);background:color-mix(in srgb,var(--success) 10%,var(--panel))}
+.album-library-state{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:7px}
+.chapter-row .chapter-status-badge{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-width:50px;height:22px;padding:0 6px;border:1px solid var(--border);border-radius:999px;background:var(--panel-hi);color:var(--text-mute);font-size:10px;font-weight:750;white-space:nowrap}
+.chapter-row .chapter-status-success,.chapter-row .chapter-status-downloaded{color:var(--success);background:color-mix(in srgb,var(--success) 9%,var(--panel))}
+.chapter-row .chapter-status-failed,.chapter-row .chapter-status-restricted{color:var(--danger);background:color-mix(in srgb,var(--danger) 9%,var(--panel))}
+.chapter-row .chapter-status-downloading{color:var(--primary);background:var(--primary-soft)}
+.task-counts .ok{color:var(--success)}
+.task-counts .danger{color:var(--danger)}
+.modal.modal-wide{overflow:hidden}
+.task-detail-modal{display:flex;flex-direction:column;min-height:0;max-height:calc(var(--viewport-h) - var(--island-top) - 64px)}
+.task-detail-hero{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-right:42px}
+.task-detail-cover{width:52px;height:52px;flex:0 0 52px;border-radius:8px;background:var(--primary-soft) center/cover no-repeat;display:grid;place-items:center;color:var(--primary)}
+.task-detail-heading{display:flex;flex-direction:column;gap:6px;min-width:0}
+.task-detail-heading>strong{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-detail-heading>span{display:flex;align-items:center;gap:5px;color:var(--text-mute);font-size:11px}
+.task-count-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-bottom:10px}
+.task-count-grid>div{display:flex;align-items:center;justify-content:space-between;gap:7px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
+.task-count-grid span{color:var(--text-mute);font-size:11px}
+.task-count-grid strong{font-size:16px;font-variant-numeric:tabular-nums}
+.task-detail-notice{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text-mute);font-size:11px;line-height:1.45}
+.task-detail-notice.danger{color:var(--danger)}
+.task-detail-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;min-width:0}
+.task-detail-toolbar .seg-control{flex:1;min-width:0;overflow-x:auto;justify-content:flex-start}
+.task-detail-toolbar .seg-control button{flex:0 0 auto;padding:0 9px}
+.task-detail-toolbar>span{flex:0 0 auto;color:var(--text-mute);font-size:11px;white-space:nowrap}
+.task-detail-list{flex:1 1 auto;min-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--panel);padding:4px}
+.task-detail-row{display:grid;grid-template-columns:36px minmax(0,1fr) 54px;align-items:center;gap:7px;min-height:48px;padding:6px 7px;border-bottom:1px solid var(--border)}
+.task-detail-row:last-child{border-bottom:0}
+.task-detail-index{color:var(--text-faint);font-size:10.5px;font-variant-numeric:tabular-nums}
+.task-detail-row>div{min-width:0}
+.task-detail-row>div strong,.task-detail-row>div small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-detail-row>div strong{color:var(--text);font-size:12px}
+.task-detail-row>div small{margin-top:3px;color:var(--danger);font-size:10px}
+.task-detail-row .chapter-status-badge{display:inline-flex;align-items:center;justify-content:center;min-width:50px;height:22px;padding:0 5px;border:1px solid var(--border);border-radius:999px;background:var(--panel-hi);color:var(--text-mute);font-size:9.5px;font-weight:750;white-space:nowrap}
+.task-detail-row .chapter-status-success,.task-detail-row .chapter-status-downloaded{color:var(--success)}
+.task-detail-row .chapter-status-failed,.task-detail-row .chapter-status-restricted{color:var(--danger)}
+.task-detail-row .chapter-status-downloading{color:var(--primary)}
 
 .subscription-overview{margin-bottom:10px}
 .subscription-overview-main{display:flex;flex-direction:column;align-items:stretch;gap:10px}

@@ -98,6 +98,24 @@ class XimalayaLocalTicketTest(unittest.TestCase):
         self.assertEqual(first, second)
         uuid4.assert_called_once()
 
+    def test_force_fresh_ignores_session_ttl(self):
+        generated = [
+            mock.Mock(bytes=bytes.fromhex("00112233445566778899aabbccddeeff")),
+            mock.Mock(bytes=bytes.fromhex("ffeeddccbbaa99887766554433221100")),
+        ]
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_LOCAL_TICKET_TTL_SECONDS": "900",
+        }), mock.patch(
+            "core.ximalaya_local_ticket.time.time", return_value=1787328000
+        ), mock.patch(
+            "core.ximalaya_local_ticket.uuid.uuid4", side_effect=generated
+        ) as uuid4:
+            first = generate_mobile_ticket(self.credentials, force_fresh=True)
+            second = generate_mobile_ticket(self.credentials, force_fresh=True)
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(uuid4.call_count, 2)
+
     def test_rotates_ticket_after_session_ttl(self):
         generated = [
             mock.Mock(bytes=bytes.fromhex("00112233445566778899aabbccddeeff")),

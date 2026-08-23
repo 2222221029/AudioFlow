@@ -7,6 +7,8 @@
 """
 
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,6 +32,13 @@ from .lizhi_manager import LizhiManager
 
 class EnhancedSearchManager:
     """增强搜索管理器"""
+
+    KEYWORD_SEARCH_PLATFORMS = (
+        '喜马拉雅', '懒人听书', '番茄畅听', '番茄听书', '七猫听书',
+        '酷我听书', '起点听书', '蜻蜓FM', '网易云听书', '荔枝FM',
+    )
+    SEARCH_CACHE_TTL = 120
+    SEARCH_CACHE_MAX_ITEMS = 64
     
     def __init__(self, cookie_manager=None):
         """初始化搜索管理器"""
@@ -58,6 +67,10 @@ class EnhancedSearchManager:
         
         # 当前选择的音质
         self.current_quality = "标准"
+        self._keyword_search_cache = {}
+        self._keyword_search_cache_lock = threading.Lock()
+        self._chapter_list_cache = {}
+        self._chapter_list_cache_lock = threading.Lock()
         
         print("🚀 增强搜索管理器已初始化（含酷我听书）")
 
@@ -137,6 +150,11 @@ class EnhancedSearchManager:
     def update_cookies(self):
         """更新Cookie到各个平台管理器"""
         self._setup_cookies()
+        self.clear_search_cache()
+
+    def clear_search_cache(self):
+        with self._keyword_search_cache_lock:
+            self._keyword_search_cache.clear()
 
     def _pick_cover_value(self, book: Dict) -> str:
         """从不同平台的搜索结果中尽量提取封面字段。"""
@@ -279,6 +297,7 @@ class EnhancedSearchManager:
     
     def set_cookie(self, platform: str, cookie: str):
         """设置特定平台的Cookie"""
+        self.clear_search_cache()
         if platform == '喜马拉雅' or platform == 'xmly':
             if hasattr(self.ximalaya_manager, 'set_cookie'):
                 if isinstance(cookie, dict):
@@ -324,12 +343,83 @@ class EnhancedSearchManager:
         if nested and hasattr(nested, 'set_ximalaya_mobile_credentials'):
             nested.set_ximalaya_mobile_credentials(credentials)
     
+    def _normalize_search_books(self, books, platform: str) -> List[Dict]:
+        normalized = []
+        converters = {
+            '喜马拉雅': self._convert_xmly_book_to_dict,
+            '懒人听书': self._convert_lrts_book_to_dict,
+            '番茄畅听': self._convert_fanqie_book_to_dict,
+        }
+        for book in books or []:
+            if isinstance(book, dict):
+                normalized.append(self._ensure_book_fields(dict(book), platform))
+            elif platform in converters:
+                normalized.append(converters[platform](book, platform))
+        return normalized
+
+    def _search_platform(self, keyword: str, platform: str) -> List[Dict]:
+        """Run one interactive first-page search without synchronous detail enrichment."""
+        try:
+            if platform == '喜马拉雅':
+                books = self.ximalaya_manager.search_albums(keyword, page=1, page_size=20, max_pages=1)
+            elif platform == '懒人听书':
+                books = self.lrts_manager.search_books(keyword, limit=20)
+            elif platform == '番茄畅听':
+                books = self.fanqie_manager.search_books(keyword, max_pages=1)
+            elif platform == '番茄听书':
+                books = self.fanqie_tingshu_manager.search_books(keyword, max_pages=1, enrich_covers=False)
+            elif platform == '七猫听书':
+                books = self.qimao_manager.search_books(keyword, max_pages=1)
+            elif platform == '酷我听书':
+                books = self.kuwo_manager.search_books(keyword, limit=20)
+            elif platform == '起点听书':
+                books = self.search_manager.search_qidian(keyword, page_size=20, enrich_details=False)
+            elif platform == '蜻蜓FM':
+                books = self.qtfm_manager.search_books(keyword, max_pages=1)
+            elif platform == '网易云听书':
+                books = self.netease_manager.search_books(keyword, limit=20)
+            elif platform == '荔枝FM':
+                books = self.lizhi_manager.search_books(keyword, limit=20)
+            elif platform == '云听FM':
+                value = str(keyword or '').strip()
+                is_link_or_id = value.startswith(('http://', 'https://')) or 'radio.cn' in value or (
+                    value.isdigit() and len(value) >= 6
+                )
+                if is_link_or_id:
+                    detail = self.yuntu_manager.search_by_link_or_id(value)
+                    books = [detail] if detail else []
+                else:
+                    books = self.yuntu_manager.search_books(value, page=0, page_size=20)
+            else:
+                return []
+            results = self._normalize_search_books(books, platform)
+            print(f"✅ {platform} 首屏搜索完成，共 {len(results)} 条")
+            return results
+        except Exception as exc:
+            print(f"❌ {platform} 搜索失败: {exc}")
+            return []
+
+    def _search_platform_cached(self, keyword: str, platform: str) -> List[Dict]:
+        key = (platform, str(keyword or '').strip().casefold())
+        now = time.monotonic()
+        with self._keyword_search_cache_lock:
+            cached = self._keyword_search_cache.get(key)
+            if cached and now - cached[0] < self.SEARCH_CACHE_TTL:
+                return [dict(item) for item in cached[1]]
+        results = self._search_platform(keyword, platform)
+        with self._keyword_search_cache_lock:
+            stale = [cache_key for cache_key, value in self._keyword_search_cache.items() if now - value[0] >= self.SEARCH_CACHE_TTL]
+            for cache_key in stale:
+                self._keyword_search_cache.pop(cache_key, None)
+            if len(self._keyword_search_cache) >= self.SEARCH_CACHE_MAX_ITEMS:
+                oldest = min(self._keyword_search_cache, key=lambda cache_key: self._keyword_search_cache[cache_key][0])
+                self._keyword_search_cache.pop(oldest, None)
+            self._keyword_search_cache[key] = (now, [dict(item) for item in results])
+        return results
+
     def search_books(self, keyword: str, platform: str = 'all') -> List[Dict]:
-        """搜索书籍（支持关键词搜索和ID搜索）"""
-        results = []
-        
-        # 判断是否为ID搜索（纯数字，或番茄/七猫分享链接）
-        keyword_stripped = keyword.strip()
+        """Search one platform or aggregate first-page results concurrently."""
+        keyword_stripped = str(keyword or '').strip()
         parsed_tingshu_id = parse_book_id(keyword_stripped) if platform in ('番茄听书', 'all') else None
         parsed_qimao_id = parse_qimao_book_id(keyword_stripped) if platform in ('七猫听书', 'all') else None
         is_id_search = keyword_stripped.isdigit() or (
@@ -337,286 +427,50 @@ class EnhancedSearchManager:
         ) or (
             platform == '七猫听书' and parsed_qimao_id is not None
         )
-        
         if is_id_search:
             if platform == '七猫听书' and parsed_qimao_id:
-                id_keyword = parsed_qimao_id
+                keyword_stripped = parsed_qimao_id
             elif platform == '番茄听书' and parsed_tingshu_id:
-                id_keyword = parsed_tingshu_id
-            else:
-                id_keyword = keyword_stripped
-            print(f"🔍 检测到ID搜索模式: {id_keyword}")
-            # 直接调用ID搜索，不经过复杂的搜索逻辑
-            id_results = self.search_by_id(id_keyword, platform)
-            print(f"🎯 ID搜索返回 {len(id_results)} 个结果")
-            return id_results
-        else:
-            print(f"🔍 关键词搜索模式: {keyword}")
-        
-        try:
-            if platform == 'all' or platform == '喜马拉雅':
-                print(f"🔍 喜马拉雅搜索: {keyword}")
-                try:
-                    xmly_books = self.ximalaya_manager.search_albums(keyword, page=1, page_size=50)
-                    for book in xmly_books:
-                        if isinstance(book, dict):
-                            # 已经是字典格式，直接添加平台信息
-                            book['platform'] = '喜马拉雅'
-                            # 确保必要字段存在
-                            if 'cover' not in book:
-                                book['cover'] = ''
-                            if 'plays' not in book:
-                                book['plays'] = 0
-                            if 'episodes' not in book:
-                                book['episodes'] = 0
-                            if 'status' not in book:
-                                book['status'] = '连载中'
-                            book = self._ensure_book_fields(book, '喜马拉雅')
-                            results.append(book)
-                        else:
-                            # 是对象，需要转换
-                            results.append(self._convert_xmly_book_to_dict(book, '喜马拉雅'))
-                    print(f"✅ 喜马拉雅找到 {len(xmly_books)} 本书")
-                except Exception as e:
-                    print(f"❌ 喜马拉雅搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # 继续搜索其他平台
-            
-            if platform == 'all' or platform == '懒人听书':
-                try:
-                    lrts_books = self.lrts_manager.search_books(keyword)
-                    self._enrich_search_result_details(lrts_books, '懒人听书', limit=4 if platform == 'all' else 10)
-                    for book in lrts_books:
-                        if isinstance(book, dict):
-                            # 已经是字典格式，直接添加平台信息
-                            book['platform'] = '懒人听书'
-                            # 确保必要字段存在
-                            if 'cover' not in book:
-                                book['cover'] = ''
-                            if 'plays' not in book:
-                                book['plays'] = 0
-                            if 'episodes' not in book:
-                                book['episodes'] = 0
-                            if 'status' not in book:
-                                book['status'] = '连载中'
-                            book = self._ensure_book_fields(book, '懒人听书')
-                            results.append(book)
-                        else:
-                            # 是对象，需要转换
-                            results.append(self._convert_lrts_book_to_dict(book, '懒人听书'))
-                    print(f"✅ 懒人听书找到 {len(lrts_books)} 本书")
-                except Exception as e:
-                    print(f"❌ 懒人听书搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            if platform == 'all' or platform == '番茄畅听':
-                print(f"🔍 番茄畅听搜索: {keyword}")
-                try:
-                    fanqie_books = self.fanqie_manager.search_books(keyword, max_pages=3)
-                    self._enrich_search_result_details(fanqie_books, '番茄畅听', limit=4 if platform == 'all' else 10)
-                    for book in fanqie_books:
-                        if isinstance(book, dict):
-                            # 已经是字典格式，直接添加平台信息
-                            book['platform'] = '番茄畅听'
-                            # 确保必要字段存在
-                            if 'cover' not in book:
-                                book['cover'] = ''
-                            if 'plays' not in book:
-                                book['plays'] = 0
-                            if 'episodes' not in book:
-                                book['episodes'] = 0
-                            if 'status' not in book:
-                                book['status'] = '连载中'
-                            book = self._ensure_book_fields(book, '番茄畅听')
-                            results.append(book)
-                        else:
-                            # 是对象，需要转换
-                            results.append(self._convert_fanqie_book_to_dict(book, '番茄畅听'))
-                    print(f"✅ 番茄畅听找到 {len(fanqie_books)} 本书")
-                except Exception as e:
-                    print(f"❌ 番茄畅听搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
+                keyword_stripped = parsed_tingshu_id
+            return self.search_by_id(keyword_stripped, platform)
 
-            if platform == 'all' or platform == '番茄听书':
-                print(f"🔍 番茄听书搜索（书籍+听书）: {keyword}")
-                try:
-                    tingshu_books = self.fanqie_tingshu_manager.search_books(keyword)
-                    for book in tingshu_books:
-                        if isinstance(book, dict):
-                            book = self._ensure_book_fields(book, '番茄听书')
-                            results.append(book)
-                    print(f"✅ 番茄听书找到 {len(tingshu_books)} 本")
-                except Exception as e:
-                    print(f"❌ 番茄听书搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
+        if platform != 'all':
+            return self._search_platform_cached(keyword_stripped, platform)
 
-            if platform == 'all' or platform == '七猫听书':
-                print(f"🔍 七猫听书搜索（书籍+听书）: {keyword}")
+        # 云听关键词能力不稳定，聚合搜索不调它；单独选择云听时仍保留链接/ID能力。
+        grouped = {}
+        with ThreadPoolExecutor(max_workers=min(8, len(self.KEYWORD_SEARCH_PLATFORMS))) as pool:
+            futures = {
+                pool.submit(self._search_platform_cached, keyword_stripped, item): item
+                for item in self.KEYWORD_SEARCH_PLATFORMS
+            }
+            for future in as_completed(futures):
+                item = futures[future]
                 try:
-                    qimao_books = self.qimao_manager.search_books(keyword)
-                    for book in qimao_books:
-                        if isinstance(book, dict):
-                            book = self._ensure_book_fields(book, '七猫听书')
-                            results.append(book)
-                    print(f"✅ 七猫听书找到 {len(qimao_books)} 本")
-                except Exception as e:
-                    print(f"❌ 七猫听书搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # 酷我听书搜索
-            if platform == 'all' or platform == '酷我听书':
-                print(f"🔍 酷我听书搜索: {keyword}")
-                try:
-                    kuwo_books = self.kuwo_manager.search_books(keyword)
-                    for book in kuwo_books:
-                        if isinstance(book, dict):
-                            # 已经是字典格式，直接添加平台信息
-                            book['platform'] = '酷我听书'
-                            # 确保必要字段存在
-                            if 'cover' not in book:
-                                book['cover'] = ''
-                            if 'plays' not in book:
-                                book['plays'] = 0
-                            if 'episodes' not in book:
-                                book['episodes'] = 0
-                            if 'status' not in book:
-                                book['status'] = '连载中'
-                            book = self._ensure_book_fields(book, '酷我听书')
-                            results.append(book)
-                    print(f"✅ 酷我听书找到 {len(kuwo_books)} 本书")
-                except Exception as e:
-                    print(f"❌ 酷我听书搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # 起点听书搜索
-            if platform == 'all' or platform == '起点听书':
-                print(f"🔍 起点听书搜索: {keyword}")
-                try:
-                    qidian_books = self.search_manager.search_qidian(keyword)
-                    self._enrich_search_result_details(qidian_books, '起点听书', limit=4 if platform == 'all' else 10)
-                    for book in qidian_books:
-                        if isinstance(book, dict):
-                            # 已经是字典格式，直接添加平台信息
-                            book['platform'] = '起点听书'
-                            # 确保必要字段存在
-                            if 'cover' not in book:
-                                book['cover'] = ''
-                            if 'plays' not in book:
-                                book['plays'] = 0
-                            if 'episodes' not in book:
-                                book['episodes'] = 0
-                            if 'status' not in book:
-                                book['status'] = '连载中'
-                            book = self._ensure_book_fields(book, '起点听书')
-                            results.append(book)
-                    print(f"✅ 起点听书找到 {len(qidian_books)} 本书")
-                except Exception as e:
-                    print(f"❌ 起点听书搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # 蜻蜓FM搜索
-            if platform == 'all' or platform == '蜻蜓FM':
-                print(f"🎧 蜻蜓FM搜索: {keyword}")
-                try:
-                    # 使用官方API分页搜索（最多50页，约750个结果）
-                    qtfm_books = self.qtfm_manager.search_books(keyword, max_pages=50)
-                    for book in qtfm_books:
-                        if isinstance(book, dict):
-                            # 已经是字典格式，直接添加平台信息
-                            book['platform'] = '蜻蜓FM'
-                            # 确保必要字段存在
-                            if 'cover' not in book:
-                                book['cover'] = ''
-                            if 'plays' not in book:
-                                book['plays'] = book.get('play_count', 0)
-                            if 'episodes' not in book:
-                                book['episodes'] = 0
-                            if 'status' not in book:
-                                book['status'] = '连载中'
-                            book = self._ensure_book_fields(book, '蜻蜓FM')
-                            results.append(book)
-                    print(f"✅ 蜻蜓FM找到 {len(qtfm_books)} 本书")
-                except Exception as e:
-                    print(f"❌ 蜻蜓FM搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            if platform == 'all' or platform == '网易云听书':
-                print(f"🔍 网易云听书搜索: {keyword}")
-                try:
-                    netease_books = self.netease_manager.search_books(keyword, limit=30)
-                    for book in netease_books:
-                        if isinstance(book, dict):
-                            book = self._ensure_book_fields(book, '网易云听书')
-                            results.append(book)
-                    print(f"✅ 网易云听书找到 {len(netease_books)} 个播客")
-                except Exception as e:
-                    print(f"❌ 网易云听书搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            if platform == 'all' or platform == '荔枝FM':
-                print(f"🔍 荔枝FM搜索/解析: {keyword}")
-                try:
-                    lizhi_books = self.lizhi_manager.search_books(keyword, limit=20)
-                    for book in lizhi_books:
-                        if isinstance(book, dict):
-                            book = self._ensure_book_fields(book, '荔枝FM')
-                            results.append(book)
-                    if lizhi_books:
-                        print(f"✅ 荔枝FM找到 {len(lizhi_books)} 个播客")
-                    elif platform == '荔枝FM':
-                        print("⚠️ 荔枝FM请使用主播主页链接或用户ID，例如 https://www.lizhi.fm/user/742")
-                except Exception as e:
-                    print(f"❌ 荔枝FM搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            if platform == 'all' or platform == '云听FM':
-                kw = (keyword or '').strip()
-                is_link = kw.startswith('http://') or kw.startswith('https://') or 'radio.cn' in kw
-                is_id = kw.isdigit() and len(kw) >= 6
-                print(f"☁️ 云听FM搜索: {keyword}")
-                try:
-                    if is_link or is_id:
-                        album_info = self.yuntu_manager.search_by_link_or_id(keyword)
-                        if album_info:
-                            album_info = self._ensure_book_fields(album_info, '云听FM')
-                            results.append(album_info)
-                            print(f"✅ 云听FM找到 1 个专辑")
-                        else:
-                            print(f"⚠️ 云听FM未找到专辑（请确保输入的是有效的分享链接或专辑ID）")
-                    else:
-                        yuntu_books = self.yuntu_manager.search_books(keyword, page=0, page_size=20)
-                        for book in yuntu_books:
-                            if isinstance(book, dict):
-                                book = self._ensure_book_fields(book, '云听FM')
-                                results.append(book)
-                        print(f"✅ 云听FM找到 {len(yuntu_books)} 个专辑")
-                        if not yuntu_books and platform == '云听FM':
-                            print("⚠️ 云听FM关键词搜索暂不可用，可先使用分享链接或专辑ID")
-                except Exception as e:
-                    print(f"❌ 云听FM搜索失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-                
-        except Exception as e:
-            print(f"❌ 搜索异常: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        print(f"🎯 总共找到 {len(results)} 本书")
-        return results
+                    grouped[item] = future.result()
+                except Exception as exc:
+                    print(f"❌ {item} 聚合搜索失败: {exc}")
+                    grouped[item] = []
+        return [book for item in self.KEYWORD_SEARCH_PLATFORMS for book in grouped.get(item, [])]
     
     def search_by_id(self, book_id: str, platform: str = 'all') -> List[Dict]:
         """通过ID搜索书籍（支持喜马拉雅、懒人听书、番茄畅听）"""
+        if platform == 'all':
+            id_platforms = (
+                '喜马拉雅', '懒人听书', '番茄畅听', '番茄听书',
+                '七猫听书', '酷我听书', '蜻蜓FM', '网易云听书',
+            )
+            grouped = {}
+            with ThreadPoolExecutor(max_workers=len(id_platforms)) as pool:
+                futures = {pool.submit(self.search_by_id, book_id, item): item for item in id_platforms}
+                for future in as_completed(futures):
+                    item = futures[future]
+                    try:
+                        grouped[item] = future.result()
+                    except Exception:
+                        grouped[item] = []
+            return [book for item in id_platforms for book in grouped.get(item, [])]
+
         results = []
         
         print(f"🎯 开始ID搜索: {book_id}, 平台: {platform}")
@@ -735,6 +589,14 @@ class EnhancedSearchManager:
                     print(f"❌ 网易云听书ID搜索失败: {e}")
                     import traceback
                     traceback.print_exc()
+
+            if platform == '云听FM':
+                try:
+                    book_info = self.yuntu_manager.search_by_link_or_id(str(book_id))
+                    if book_info:
+                        results.append(self._ensure_book_fields(dict(book_info), '云听FM'))
+                except Exception as e:
+                    print(f"❌ 云听FM ID搜索失败: {e}")
             
             print(f"🎯 ID搜索完成，共找到 {len(results)} 本书")
             return results
@@ -906,6 +768,8 @@ class EnhancedSearchManager:
                 return self.netease_manager.get_book_detail(album_id)
             elif platform in ['荔枝FM', 'lizhi']:
                 return self.lizhi_manager.get_book_detail(album_id)
+            elif platform in ['云听FM', 'yuntu']:
+                return self.yuntu_manager.get_album_detail(album_id)
             else:
                 return None
         except Exception as e:
@@ -913,6 +777,67 @@ class EnhancedSearchManager:
             import traceback
             traceback.print_exc()
             return None
+
+    def _cached_full_chapters(self, cache_key, loader) -> List[Dict]:
+        now = time.monotonic()
+        with self._chapter_list_cache_lock:
+            cached = self._chapter_list_cache.get(cache_key)
+            if cached and now - cached[0] < 300:
+                return [dict(item) for item in cached[1]]
+        chapters = list(loader() or [])
+        with self._chapter_list_cache_lock:
+            if len(self._chapter_list_cache) >= 16:
+                oldest = min(self._chapter_list_cache, key=lambda key: self._chapter_list_cache[key][0])
+                self._chapter_list_cache.pop(oldest, None)
+            self._chapter_list_cache[cache_key] = (now, [dict(item) for item in chapters])
+        return chapters
+
+    def get_album_chapters_page(
+        self,
+        album_id: str,
+        platform: str,
+        page: int = 1,
+        page_size: int = 100,
+        voice: Optional[Dict] = None,
+    ):
+        """Return one UI page plus an exact total when the provider exposes only a full directory."""
+        page = max(1, int(page or 1))
+        page_size = max(1, min(int(page_size or 100), 200))
+        offset = (page - 1) * page_size
+        voice_key = str((voice or {}).get('id') or (voice or {}).get('voice_id') or (voice or {}).get('name') or '')
+
+        def sliced(loader):
+            all_chapters = self._cached_full_chapters((platform, str(album_id), voice_key), loader)
+            return all_chapters[offset:offset + page_size], len(all_chapters)
+
+        if platform in ['喜马拉雅', 'ximalaya']:
+            chapters = self.ximalaya_manager.get_album_chapters(album_id, page, page_size)
+        elif platform in ['懒人听书', 'lrts']:
+            return sliced(lambda: self.lrts_manager.get_chapters(album_id))
+        elif platform in ['番茄畅听', 'fanqie']:
+            chapters = self.fanqie_manager.get_chapters_for_voice(album_id, voice, page, page_size) if voice else self.fanqie_manager.get_chapters(album_id, page, page_size)
+        elif platform in ['番茄听书', 'fanqie_tingshu']:
+            return sliced(lambda: self.fanqie_tingshu_manager.get_chapters(album_id, voice) if voice else [])
+        elif platform in ['七猫听书', 'qimao']:
+            return sliced(lambda: self.qimao_manager.get_chapters(album_id, voice) if voice else self.qimao_manager.get_chapters(album_id))
+        elif platform in ['蜻蜓FM', 'qtfm']:
+            chapters = self.qtfm_manager.get_chapters(album_id, version=None, page=page, page_size=page_size)
+        elif platform in ['云听FM', 'yuntu']:
+            chapters = self.yuntu_manager.get_chapters(album_id, page=page, page_size=page_size)
+        elif platform in ['起点听书', 'qidian']:
+            return sliced(lambda: self.search_manager.get_album_chapters(album_id, platform))
+        elif platform in ['酷我听书', 'kuwo']:
+            chapters = self.kuwo_manager.get_chapters(album_id, page=page, page_size=page_size)
+        elif platform in ['网易云听书', 'netease']:
+            chapters = self.netease_manager.get_chapters(album_id, page=page, page_size=page_size)
+        elif platform in ['荔枝FM', 'lizhi']:
+            chapters = self.lizhi_manager.get_chapters(album_id, page=page, page_size=page_size, max_pages=1)
+        else:
+            return [], 0
+
+        chapters = list(chapters or [])[:page_size]
+        exact_total = offset + len(chapters) if len(chapters) < page_size else 0
+        return chapters, exact_total
     
     def get_album_chapters(self, album_id: str, platform: str) -> List[Dict]:
         """获取专辑章节列表"""
@@ -1056,7 +981,18 @@ class EnhancedSearchManager:
                 print(f"✅ 酷我听书获取到 {len(chapters)} 个章节")
             elif platform in ['网易云听书', 'netease']:
                 print(f"🎧 网易云听书获取章节: {album_id}")
-                chapters = self.netease_manager.get_chapters(album_id, page=1, page_size=1000)
+                page = 1
+                page_size = 1000
+                while True:
+                    page_chapters = self.netease_manager.get_chapters(album_id, page=page, page_size=page_size)
+                    if not page_chapters:
+                        break
+                    chapters.extend(page_chapters)
+                    if len(page_chapters) < page_size:
+                        break
+                    page += 1
+                    if page > 100:
+                        break
                 print(f"✅ 网易云听书获取到 {len(chapters)} 个章节")
             elif platform in ['荔枝FM', 'lizhi']:
                 print(f"🍥 荔枝FM获取章节: {album_id}")

@@ -13,6 +13,10 @@ export const SEARCH_PLATFORMS = [
   {value: '酷我听书', label: '酷我听书'},
 ];
 
+export const AGGREGATE_SEARCH_PLATFORMS = SEARCH_PLATFORMS.filter(
+  (item) => item.value !== 'all' && item.value !== '云听FM',
+);
+
 export const COOKIE_PLATFORMS = [
   {key: 'xmly', name: '喜马拉雅', qr: 'ximalaya'},
   {key: 'lrts', name: '懒人听书', qr: 'lrts'},

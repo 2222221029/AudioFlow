@@ -147,6 +147,128 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertEqual(web_server.tasks["partial-two"]["created_at"], 202)
         self.assertEqual(thread.call_count, 2)
 
+    def test_download_counts_and_detail_merge_live_chapter_states(self):
+        task = {
+            "id": "task-detail",
+            "status": "running",
+            "total": 4,
+            "success": 0,
+            "failed": 0,
+            "chapters": [
+                {"id": "1", "title": "One"},
+                {"id": "2", "title": "Two"},
+                {"id": "3", "title": "Three"},
+                {"id": "4", "title": "Four"},
+            ],
+            "chapter_states": {
+                "1": {"status": "success"},
+                "2": {"status": "failed", "error": "timeout"},
+                "3": {"status": "downloading"},
+            },
+        }
+
+        counts = web_server.download_task_counts(task)
+        detail = web_server._download_task_detail(task)
+
+        self.assertEqual(counts, {"total": 4, "success": 1, "failed": 1, "downloading": 1, "pending": 1})
+        self.assertEqual(
+            [chapter["download_status"] for chapter in detail["chapters"]],
+            ["success", "failed", "downloading", "pending"],
+        )
+        self.assertEqual(detail["chapters"][1]["download_error"], "timeout")
+
+    def test_chapter_status_updates_original_task_counts(self):
+        task_id = "same-task"
+        with web_server.task_lock:
+            web_server.tasks[task_id] = {
+                "id": task_id,
+                "status": "running",
+                "total": 2,
+                "success": 0,
+                "failed": 0,
+                "chapter_states": {},
+            }
+
+        with mock.patch.object(web_server, "save_tasks"):
+            web_server.update_download_chapter_status(task_id, {"id": "1"}, "downloading")
+            web_server.update_download_chapter_status(task_id, {"id": "1"}, "success")
+            web_server.update_download_chapter_status(task_id, {"id": "2", "_error": "network"}, "failed")
+
+        self.assertEqual(set(web_server.tasks), {task_id})
+        self.assertEqual(web_server.tasks[task_id]["success"], 1)
+        self.assertEqual(web_server.tasks[task_id]["failed"], 1)
+        self.assertEqual(web_server.tasks[task_id]["chapter_states"]["2"]["error"], "network")
+
+    def test_search_results_include_subscription_and_local_summary(self):
+        album = {"id": "album-1", "title": "Example", "platform": "喜马拉雅", "episodes": 3}
+        subscription = {"id": "喜马拉雅:album-1", "status": "active"}
+        with (
+            web_server.app.test_request_context("/api/search?q=Example&platform=all"),
+            mock.patch.object(web_server.search_manager, "search_books", return_value=[album]),
+            mock.patch.object(web_server.subscription_manager, "get", return_value=subscription),
+            mock.patch.object(
+                web_server.subscription_manager,
+                "stats_for",
+                return_value={"total": 3, "downloaded": 2, "missing": 1, "restricted": 0},
+            ),
+        ):
+            response = web_server.api_search()
+
+        library = response.get_json()["results"][0]["library"]
+        self.assertTrue(library["subscribed"])
+        self.assertEqual((library["downloaded"], library["total"], library["missing"]), (2, 3, 1))
+
+    def test_album_chapters_include_download_status(self):
+        album = {
+            "id": "album-1",
+            "title": "Example",
+            "platform": "喜马拉雅",
+            "episodes": 2,
+            "cover": "https://example.test/cover.jpg",
+            "author": "Author",
+            "intro": "Intro",
+        }
+        chapters = [{"id": "1", "title": "One"}, {"id": "2", "title": "Two"}]
+        with (
+            web_server.app.test_request_context("/api/album/chapters", method="POST", json={"album": album}),
+            mock.patch.object(web_server.search_manager, "get_album_chapters_page", return_value=(chapters, 2)) as get_page,
+            mock.patch.object(
+                web_server,
+                "album_chapter_download_states",
+                return_value={"1": {"status": "downloaded"}, "2": {"status": "failed", "error": "timeout"}},
+            ),
+            mock.patch.object(web_server, "annotate_album_library", side_effect=lambda item: {**item, "library": {"subscribed": True}}),
+        ):
+            response = web_server.api_chapters()
+
+        payload = response.get_json()
+        self.assertEqual([chapter["download_status"] for chapter in payload["chapters"]], ["downloaded", "failed"])
+        self.assertEqual(payload["chapters"][1]["download_error"], "timeout")
+        self.assertTrue(payload["album"]["library"]["subscribed"])
+        self.assertEqual(payload["pagination"]["total"], 2)
+        get_page.assert_called_once_with("album-1", "喜马拉雅", page=1, page_size=100, voice=None)
+
+    def test_whole_album_download_returns_while_directory_prepares(self):
+        album = {"id": "album-1", "title": "Example", "platform": "喜马拉雅", "episodes": 500}
+        with (
+            web_server.app.test_request_context(
+                "/api/downloads",
+                method="POST",
+                json={"album": album, "all_chapters": True, "options": {}},
+            ),
+            mock.patch.object(web_server, "save_tasks"),
+            mock.patch.object(web_server.threading, "Thread") as thread,
+        ):
+            response = web_server.api_download()
+
+        payload = response.get_json()
+        self.assertTrue(payload["preparing"])
+        self.assertEqual(payload["task"]["status"], "queued")
+        self.assertEqual(payload["task"]["total"], 500)
+        self.assertEqual(payload["task"]["chapters"], [])
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once()
+
     def test_subscription_job_dedupes_same_album_regardless_of_mode(self):
         with mock.patch.object(web_server.threading, "Thread") as thread:
             first = web_server.start_subscription_job("Ximalaya:album-1", queue_missing=False)

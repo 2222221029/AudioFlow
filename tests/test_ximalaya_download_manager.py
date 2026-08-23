@@ -729,6 +729,94 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_error_type, "rate_limited")
         self.assertIn("登录通常仍然有效", manager.last_error)
 
+    def test_ret_minus_three_refreshes_ticket_and_sign_until_success(self):
+        body = b"fLaC" + (b"audio" * 1000)
+        throttled = FakeResponse(json_data={"ret": -3, "msg": "请求过于频繁"})
+        info = self._spatial_info(
+            3, "无损音质", "https://audio.example/member-lossless.flac", len(body)
+        )
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": str(len(body))},
+            body=body,
+        )
+        credentials = {
+            "cookie": (
+                "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.52.3;"
+                "1&_token=123456&mobile-session"
+            ),
+            "user_agent": "ting_9.4.52.3(com.ximalaya.ting.android,Android)",
+            "api_device": "android2",
+        }
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "local",
+            "XIMALAYA_TICKET_PROVIDER_URL": "",
+        }):
+            manager = XimalayaDownloadManager(mobile_credentials=credentials)
+            with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                "core.ximalaya_download_manager.generate_mobile_ticket",
+                side_effect=["fresh-ticket-1", "fresh-ticket-2", "fresh-ticket-3"],
+            ) as ticket, mock.patch(
+                "core.ximalaya_download_manager.time.time",
+                side_effect=[1786632464.075, 1786632465.275, 1786632466.475],
+            ), mock.patch.object(
+                manager.session, "get", side_effect=[throttled, throttled, info, audio]
+            ) as get:
+                ok = manager.download_audio_by_quality(
+                    "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                )
+
+        self.assertTrue(ok)
+        self.assertEqual(ticket.call_count, 3)
+        self.assertTrue(all(
+            call.kwargs.get("force_fresh") is True
+            for call in ticket.call_args_list
+        ))
+        self.assertEqual(get.call_count, 4)
+        self.assertEqual(
+            [call.kwargs["headers"]["x-tk"] for call in get.call_args_list[:3]],
+            ["fresh-ticket-1", "fresh-ticket-2", "fresh-ticket-3"],
+        )
+        signs = [
+            parse_qs(urlparse(call.args[0]).query)["sign"][0]
+            for call in get.call_args_list[:3]
+        ]
+        self.assertEqual(len(set(signs)), 3)
+
+    def test_ret_minus_three_exhaustion_enters_global_cooldown(self):
+        throttled = FakeResponse(json_data={"ret": -3, "msg": "请求过于频繁"})
+        credentials = {
+            "cookie": (
+                "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.52.3;"
+                "1&_token=123456&mobile-session"
+            ),
+            "user_agent": "ting_9.4.52.3(com.ximalaya.ting.android,Android)",
+            "api_device": "android2",
+        }
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "local",
+            "XIMALAYA_TICKET_PROVIDER_URL": "",
+        }):
+            manager = XimalayaDownloadManager(mobile_credentials=credentials)
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                XimalayaDownloadManager, "_MOBILE_V4_TRANSIENT_ATTEMPTS", 3
+            ), mock.patch.object(
+                XimalayaDownloadManager, "_mark_mobile_v4_rate_limited", return_value=60.0
+            ) as rate_limited, mock.patch.object(
+                manager.session, "get", return_value=throttled
+            ) as get:
+                ok = manager.download_audio_by_quality(
+                    "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 3)
+        rate_limited.assert_called_once_with()
+        self.assertEqual(manager.last_error_type, "rate_limited")
+        self.assertIn("连续 3 次", manager.last_error)
+        self.assertIn("ret=-3", manager.last_error)
+
     def test_lossless_rejects_lower_quality_response_without_fallback(self):
         info = FakeResponse(json_data={
             "ret": 0,

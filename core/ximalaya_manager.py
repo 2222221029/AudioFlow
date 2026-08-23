@@ -430,16 +430,16 @@ class XimalayaManager:
                 audio_urls[alias] = dict(entry)
         return audio_urls
     
-    def search_albums(self, keyword: str, page: int = 1, page_size: int = 20) -> List[Dict]:
-        """搜索专辑 - 支持多页获取所有结果"""
+    def search_albums(self, keyword: str, page: int = 1, page_size: int = 20, max_pages: int = 1) -> List[Dict]:
+        """搜索专辑；交互搜索默认只获取当前页。"""
         try:
             print(f"🔍 喜马拉雅搜索: {keyword}")
             
             all_books = []
-            page_num = 1
-            max_pages = 20  # 最多获取20页结果，获取更多搜索结果
+            page_num = max(1, int(page or 1))
+            last_page = page_num + max(1, int(max_pages or 1)) - 1
             
-            while page_num <= max_pages:
+            while page_num <= last_page:
                 print(f"📄 获取第 {page_num} 页搜索结果...")
                 
                 # 如果有Cookie，优先尝试带Cookie的搜索
@@ -487,12 +487,6 @@ class XimalayaManager:
                 }
                 
                 # 添加更多请求头模拟真实浏览器
-                import random
-                import time
-                
-                # 添加随机延迟以避免被检测
-                time.sleep(random.uniform(0.5, 1.5))
-                
                 headers = dict(self.session.headers)
                 headers.update({
                     'Referer': 'https://www.ximalaya.com/',

@@ -18,6 +18,20 @@ export function taskStatusText(status) {
   return TASK_STATUS_TEXT[status] || status || '未知';
 }
 
+export const CHAPTER_STATUS_TEXT = {
+  success: '成功',
+  failed: '失败',
+  downloading: '下载中',
+  pending: '待下载',
+  downloaded: '已下载',
+  restricted: '受限',
+  skipped: '已跳过',
+};
+
+export function chapterStatusText(status) {
+  return CHAPTER_STATUS_TEXT[status] || status || '待下载';
+}
+
 export function chapterId(chapter, fallback = '') {
   return String(
     chapter?.id ||

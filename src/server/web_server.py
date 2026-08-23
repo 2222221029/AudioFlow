@@ -1267,6 +1267,31 @@ def hydrate_download_chapters(album, chapters, chapter_ids=None):
     return [chapter for chapter in normalized if chapter_identifier(chapter) in wanted or chapter.get("id") in wanted]
 
 
+def load_all_album_chapters(album, voice=None):
+    """Load a complete directory for whole-album downloads and subscriptions."""
+    album = normalize_album(album)
+    album_id = album.get("id") or album.get("album_id") or album.get("book_id")
+    platform = album.get("platform")
+    if not album_id or not platform:
+        return []
+    if platform == "七猫听书":
+        search_manager.qimao_manager._search_cache[str(album_id)] = dict(album)
+        if album.get("book_id"):
+            search_manager.qimao_manager._search_cache[str(album.get("book_id"))] = dict(album)
+        if album.get("album_id"):
+            search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
+    active_voice = resolve_voice_for_album(album, voice)
+    if platform == "番茄畅听" and active_voice:
+        raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
+    elif platform == "番茄听书" and active_voice:
+        raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
+    elif platform == "七猫听书" and active_voice:
+        raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
+    else:
+        raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+    return [normalize_chapter(chapter, index) for index, chapter in enumerate(raw_chapters or [], start=1)]
+
+
 def normalize_voice(voice, index=None):
     if not isinstance(voice, dict):
         return {}
@@ -1471,21 +1496,199 @@ def active_task_chapter_keys(album):
     return set(active_task_chapter_tasks(album))
 
 
+def download_task_counts(task):
+    """Return stable chapter counts for both current and legacy tasks."""
+    total = max(0, _to_int(task.get("total") or task.get("chapter_count") or len(task.get("chapters") or [])))
+    states = task.get("chapter_states") or {}
+    state_success = sum(1 for state in states.values() if (state or {}).get("status") == "success")
+    state_failed = sum(1 for state in states.values() if (state or {}).get("status") == "failed")
+    success = max(0, _to_int(task.get("success")), state_success)
+    failed = max(0, _to_int(task.get("failed")), state_failed)
+    downloading = sum(1 for state in states.values() if (state or {}).get("status") == "downloading")
+    if task.get("status") not in _ACTIVE_DOWNLOAD_STATUSES:
+        downloading = 0
+    pending = max(0, total - success - failed - downloading)
+    return {
+        "total": total,
+        "success": min(total, success) if total else success,
+        "failed": min(total, failed) if total else failed,
+        "downloading": min(total, downloading) if total else downloading,
+        "pending": pending,
+    }
+
+
+def update_download_chapter_status(task_id, chapter, status):
+    """Persist one lightweight chapter state and refresh live counters."""
+    if status not in {"downloading", "success", "failed"} or not isinstance(chapter, dict):
+        return {}
+    key = chapter_key(chapter)
+    if not key:
+        return {}
+    with task_lock:
+        task = tasks.get(task_id)
+        if not task:
+            return {}
+        states = dict(task.get("chapter_states") or {})
+        state = {"status": status, "updated_at": time.time()}
+        if status == "failed" and chapter.get("_error"):
+            state["error"] = str(chapter.get("_error"))[:500]
+        states[key] = state
+        task["chapter_states"] = states
+        counts = download_task_counts(task)
+        task["success"] = counts["success"]
+        task["failed"] = counts["failed"]
+        task["updated_at"] = time.time()
+        save_tasks(force=False)
+        return dict(task)
+
+
+def _download_task_detail(task):
+    """Build a chapter-level task view without duplicate heavyweight arrays."""
+    detail = dict(task)
+    raw_chapters = task.get("chapters") or []
+    detail_available = bool(raw_chapters) and not task.get("history_compacted")
+    states = task.get("chapter_states") or {}
+    success_keys = {chapter_key(chapter) for chapter in task.get("success_chapters") or [] if isinstance(chapter, dict)}
+    failed_by_key = {
+        chapter_key(chapter): chapter
+        for chapter in task.get("failed_chapters") or []
+        if isinstance(chapter, dict)
+    }
+    chapters = []
+    if detail_available:
+        for index, chapter in enumerate(raw_chapters, start=1):
+            if not isinstance(chapter, dict):
+                continue
+            item = dict(chapter)
+            key = chapter_key(item)
+            state = dict(states.get(key) or {})
+            if not state and key in success_keys:
+                state = {"status": "success"}
+            if not state and key in failed_by_key:
+                failed_chapter = failed_by_key[key]
+                state = {"status": "failed", "error": failed_chapter.get("_error") or "下载失败"}
+            item["download_status"] = state.get("status") or "pending"
+            item["download_error"] = state.get("error") or item.get("_error") or ""
+            item.setdefault("order_num", index)
+            chapters.append(item)
+    else:
+        for index, chapter in enumerate(failed_by_key.values(), start=1):
+            item = dict(chapter)
+            item["download_status"] = "failed"
+            item["download_error"] = item.get("_error") or "下载失败"
+            item.setdefault("order_num", index)
+            chapters.append(item)
+    detail["chapters"] = chapters
+    detail["detail_available"] = detail_available
+    detail["counts"] = download_task_counts(task)
+    detail.update(detail["counts"])
+    detail.pop("success_chapters", None)
+    detail.pop("chapter_states", None)
+    detail.pop("failed_chapters", None)
+    return detail
+
+
+def album_library_summary(album):
+    """Return subscription and cached local-download stats for an album."""
+    normalized = normalize_album(album)
+    sid = subscription_manager.subscription_id(normalized)
+    total = max(0, _to_int(normalized.get("episodes") or normalized.get("chapter_count") or normalized.get("track_count")))
+    with subscription_manager.locked():
+        subscription = subscription_manager.get(sid)
+        subscribed = bool(subscription and subscription.get("status", "active") == "active")
+        stats = subscription_manager.stats_for(subscription, active_download_dir(), fast=True) if subscribed else {}
+    total = max(total, _to_int(stats.get("total")))
+    downloaded = min(total, max(0, _to_int(stats.get("downloaded")))) if total else max(0, _to_int(stats.get("downloaded")))
+    restricted = min(total, max(0, _to_int(stats.get("restricted")))) if total else max(0, _to_int(stats.get("restricted")))
+    return {
+        "subscribed": subscribed,
+        "subscription_id": sid,
+        "total": total,
+        "downloaded": downloaded,
+        "missing": max(0, total - downloaded - restricted),
+        "restricted": restricted,
+    }
+
+
+def annotate_album_library(album):
+    item = dict(album or {})
+    item["library"] = album_library_summary(item)
+    return item
+
+
+def album_chapter_download_states(album):
+    """Merge persisted subscription states with the newest matching task state."""
+    normalized = normalize_album(album)
+    sid = subscription_manager.subscription_id(normalized)
+    merged = {}
+    with subscription_manager.locked():
+        subscription = subscription_manager.get(sid)
+        if subscription and subscription.get("status", "active") == "active":
+            for key, state in (subscription.get("downloaded") or {}).items():
+                if not isinstance(state, dict):
+                    continue
+                merged[str(key)] = {
+                    "status": state.get("status") or "pending",
+                    "error": state.get("error") or state.get("reason") or "",
+                }
+
+    matching_tasks = []
+    with task_lock:
+        for task in tasks.values():
+            task_album = task.get("album") or {}
+            if subscription_manager.subscription_id(normalize_album(task_album)) == sid:
+                matching_tasks.append(dict(task))
+    matching_tasks.sort(key=lambda task: task.get("updated_at") or task.get("created_at") or 0)
+    for task in matching_tasks:
+        states = task.get("chapter_states") or {}
+        success_keys = {
+            chapter_key(chapter)
+            for chapter in task.get("success_chapters") or []
+            if isinstance(chapter, dict)
+        }
+        failed_by_key = {
+            chapter_key(chapter): chapter
+            for chapter in task.get("failed_chapters") or []
+            if isinstance(chapter, dict)
+        }
+        is_active = task.get("status") in _ACTIVE_DOWNLOAD_STATUSES
+        for chapter in task.get("chapters") or []:
+            if not isinstance(chapter, dict):
+                continue
+            key = chapter_key(chapter)
+            state = states.get(key) or {}
+            status = state.get("status")
+            error = state.get("error") or ""
+            if not status and key in success_keys:
+                status = "success"
+            elif not status and key in failed_by_key:
+                status = "failed"
+                error = failed_by_key[key].get("_error") or "下载失败"
+            elif not status and is_active:
+                status = "pending"
+            if status and (is_active or key not in merged):
+                merged[key] = {"status": status, "error": error}
+    return merged
+
+
 # 下载记录列表轻量化：列表页只需展示/操作用的小字段，绝不返回 album/chapters/
 # success_chapters/failed_chapters 等重字段（单任务可达几百 KB，任务一多前端会白屏卡顿）。
 def _download_list_item(task):
     album = task.get("album") or {}
     platform = album.get("platform") or (task.get("task_info") or {}).get("platform") or ""
+    counts = download_task_counts(task)
     return {
         "id": task.get("id"),
         "title": task.get("title"),
         "platform": platform,
         "status": task.get("status"),
-        "total": task.get("total", 0),
+        "total": counts["total"],
         "completed": task.get("completed", 0),
         "percent": task.get("percent", 0),
-        "success": task.get("success", 0),
-        "failed": task.get("failed", 0),
+        "success": counts["success"],
+        "failed": counts["failed"],
+        "downloading": counts["downloading"],
+        "pending": counts["pending"],
         "source": task.get("source"),
         "warning": task.get("warning"),
         "error": task.get("error"),
@@ -1561,6 +1764,7 @@ def _compact_terminal_task(task, failure_limit=None):
     task["failed_chapters"] = failed
     task.pop("chapters", None)
     task.pop("success_chapters", None)
+    task.pop("chapter_states", None)
     task.pop("task_info", None)
     task["history_compacted"] = True
     return True
@@ -1668,12 +1872,14 @@ def start_download_task(task_id, album, chapters, options, source="web"):
         failed=0,
         success_chapters=[],
         failed_chapters=[],
+        chapter_states={},
         error="",
         failure_reason="",
         task_info={},
         started_at=None,
         finished_at=None,
         history_compacted=False,
+        preparing=False,
         chapter_count=len(chapters),
         created_at=previous_task.get("created_at") or time.time(),
     )
@@ -1748,6 +1954,19 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
             # completion cannot reuse the pre-download empty index.
             subscription_manager.invalidate_audio_index(completed_dir)
         refresh_subscription_audio_index_async(completed_dir)
+    final_states = dict(current.get("chapter_states") or {})
+    for chapter in success_chapters or []:
+        final_states[chapter_key(chapter)] = {"status": "success", "updated_at": time.time()}
+    for chapter in failed_chapters or []:
+        final_states[chapter_key(chapter)] = {
+            "status": "failed",
+            "error": str((chapter or {}).get("_error") or "下载失败")[:500],
+            "updated_at": time.time(),
+        }
+    final_states = {
+        key: state for key, state in final_states.items()
+        if (state or {}).get("status") != "downloading"
+    }
     task = set_task(
         task_id,
         status=status,
@@ -1755,6 +1974,7 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
         failed=failed,
         success_chapters=success_chapters,
         failed_chapters=failed_chapters,
+        chapter_states=final_states,
         failure_reason=failure_reason,
         # 完成(非中途停止)时把进度拉满，避免过程中某次进度上报丢失导致进度条停在中途
         completed=current.get("total") if status != "stopped" else current.get("completed", success + failed),
@@ -1820,6 +2040,9 @@ def run_download_task(task_id, album, chapters, options):
         worker.progress_updated.connect(lambda _tid, current, total: set_task(task_id, completed=current, total=total))
         worker.realtime_progress_updated.connect(lambda _tid, completed, total, percent: set_task(task_id, completed=completed, total=total, percent=percent))
         worker.task_info_updated.connect(lambda _tid, info: set_task(task_id, task_info=info))
+        worker.chapter_status_updated.connect(
+            lambda _tid, chapter, status: update_download_chapter_status(task_id, chapter, status)
+        )
         worker.download_completed.connect(
             lambda _tid, success, failed, success_chapters, failed_chapters: handle_download_completed(
                 task_id, success, failed, success_chapters, failed_chapters
@@ -2471,7 +2694,10 @@ def api_search():
     platform = request.args.get("platform", "all").strip() or "all"
     if not keyword:
         return json_error("请输入搜索关键词")
-    results = [normalize_album(item) for item in search_manager.search_books(keyword, platform)]
+    results = [
+        annotate_album_library(normalize_album(item))
+        for item in search_manager.search_books(keyword, platform)
+    ]
     return json_ok(results=results, count=len(results))
 
 
@@ -2480,6 +2706,9 @@ def api_chapters():
     payload = request.get_json(silent=True) or {}
     album = normalize_album(payload.get("album") or payload)
     voice = payload.get("voice")
+    page = max(1, _to_int(payload.get("page"), 1))
+    page_size = max(20, min(_to_int(payload.get("page_size") or payload.get("pageSize"), 100), 200))
+    load_all = bool(payload.get("load_all") or payload.get("loadAll"))
     album_id = album.get("id") or album.get("album_id") or album.get("book_id")
     platform = album.get("platform")
     if not album_id or not platform:
@@ -2491,40 +2720,77 @@ def api_chapters():
         if album.get("album_id"):
             search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
     active_voice = resolve_voice_for_album(album, voice)
-    if platform == "番茄畅听" and active_voice:
-        raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
-    elif platform == "番茄听书" and active_voice:
-        raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
-    elif platform == "七猫听书" and active_voice:
-        raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
+    exact_total = 0
+    if load_all:
+        if platform == "番茄畅听" and active_voice:
+            raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
+        elif platform == "番茄听书" and active_voice:
+            raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
+        elif platform == "七猫听书" and active_voice:
+            raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
+        else:
+            raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        exact_total = len(raw_chapters)
     else:
-        raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        raw_chapters, exact_total = search_manager.get_album_chapters_page(
+            str(album_id), platform, page=page, page_size=page_size, voice=active_voice
+        )
     warning = ""
     if platform == "懒人听书":
         warning = str(getattr(search_manager.lrts_manager, "last_chapter_warning", "") or "")
-    # episodes/cover/author 缺失，或缺简介(intro/description) 时拉取专辑详情补全——
-    # 搜索结果通常不含简介，而详情页右栏需要它。详情请求失败不影响章节展示。
-    needs_detail = (
-        _to_int(album.get("episodes")) <= 0 or not album.get("cover") or not album.get("author")
-        or not (album.get("intro") or album.get("description") or album.get("desc"))
-    )
-    if needs_detail:
-        try:
-            album = merge_album_detail(album, search_manager.get_album_detail(str(album_id), platform))
-        except Exception:
-            logging.exception("album detail fallback failed")
+    start_index = 1 if load_all else (page - 1) * page_size + 1
     chapters = [
         normalize_chapter(chapter, index)
-        for index, chapter in enumerate(raw_chapters, start=1)
+        for index, chapter in enumerate(raw_chapters, start=start_index)
     ]
-    if _to_int(album.get("episodes")) <= 0 and chapters:
-        album["episodes"] = len(chapters)
-    expected = _to_int(album.get("episodes"))
-    if platform == "懒人听书" and expected > 0 and len(chapters) < expected and not warning:
+    expected = max(_to_int(album.get("episodes")), exact_total)
+    if expected <= 0 and len(chapters) < page_size:
+        expected = (page - 1) * page_size + len(chapters)
+    if expected > 0:
+        album["episodes"] = expected
+    if load_all and platform == "懒人听书" and expected > 0 and len(chapters) < expected and not warning:
         warning = f"懒人听书目录可能未完整加载：当前获取 {len(chapters)}/{expected} 章。"
     if warning:
         album["catalog_warning"] = warning
-    return json_ok(album=album, chapters=chapters, count=len(chapters), voice=active_voice, warning=warning)
+    chapter_states = album_chapter_download_states(album)
+    for chapter in chapters:
+        state = chapter_states.get(chapter_key(chapter)) or {}
+        chapter["download_status"] = state.get("status") or "pending"
+        chapter["download_error"] = state.get("error") or ""
+    album = annotate_album_library(album)
+    has_more = False if load_all else (page * page_size < expected if expected else len(chapters) >= page_size)
+    total_pages = max(1, (expected + page_size - 1) // page_size) if expected else page + (1 if has_more else 0)
+    pagination = {
+        "page": page,
+        "page_size": page_size,
+        "total": expected,
+        "total_pages": total_pages,
+        "has_more": has_more,
+    }
+    return json_ok(
+        album=album,
+        chapters=chapters,
+        count=len(chapters),
+        voice=active_voice,
+        warning=warning,
+        pagination=pagination,
+    )
+
+
+@app.post("/api/album/detail")
+def api_album_detail():
+    payload = request.get_json(silent=True) or {}
+    album = normalize_album(payload.get("album") or payload)
+    album_id = album.get("id") or album.get("album_id") or album.get("book_id")
+    platform = album.get("platform")
+    if not album_id or not platform:
+        return json_error("缺少专辑 ID 或平台")
+    try:
+        detail = search_manager.get_album_detail(str(album_id), platform)
+        return json_ok(album=annotate_album_library(merge_album_detail(album, detail)))
+    except Exception as exc:
+        logging.exception("load album detail failed")
+        return json_error(str(exc), status=500)
 
 
 @app.post("/api/album/voices")
@@ -2857,16 +3123,80 @@ def api_proxy_audio():
 def api_download():
     payload = request.get_json(silent=True) or {}
     album = normalize_album(payload.get("album") or {})
+    download_all = bool(payload.get("all_chapters") or payload.get("allChapters"))
+    options = payload.get("options") or {}
+    options["download_dir"] = resolve_download_dir(options.get("download_dir"))
+    if options.get("voice"):
+        options["voice"] = resolve_voice_for_album(album, options.get("voice"))
+
+    if download_all:
+        if not album:
+            return json_error("缺少专辑信息")
+        task_id = f"web-{uuid.uuid4().hex[:12]}"
+        expected = max(0, _to_int(album.get("episodes") or album.get("chapter_count")))
+        task = set_task(
+            task_id,
+            status="queued",
+            title=album.get("title"),
+            album=album,
+            chapters=[],
+            options=options,
+            source="web",
+            total=expected,
+            completed=0,
+            percent=0,
+            success=0,
+            failed=0,
+            error="",
+            failure_reason="",
+            task_info={"message": "正在加载完整目录"},
+            chapter_states={},
+            created_at=time.time(),
+            preparing=True,
+        )
+
+        def prepare_whole_album():
+            try:
+                chapters = load_all_album_chapters(album, options.get("voice"))
+                if not chapters:
+                    set_task(
+                        task_id,
+                        status="failed",
+                        error="未获取到完整章节目录",
+                        failure_reason="未获取到完整章节目录",
+                        finished_at=time.time(),
+                        preparing=False,
+                    )
+                    return
+                started = start_download_task(task_id, album, chapters, options, source="web")
+                if started.get("id") != task_id:
+                    with task_lock:
+                        tasks.pop(task_id, None)
+                        save_tasks(force=True)
+            except Exception as exc:
+                logging.exception("prepare whole-album download failed")
+                set_task(
+                    task_id,
+                    status="failed",
+                    error=str(exc),
+                    failure_reason=str(exc),
+                    finished_at=time.time(),
+                    preparing=False,
+                )
+
+        threading.Thread(
+            target=prepare_whole_album,
+            name=f"prepare-download-{task_id}",
+            daemon=True,
+        ).start()
+        return json_ok(task_id=task_id, task=task, preparing=True)
+
     chapters = hydrate_download_chapters(album, payload.get("chapters") or [], payload.get("chapter_ids") or payload.get("chapterIds") or [])
     if not album or not chapters:
         return json_error("缺少专辑或章节")
     if album.get("platform") == "懒人听书":
         sync_platform_cookie("懒人听书")
     task_id = f"web-{uuid.uuid4().hex[:12]}"
-    options = payload.get("options") or {}
-    options["download_dir"] = resolve_download_dir(options.get("download_dir"))
-    if options.get("voice"):
-        options["voice"] = resolve_voice_for_album(album, options.get("voice"))
     task = start_download_task(task_id, album, chapters, options, source="web")
     return json_ok(task_id=task.get("id") or task_id, task=task, deduplicated=bool(task.get("deduplicated")))
 
@@ -2907,7 +3237,7 @@ def api_download_detail(task_id):
     task = task_snapshot(task_id)
     if not task:
         return json_error("任务不存在", 404)
-    return json_ok(task=task)
+    return json_ok(task=_download_task_detail(task))
 
 
 def live_worker(task_id):
@@ -3344,6 +3674,7 @@ def api_subscribe():
     payload = request.get_json(silent=True) or {}
     album = normalize_album(payload.get("album") or {})
     chapters = payload.get("chapters") or []
+    load_all = bool(payload.get("load_all") or payload.get("loadAll"))
     voice = resolve_voice_for_album(album, payload.get("voice"))
     if not album:
         return json_error("缺少专辑信息")
@@ -3352,17 +3683,17 @@ def api_subscribe():
     item = subscription_manager.add_or_update(album, chapters, active_download_dir())
     job = None
     settings = subscription_manager.settings()
-    if settings.get("enabled", True):
+    if settings.get("enabled", True) or load_all:
         ensure_subscription_scheduler()
         # Defer full check to avoid double-fetch: the search results already provided
         # chapters. Only queue missing chapters for download if auto-download is on.
-        auto_dl = settings.get("auto_download_missing", True)
+        auto_dl = settings.get("auto_download_missing", True) and settings.get("enabled", True)
         if auto_dl and chapters:
             # Use provided chapters directly - no need to refetch from remote.
             job = start_subscription_job(item["id"], queue_missing=True, manual=False)
         else:
             job = start_subscription_job(item["id"], queue_missing=False, manual=False)
-    return json_ok(subscription=item, job=job)
+    return json_ok(subscription=item, library=album_library_summary(album), job=job)
 
 
 @app.delete("/api/subscriptions/<path:sid>")

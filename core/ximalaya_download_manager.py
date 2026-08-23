@@ -35,6 +35,14 @@ def _positive_env_float(name: str, default: float, minimum: float = 0.0) -> floa
     return max(float(minimum), value)
 
 
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or str(default))
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(int(minimum), min(value, int(maximum)))
+
+
 class XimalayaDownloadManager:
     """喜马拉雅下载管理器"""
 
@@ -56,12 +64,13 @@ class XimalayaDownloadManager:
     # responses are downloaded outside this lock, so CDN throughput and the
     # worker's normal chapter concurrency are unaffected.
     _MOBILE_V4_REQUEST_LOCK = threading.Lock()
+    _MOBILE_V4_SEQUENCE_LOCK = threading.Lock()
     _MOBILE_V4_LAST_REQUEST_AT = 0.0
     _MOBILE_V4_REQUESTS_PER_HOUR = _positive_env_float(
         "XIMALAYA_V4_REQUESTS_PER_HOUR", 0.0, 0.0
     )
     _MOBILE_V4_CONFIGURED_INTERVAL = _positive_env_float(
-        "XIMALAYA_V4_MIN_INTERVAL", 0.75, 0.0
+        "XIMALAYA_V4_MIN_INTERVAL", 1.1, 1.1
     )
     # An optional hourly cap remains available for unusually strict accounts,
     # but defaults to disabled so media throughput stays high.
@@ -78,7 +87,10 @@ class XimalayaDownloadManager:
         "XIMALAYA_V4_MAX_INTERVAL", 30.0, _MOBILE_V4_BASE_INTERVAL
     )
     _MOBILE_V4_JITTER = _positive_env_float(
-        "XIMALAYA_V4_JITTER", 0.35, 0.0
+        "XIMALAYA_V4_JITTER", 0.2, 0.0
+    )
+    _MOBILE_V4_TRANSIENT_ATTEMPTS = _bounded_env_int(
+        "XIMALAYA_V4_TRANSIENT_ATTEMPTS", 12, 1, 30
     )
     _MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
     _MOBILE_V4_COOLDOWN_LOGGED_UNTIL = 0.0
@@ -407,6 +419,7 @@ class XimalayaDownloadManager:
                     self.mobile_credentials,
                     business="playTrack",
                     scene="play",
+                    force_fresh=True,
                 )
                 self.mobile_credentials["x_tk"] = fresh_ticket
                 identity = ximalaya_mobile_cookie_identity(self.mobile_credentials)
@@ -570,6 +583,66 @@ class XimalayaDownloadManager:
         if cookie:
             headers["Cookie"] = cookie
         return headers
+
+    def _request_mobile_v4_info(
+        self,
+        track_id: str,
+        level: int,
+        device: str,
+        profile_name: str,
+    ) -> Tuple[Optional[dict], Optional[Dict[str, str]]]:
+        """Issue one globally serialized V4 request sequence.
+
+        ``ret=-3`` is a transient gate observed on the App endpoint.  Retry it
+        with a fresh ticket and signature, but let credential and protocol
+        failures return to the existing error classifier immediately.
+        """
+        with self._MOBILE_V4_SEQUENCE_LOCK:
+            for transient_attempt in range(1, self._MOBILE_V4_TRANSIENT_ATTEMPTS + 1):
+                self._wait_for_mobile_v4_slot()
+                timestamp = int(time.time() * 1000)
+                if not self._refresh_mobile_credentials_from_provider(
+                    track_id, level, timestamp, device
+                ):
+                    return None, None
+                headers = self._mobile_v4_headers()
+                api_url = self._mobile_v4_request_url(
+                    track_id,
+                    timestamp,
+                    device,
+                    level,
+                    host=self.mobile_credentials.get("host", ""),
+                )
+                info_response = self.session.get(api_url, headers=headers, timeout=20)
+                if info_response.status_code != 200:
+                    self._record_error(
+                        f"喜马拉雅{profile_name}接口 HTTP {info_response.status_code}",
+                        info_response.status_code,
+                    )
+                    return None, None
+
+                data = info_response.json()
+                if not isinstance(data, dict):
+                    self._record_error(f"喜马拉雅{profile_name}接口返回格式无效")
+                    return None, None
+                if str(data.get("ret")) != "-3":
+                    return data, headers
+
+                if transient_attempt < self._MOBILE_V4_TRANSIENT_ATTEMPTS:
+                    print(
+                        f"   🔄 V4 短时限流 ret=-3，第 {transient_attempt}/"
+                        f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次未通过，刷新凭证后继续"
+                    )
+
+            message = str(data.get("msg") or data.get("message") or "请求过于频繁")
+            cooldown = self._mark_mobile_v4_rate_limited()
+            self._record_error(
+                f"喜马拉雅{profile_name}接口连续 "
+                f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次触发短时限流: {message} (ret=-3)；"
+                f"全局冷却 {cooldown:.0f} 秒后重新取票",
+                error_type="rate_limited",
+            )
+            return None, None
 
     def _mobile_v4_device_candidates(self):
         """Return signed device variants, preferring the captured request."""
@@ -968,32 +1041,12 @@ class XimalayaDownloadManager:
             encrypted_seen = False
             unauthorized_seen = False
             for index, device in enumerate(device_candidates):
-                self._wait_for_mobile_v4_slot()
-                timestamp = int(time.time() * 1000)
-                if not self._refresh_mobile_credentials_from_provider(
-                    track_id, level, timestamp, device
-                ):
-                    return False
-                headers = self._mobile_v4_headers()
-                api_url = self._mobile_v4_request_url(
-                    track_id,
-                    timestamp,
-                    device,
-                    level,
-                    host=self.mobile_credentials.get("host", ""),
+                if device not in attempted_devices:
+                    attempted_devices.append(device)
+                data, headers = self._request_mobile_v4_info(
+                    track_id, level, device, profile["name"]
                 )
-                attempted_devices.append(device)
-                info_response = self.session.get(api_url, headers=headers, timeout=20)
-                if info_response.status_code != 200:
-                    self._record_error(
-                        f"喜马拉雅{profile['name']}接口 HTTP {info_response.status_code}",
-                        info_response.status_code,
-                    )
-                    return False
-
-                data = info_response.json()
-                if not isinstance(data, dict):
-                    self._record_error(f"喜马拉雅{profile['name']}接口返回格式无效")
+                if data is None:
                     return False
                 if (
                     str(data.get("ret")) == "1001"

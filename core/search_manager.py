@@ -166,7 +166,7 @@ class SearchManager:
                 
         return results
     
-    def search_qidian(self, keyword):
+    def search_qidian(self, keyword, page_size=20, enrich_details=False):
         """搜索起点听书"""
         try:
             if not self.qidian_cookies:
@@ -174,7 +174,7 @@ class SearchManager:
                 return []
             
             system = QidianAudioSystem(self.qidian_cookies)
-            items = system.search(keyword, site=3, page_index=1, page_size=50)
+            items = system.search(keyword, site=3, page_index=1, page_size=max(1, min(int(page_size or 20), 50)))
             
             if items is None:
                 print(f"❌ 起点API返回None，搜索失败")
@@ -199,17 +199,14 @@ class SearchManager:
                 
                 print(f"   [{idx}] {book_name} - {author_name} (ID: {book_id})")
                 
-                # 🔧 新增：立即获取每个结果的详情来补充 cover
                 cover_url = ''
-                try:
-                    detail = system.get_audio_detail(book_id)
-                    if detail:
-                        cover_url = detail.get('CoverUrl', '')
-                        print(f"       ✅ 已获取封面: {cover_url[:60]}...")
-                    else:
-                        print(f"       ⚠️ 未获取到详情")
-                except Exception as e:
-                    print(f"       ⚠️ 获取详情失败: {str(e)}")
+                if enrich_details:
+                    try:
+                        detail = system.get_audio_detail(book_id)
+                        if detail:
+                            cover_url = detail.get('CoverUrl', '')
+                    except Exception as e:
+                        print(f"       ⚠️ 获取详情失败: {str(e)}")
                 
                 results.append({
                     'platform': '起点听书',
