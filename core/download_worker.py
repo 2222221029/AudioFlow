@@ -108,9 +108,9 @@ class DownloadWorker(QThread):
 
         For Ximalaya the resolved ``audio_url`` is just the chapter id again,
         so the fallback would resend the identical request.  Skip it for the
-        web-endpoint label (which resolves to the lowest useful M4A_96K tier),
-        the legacy M4A 96K value, and every premium/mobile path, so a throttled
-        or denied request is not immediately repeated inside one chapter call.
+        web-endpoint label (which already handles its own Web V3/public-free
+        fallback), the legacy M4A 96K value, and every premium/mobile path, so
+        a throttled or denied request is not repeated inside one chapter call.
         """
         text = str(quality or '').strip()
         return (
@@ -126,9 +126,8 @@ class DownloadWorker(QThread):
             # The downloader renames this placeholder to the detected format.
             return '.m4a'
         if text == '喜马拉雅网页版接口':
-            # The web endpoint resolves to the M4A direct-download API
-            # (XimalayaDownloadManager maps this label to M4A_96K), so the
-            # target file is M4A even though the label carries no bitrate.
+            # Web V3 usually selects M4A and the downloader corrects the suffix
+            # after inspecting the actual media container.
             return '.m4a'
         if cls._is_ximalaya_lossless_quality(quality):
             return '.flac'
@@ -532,7 +531,7 @@ class DownloadWorker(QThread):
                     wait = _XIMALAYA_V4_RATE_LIMIT_BACKOFF[min(attempt - 1, len(_XIMALAYA_V4_RATE_LIMIT_BACKOFF) - 1)]
                 else:
                     wait = attempt * _RETRY_BACKOFF
-                reason = 'V4 风控冷却' if previous_error_type == 'rate_limited' else '重试'
+                reason = '平台限流冷却' if previous_error_type == 'rate_limited' else '重试'
                 print(f"   🔄 章节 {chapter_index} 第 {attempt} 次{reason}，等待 {wait}s…")
                 time.sleep(wait)
                 chapter.pop('_error', None)
@@ -1053,10 +1052,9 @@ class DownloadWorker(QThread):
                             self._dbg(f"🏷️ 按实际音质保存为: {os.path.basename(final_path)}")
                     if not success and audio_url:
                         if self._ximalaya_skip_url_fallback(self.quality):
-                            # The web-endpoint label already resolves to the
-                            # M4A_96K direct link (the lowest useful tier), so
-                            # the "resolved URL" fallback would only repeat the
-                            # exact same request and amplify any throttle.
+                            # Web V3 handles its public-free fallback internally;
+                            # mobile V4 and exact-quality paths must not retry the
+                            # same chapter id through the resolved-URL branch.
                             print("WARN: 喜马拉雅高音质下载失败，已跳过低码率地址回退")
                         else:
                             print("WARN: 章节 ID 下载失败，改用已解析音频地址重试")

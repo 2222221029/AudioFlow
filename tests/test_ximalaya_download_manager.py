@@ -45,6 +45,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         XimalayaDownloadManager._MOBILE_V4_JITTER = 0.0
         XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = 0.0
         XimalayaDownloadManager._clear_mobile_v4_rate_limit()
+        XimalayaDownloadManager._clear_web_v3_rate_limit()
 
     def tearDown(self):
         base, minimum, cooldown, jitter, last_request = self._v4_timing
@@ -54,6 +55,7 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         XimalayaDownloadManager._MOBILE_V4_JITTER = jitter
         XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = last_request
         XimalayaDownloadManager._clear_mobile_v4_rate_limit()
+        XimalayaDownloadManager._clear_web_v3_rate_limit()
 
     @staticmethod
     def _mobile_credentials(ticket="member-mobile-ticket"):
@@ -93,6 +95,14 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             for index, value in enumerate(plaintext.encode("utf-8"))
         )
         return base64.urlsafe_b64encode(payload + dynamic_key).rstrip(b"=").decode("ascii")
+
+    @staticmethod
+    def _web_encrypt(plaintext: str) -> str:
+        key = bytes.fromhex("aaad3e4fd540b0f79dca95606e72bf93")
+        encrypted = AES.new(key, AES.MODE_ECB).encrypt(
+            pad(plaintext.encode("utf-8"), AES.block_size)
+        )
+        return base64.b64encode(encrypted).decode("ascii")
 
     def test_mobile_quality_labels_map_to_exact_levels(self):
         manager = XimalayaDownloadManager()
@@ -1149,6 +1159,274 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
 
         self.assertFalse(ok)
         self.assertIn("文件格式无法识别", manager.last_error)
+
+    def test_web_v3_downloads_authorized_vip_track_without_leaking_cookie_to_cdn(self):
+        audio_url = "https://aod.cos.tx.xmcdn.com/group1/M00/00/00/vip-track.m4a"
+        audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "trackInfo": {
+                "isPaid": True,
+                "isFree": False,
+                "isAuthorized": True,
+                "playUrlList": [{
+                    "url": self._web_encrypt(audio_url),
+                    "type": "M4A_128",
+                    "qualityLevel": 2,
+                    "fileSize": len(audio_body),
+                }],
+            },
+            "extendInfo": {"currentUid": "123456"},
+        })
+        audio = FakeResponse(
+            headers={
+                "content-type": "audio/mp4",
+                "content-length": str(len(audio_body)),
+            },
+            body=audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=123456&member")
+            manager.session.cookies.set("HWWAFSESID", "waf-session")
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[FakeResponse(), track_info, audio],
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "265392006", manager.WEB_AUTO_QUALITY, str(save_path)
+                    )
+                self.assertTrue(save_path.exists())
+                self.assertEqual(save_path.read_bytes(), audio_body)
+
+        self.assertTrue(ok)
+        self.assertEqual(manager.last_download_source, "web_v3")
+        self.assertEqual(manager.last_download_path, str(save_path))
+        api_query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)
+        self.assertEqual(api_query["device"], ["web"])
+        self.assertEqual(api_query["trackId"], ["265392006"])
+        self.assertEqual(api_query["trackQualityLevel"], ["2"])
+        api_cookie = get.call_args_list[1].kwargs["headers"]["Cookie"]
+        self.assertIn("_token=123456&member", api_cookie)
+        self.assertIn("HWWAFSESID=waf-session", api_cookie)
+        self.assertNotIn("Cookie", get.call_args_list[2].kwargs["headers"])
+
+    def test_web_v3_reports_expired_login_for_paid_track_without_fallback(self):
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "trackInfo": {
+                "isPaid": True,
+                "isFree": False,
+                "isAuthorized": False,
+                "playUrlList": [],
+            },
+            "extendInfo": {"currentUid": "0"},
+        })
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=expired")
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[FakeResponse(), track_info],
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "265392006",
+                        manager.WEB_AUTO_QUALITY,
+                        str(Path(tmp) / "track.m4a"),
+                    )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(manager.last_error_type, "restricted")
+        self.assertIn("Cookie 未生效", manager.last_error)
+
+    def test_web_v3_retries_invalid_wfp_without_dropping_login_cookie(self):
+        audio_url = "https://aod.cos.tx.xmcdn.com/group1/M00/00/00/vip-track.m4a"
+        audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
+        invalid_wfp = FakeResponse(json_data={
+            "ret": 1001,
+            "msg": "WFP存在但校验失败",
+        })
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "trackInfo": {
+                "isPaid": True,
+                "isFree": False,
+                "isAuthorized": True,
+                "playUrlList": [{
+                    "url": self._web_encrypt(audio_url),
+                    "type": "M4A_128",
+                    "qualityLevel": 2,
+                    "fileSize": len(audio_body),
+                }],
+            },
+            "extendInfo": {"currentUid": "123456"},
+        })
+        audio = FakeResponse(
+            headers={"content-type": "audio/mp4"},
+            body=audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                cookie_string="_token=123456&member; wfp=expired-fingerprint"
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[FakeResponse(), invalid_wfp, FakeResponse(), track_info, audio],
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "265392006",
+                        manager.WEB_AUTO_QUALITY,
+                        str(Path(tmp) / "track.m4a"),
+                    )
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 5)
+        for call_index in (2, 3):
+            retry_cookie = get.call_args_list[call_index].kwargs["headers"]["Cookie"]
+            self.assertIn("_token=123456&member", retry_cookie)
+            self.assertNotIn("wfp=", retry_cookie.lower())
+
+    def test_web_v3_recovers_from_rate_limit_with_fresh_timestamp(self):
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "trackInfo": {
+                "isPaid": True,
+                "isAuthorized": True,
+                "playUrlList": [],
+            },
+        })
+        throttled = FakeResponse(status_code=429, headers={"Retry-After": "0"})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with mock.patch.object(
+                manager.session,
+                "get",
+                side_effect=[FakeResponse(), throttled, track_info],
+            ) as get, mock.patch(
+                "core.ximalaya_download_manager.time.sleep"
+            ), mock.patch(
+                "core.ximalaya_download_manager.time.time",
+                side_effect=[1000.0, 1001.0],
+            ):
+                info, _ = manager._request_web_track_info("265392006")
+
+        self.assertIsNotNone(info)
+        self.assertEqual(get.call_count, 3)
+        first_api_url = get.call_args_list[1].args[0]
+        second_api_url = get.call_args_list[2].args[0]
+        self.assertIn("/1000000?", first_api_url)
+        self.assertIn("/1001000?", second_api_url)
+        self.assertEqual(
+            parse_qs(urlparse(second_api_url).query)["trackQualityLevel"],
+            ["2"],
+        )
+
+    def test_web_v3_has_no_client_side_chapter_quota(self):
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "trackInfo": {
+                "isPaid": True,
+                "isAuthorized": True,
+                "playUrlList": [],
+            },
+        })
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            manager._web_session_bootstrapped = True
+            with mock.patch.object(
+                manager.session,
+                "get",
+                return_value=track_info,
+            ) as get:
+                for index in range(750):
+                    info, _ = manager._request_web_track_info(str(200000000 + index))
+                    self.assertIsNotNone(info)
+
+        self.assertEqual(get.call_count, 750)
+        self.assertEqual(manager.last_error, "")
+
+    def test_web_v3_persistent_rate_limit_skips_public_fallback(self):
+        throttled = FakeResponse(status_code=429, headers={"Retry-After": "0"})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                XimalayaDownloadManager,
+                "_WEB_V3_MAX_ATTEMPTS",
+                2,
+            ), mock.patch.object(
+                manager.session,
+                "get",
+                side_effect=[FakeResponse(), throttled, throttled],
+            ) as get, mock.patch(
+                "core.ximalaya_download_manager.time.sleep"
+            ):
+                ok = manager.download_audio_by_quality(
+                    "265392006",
+                    manager.WEB_AUTO_QUALITY,
+                    str(Path(tmp) / "track.m4a"),
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(manager.last_error_type, "rate_limited")
+        self.assertIn("连续 2 次失败", manager.last_error)
+
+    def test_web_v3_technical_failure_falls_back_to_public_free_redirect(self):
+        audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
+        public_audio = FakeResponse(
+            headers={
+                "content-type": "audio/mp4",
+                "content-length": str(len(audio_body)),
+            },
+            body=audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    XimalayaDownloadManager,
+                    "_WEB_V3_MAX_ATTEMPTS",
+                    2,
+                ), mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[
+                        FakeResponse(),
+                        FakeResponse(status_code=503),
+                        FakeResponse(status_code=503),
+                        public_audio,
+                    ],
+                ) as get, mock.patch(
+                    "core.ximalaya_download_manager.time.sleep"
+                ):
+                    ok = manager.download_audio_by_quality(
+                        "261300454", manager.WEB_AUTO_QUALITY, str(save_path)
+                    )
+                self.assertTrue(save_path.exists())
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 4)
+        self.assertEqual(manager.last_error, "")
+        self.assertEqual(manager.last_error_type, "")
+        self.assertEqual(manager.last_download_source, "public_free_redirect")
+        self.assertEqual(
+            get.call_args_list[3].args[0],
+            "http://mobile.ximalaya.com/mobile/redirect/free/play/261300454/96",
+        )
 
     def test_m4a_permission_response_is_exposed_as_restricted(self):
         with contextlib.redirect_stdout(io.StringIO()):

@@ -88,7 +88,7 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertEqual(worker._ximalaya_extension_for_quality("MP3 64K"), ".mp3")
         self.assertEqual(worker._ximalaya_extension_for_quality("杜比全景声"), ".m4a")
         self.assertEqual(worker._ximalaya_extension_for_quality("Audio Vivid 菁彩声"), ".m4a")
-        # 网页版接口实际走 M4A 直链下载，文件后缀必须是 .m4a（订阅下载的默认音质）。
+        # 网页 V3 默认使用 .m4a 占位，下载后会按实际媒体容器修正后缀。
         self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅网页版接口"), ".m4a")
         self.assertEqual(worker._ximalaya_extension_for_quality("喜马拉雅移动端接口（自动最高音质）"), ".m4a")
         self.assertTrue(worker._is_ximalaya_mobile_premium_quality("DOLBY_ATMOS"))
@@ -175,8 +175,7 @@ class DownloadWorkerTest(unittest.TestCase):
 
     def test_ximalaya_skip_url_fallback_covers_web_endpoint_default(self):
         worker = self.make_worker()
-        # 网页版接口与 M4A 96K 都映射到同一个 M4A_96K 直链：失败后重发同一请求
-        # 只会放大风控，必须跳过"解析 URL"兜底。
+        # 网页版接口内部已有 Web V3/公开免费回退，外层不应再次下载同一章节。
         self.assertTrue(worker._ximalaya_skip_url_fallback("喜马拉雅网页版接口"))
         self.assertTrue(worker._ximalaya_skip_url_fallback("M4A 96K"))
         self.assertTrue(worker._ximalaya_skip_url_fallback("喜马拉雅移动端接口（自动最高音质）"))

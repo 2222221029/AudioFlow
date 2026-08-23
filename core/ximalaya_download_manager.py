@@ -60,6 +60,24 @@ class XimalayaDownloadManager:
     MOBILE_DOLBY_PREFERRED_QUALITY = "杜比全景声优先（自动降级）"
     MOBILE_VIVID_PREFERRED_QUALITY = "Audio Vivid 优先（自动降级）"
     MOBILE_LOSSLESS_PREFERRED_QUALITY = "无损优先（自动降级）"
+    # Web V3 has no client-side chapter quota. These controls only coordinate
+    # transient failures so a long-running album does not turn one 429/WAF
+    # rejection into hundreds of simultaneous chapter failures.
+    _WEB_V3_MAX_ATTEMPTS = _bounded_env_int(
+        "XIMALAYA_WEB_V3_ATTEMPTS", 5, 1, 12
+    )
+    _WEB_V3_RETRY_BASE_SECONDS = _positive_env_float(
+        "XIMALAYA_WEB_V3_RETRY_BASE", 1.0, 0.0
+    )
+    _WEB_V3_MAX_BACKOFF_SECONDS = _positive_env_float(
+        "XIMALAYA_WEB_V3_MAX_BACKOFF", 120.0, 1.0
+    )
+    _WEB_V3_RATE_LIMIT_COOLDOWN_SECONDS = _positive_env_float(
+        "XIMALAYA_WEB_V3_RATE_LIMIT_COOLDOWN", 15.0, 0.0
+    )
+    _WEB_V3_STATE_LOCK = threading.Lock()
+    _WEB_V3_RATE_LIMITED_UNTIL = 0.0
+    _WEB_V3_COOLDOWN_LOGGED_UNTIL = 0.0
     # Pace only the tiny ticket + baseInfo control request. Media responses are
     # downloaded outside these controls, so CDN throughput and normal chapter
     # concurrency remain independent.
@@ -205,6 +223,7 @@ class XimalayaDownloadManager:
         self.last_download_quality_label = ""
         self.last_download_path = ""
         self._last_mobile_ticket_source = "saved"
+        self._web_session_bootstrapped = False
 
     def _record_error(self, message, status_code=None, error_type=None):
         """Expose a stable failure reason to subscription result handling."""
@@ -218,6 +237,420 @@ class XimalayaDownloadManager:
         restricted = status_code in (401, 403) or any(word in lowered for word in permission_words)
         self.last_error = text
         self.last_error_type = str(error_type or ("restricted" if restricted else "download_failed"))
+
+    @staticmethod
+    def _cookie_mapping(value) -> Dict[str, str]:
+        """Parse a Cookie header without logging or decoding its values."""
+        if isinstance(value, dict):
+            return {
+                str(key).strip(): str(val).strip()
+                for key, val in value.items()
+                if key and val not in (None, "")
+            }
+
+        result = {}
+        for segment in str(value or "").replace("\r", "").replace("\n", ";").split(";"):
+            key, separator, val = segment.partition("=")
+            key = key.strip()
+            val = val.strip()
+            if separator and key and val:
+                result[key] = val
+        return result
+
+    def _web_cookie_header(self, excluded=()) -> str:
+        """Merge the saved login Cookie with WAF cookies issued to this session."""
+        excluded_names = {str(name).strip().lower() for name in excluded}
+        merged = self._cookie_mapping(self.cookie_string)
+        try:
+            merged.update(self.session.cookies.get_dict())
+        except Exception:
+            pass
+        return "; ".join(
+            f"{key}={val}"
+            for key, val in merged.items()
+            if key.lower() not in excluded_names
+        )
+
+    def _web_headers(self, track_id: str, excluded_cookies=()) -> Dict[str, str]:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/140.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": f"https://www.ximalaya.com/sound/{track_id}",
+            "Origin": "https://www.ximalaya.com",
+            "Connection": "keep-alive",
+        }
+        cookie = self._web_cookie_header(excluded_cookies)
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
+
+    def _bootstrap_web_session(self, track_id: str, force: bool = False) -> bool:
+        """Obtain the short-lived WAF cookies required by the web play API."""
+        if self._web_session_bootstrapped and not force:
+            return True
+        headers = self._web_headers(
+            track_id,
+            excluded_cookies=("wfp",) if force else (),
+        )
+        headers.update({
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://www.ximalaya.com/",
+        })
+        try:
+            response = self.session.get(
+                "https://www.ximalaya.com/revision/time",
+                headers=headers,
+                timeout=15,
+            )
+            self._web_session_bootstrapped = response.status_code == 200
+        except Exception as exc:
+            print(f"   WARN: 喜马拉雅网页会话初始化失败: {exc}")
+            self._web_session_bootstrapped = False
+        return self._web_session_bootstrapped
+
+    @classmethod
+    def _wait_for_web_v3_cooldown(cls):
+        """Honor a shared Retry-After window across all Web V3 workers."""
+        with cls._WEB_V3_STATE_LOCK:
+            remaining = max(0.0, cls._WEB_V3_RATE_LIMITED_UNTIL - time.monotonic())
+            should_log = (
+                remaining > 0
+                and cls._WEB_V3_RATE_LIMITED_UNTIL > cls._WEB_V3_COOLDOWN_LOGGED_UNTIL
+            )
+            if should_log:
+                cls._WEB_V3_COOLDOWN_LOGGED_UNTIL = cls._WEB_V3_RATE_LIMITED_UNTIL
+        if remaining > 0:
+            if should_log:
+                print(f"   WAIT: 喜马拉雅 Web V3 全局冷却 {remaining:.1f} 秒后继续")
+            time.sleep(remaining)
+
+    @classmethod
+    def _mark_web_v3_rate_limited(cls, seconds: float):
+        delay = max(0.0, min(float(seconds), cls._WEB_V3_MAX_BACKOFF_SECONDS))
+        with cls._WEB_V3_STATE_LOCK:
+            cls._WEB_V3_RATE_LIMITED_UNTIL = max(
+                cls._WEB_V3_RATE_LIMITED_UNTIL,
+                time.monotonic() + delay,
+            )
+        return delay
+
+    @classmethod
+    def _clear_web_v3_rate_limit(cls):
+        with cls._WEB_V3_STATE_LOCK:
+            cls._WEB_V3_RATE_LIMITED_UNTIL = 0.0
+            cls._WEB_V3_COOLDOWN_LOGGED_UNTIL = 0.0
+
+    @classmethod
+    def _web_v3_retry_delay(cls, attempt: int, response=None, rate_limited: bool = False) -> float:
+        backoff = cls._WEB_V3_RETRY_BASE_SECONDS * (2 ** max(0, int(attempt) - 1))
+        retry_after = 0.0
+        try:
+            retry_after = float((response.headers or {}).get("Retry-After") or 0)
+        except (TypeError, ValueError, AttributeError):
+            retry_after = 0.0
+        if rate_limited or getattr(response, "status_code", None) == 429:
+            backoff = max(backoff, retry_after, cls._WEB_V3_RATE_LIMIT_COOLDOWN_SECONDS)
+        return max(0.0, min(backoff, cls._WEB_V3_MAX_BACKOFF_SECONDS))
+
+    @classmethod
+    def _sleep_before_web_v3_retry(
+        cls, attempt: int, reason: str, response=None, rate_limited: bool = False
+    ):
+        limited = rate_limited or getattr(response, "status_code", None) == 429
+        delay = cls._web_v3_retry_delay(
+            attempt,
+            response=response,
+            rate_limited=limited,
+        )
+        if limited:
+            cls._mark_web_v3_rate_limited(delay)
+            print(f"   WAIT: Web V3 {reason}，全局冷却 {delay:.1f} 秒后重试")
+            cls._wait_for_web_v3_cooldown()
+        elif delay > 0:
+            print(f"   RETRY: Web V3 {reason}，{delay:.1f} 秒后重试")
+            time.sleep(delay)
+
+    @classmethod
+    def _select_web_play_candidate(cls, track_info: Dict):
+        """Choose the best decrypted web stream, preferring M4A containers."""
+        candidates = []
+        for item in track_info.get("playUrlList") or []:
+            encrypted_url = str(item.get("url") or "").strip()
+            if not encrypted_url:
+                continue
+            audio_url = encrypted_url if cls._looks_like_cdn_url(encrypted_url) else ""
+            if not audio_url:
+                audio_url = cls._decrypt_play_url_candidates(encrypted_url)
+            if not audio_url:
+                continue
+
+            type_name = str(item.get("type") or "WEB").strip()
+            upper_type = type_name.upper()
+            preferred_format = 2 if any(marker in upper_type for marker in ("M4A", "AAC")) else 1
+            try:
+                quality_level = int(item.get("qualityLevel") or 0)
+            except (TypeError, ValueError):
+                quality_level = 0
+            try:
+                expected_size = int(item.get("fileSize") or 0)
+            except (TypeError, ValueError):
+                expected_size = 0
+            candidates.append((
+                (preferred_format, quality_level, expected_size),
+                audio_url,
+                expected_size,
+                type_name,
+            ))
+
+        if not candidates:
+            return None
+        _, audio_url, expected_size, type_name = max(candidates, key=lambda item: item[0])
+        return audio_url, expected_size, type_name
+
+    def _request_web_track_info(self, track_id: str):
+        """Request Web V3 with bounded recovery for long-running batches."""
+        self._bootstrap_web_session(track_id)
+        excluded_cookies = ()
+        last_data = {}
+        last_reason = "未知技术错误"
+        rate_limited = False
+
+        for attempt in range(1, self._WEB_V3_MAX_ATTEMPTS + 1):
+            self._wait_for_web_v3_cooldown()
+            timestamp = int(time.time() * 1000)
+            # Web V3 omits M4A_128 unless the highest web quality is requested.
+            url = (
+                f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}"
+                f"?device=web&trackId={track_id}&trackQualityLevel=2"
+            )
+            try:
+                response = self.session.get(
+                    url,
+                    headers=self._web_headers(track_id, excluded_cookies=excluded_cookies),
+                    timeout=15,
+                )
+            except requests.RequestException as exc:
+                last_reason = f"网络异常: {exc}"
+                if attempt < self._WEB_V3_MAX_ATTEMPTS:
+                    self._sleep_before_web_v3_retry(attempt, last_reason)
+                    continue
+                break
+
+            status_code = int(response.status_code or 0)
+            if status_code in (401, 403):
+                self._record_error(
+                    f"喜马拉雅网页播放接口 HTTP {status_code}",
+                    status_code,
+                    error_type="restricted",
+                )
+                return None, {}
+            if status_code in (408, 425, 429) or 500 <= status_code <= 599:
+                rate_limited = rate_limited or status_code == 429
+                last_reason = f"HTTP {status_code}"
+                if attempt < self._WEB_V3_MAX_ATTEMPTS:
+                    self._sleep_before_web_v3_retry(attempt, last_reason, response=response)
+                    continue
+                break
+            if status_code != 200:
+                self._record_error(
+                    f"喜马拉雅网页播放接口 HTTP {status_code}",
+                    status_code,
+                    error_type="download_failed",
+                )
+                return None, {}
+
+            try:
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ValueError("响应不是 JSON 对象")
+            except Exception as exc:
+                last_reason = f"返回无效数据: {exc}"
+                if attempt < self._WEB_V3_MAX_ATTEMPTS:
+                    self._sleep_before_web_v3_retry(attempt, last_reason, response=response)
+                    continue
+                break
+
+            last_data = data
+            if data.get("ret") in (None, 0, "0"):
+                return data.get("trackInfo") or {}, data
+
+            message = str(data.get("msg") or data.get("message") or "未知错误")
+            invalid_web_session = (
+                "WFP" in message.upper()
+                or "WEBTK" in message.upper()
+                or "校验" in message
+            )
+            if invalid_web_session:
+                last_reason = f"网页会话校验失败: {message}"
+                if attempt < self._WEB_V3_MAX_ATTEMPTS:
+                    print("   INFO: 网页指纹 Cookie 已失效，清理旧 WFP 并重建会话")
+                    self._bootstrap_web_session(track_id, force=True)
+                    excluded_cookies = ("wfp",)
+                    continue
+                break
+
+            restricted = any(
+                marker in message
+                for marker in ("购买", "会员", "权限", "登录", "登陆", "未授权")
+            )
+            if restricted:
+                self._record_error(
+                    f"喜马拉雅网页播放接口拒绝请求: {message} (ret={data.get('ret')})",
+                    error_type="restricted",
+                )
+                return None, data
+
+            transient = (
+                str(data.get("ret")) in {"-1", "-2", "-3", "429", "500", "502", "503", "504"}
+                or any(marker in message for marker in ("频繁", "稍后", "繁忙", "拥挤", "重试"))
+            )
+            if transient:
+                transient_rate_limit = "频繁" in message
+                rate_limited = rate_limited or transient_rate_limit
+                last_reason = f"临时拒绝: {message} (ret={data.get('ret')})"
+                if attempt < self._WEB_V3_MAX_ATTEMPTS:
+                    self._sleep_before_web_v3_retry(
+                        attempt,
+                        last_reason,
+                        response=response,
+                        rate_limited=transient_rate_limit,
+                    )
+                    continue
+                break
+
+            self._record_error(
+                f"喜马拉雅网页播放接口拒绝请求: {message} (ret={data.get('ret')})"
+            )
+            return None, data
+
+        self._record_error(
+            f"喜马拉雅网页播放接口连续 {self._WEB_V3_MAX_ATTEMPTS} 次失败: {last_reason}",
+            error_type="rate_limited" if rate_limited else "download_failed",
+        )
+        return None, last_data
+
+    def _download_web_authorized(self, track_id: str, save_path: str,
+                                 chapter_title: str = "", progress_callback=None) -> bool:
+        """Download the stream authorized by the logged-in Ximalaya web account."""
+        try:
+            track_info, data = self._request_web_track_info(track_id)
+            if track_info is None:
+                return False
+
+            current_uid = str((data.get("extendInfo") or {}).get("currentUid") or "0")
+            is_paid = self._flag_enabled(track_info.get("isPaid"))
+            is_free = self._flag_enabled(track_info.get("isFree"))
+            is_authorized = self._flag_enabled(track_info.get("isAuthorized"))
+            candidate = self._select_web_play_candidate(track_info)
+
+            if not candidate:
+                if is_paid and not is_free and not is_authorized:
+                    if current_uid in ("", "0"):
+                        reason = "喜马拉雅网页登录 Cookie 未生效，请重新登录后再下载会员章节"
+                    else:
+                        reason = "当前喜马拉雅网页账号没有该章节的完整播放权限"
+                    self._record_error(reason, error_type="restricted")
+                else:
+                    self._record_error("喜马拉雅网页接口未返回可用的完整音频地址")
+                return False
+
+            audio_url, expected_size, quality_label = candidate
+            media_headers = {
+                "User-Agent": self._web_headers(track_id)["User-Agent"],
+                "Accept": "audio/mp4,audio/mpeg,audio/*;q=0.9,*/*;q=0.8",
+                "Referer": f"https://www.ximalaya.com/sound/{track_id}",
+                "Origin": "https://www.ximalaya.com",
+            }
+            response = self.session.get(
+                audio_url,
+                headers=media_headers,
+                stream=True,
+                allow_redirects=True,
+                timeout=90,
+            )
+            if response.status_code != 200:
+                self._record_error(
+                    f"喜马拉雅网页音频文件 HTTP {response.status_code}",
+                    response.status_code,
+                    error_type="download_failed",
+                )
+                return False
+
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            temp_path = f"{save_path}.part"
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+            content_type = str(response.headers.get("content-type") or "").lower()
+            content_length = int(response.headers.get("content-length") or expected_size or 0)
+            total_size = 0
+            with open(temp_path, "wb") as output:
+                for chunk in response.iter_content(chunk_size=512000):
+                    if not chunk:
+                        continue
+                    output.write(chunk)
+                    total_size += len(chunk)
+                    if progress_callback:
+                        progress_callback(total_size, content_length)
+
+            if total_size <= 1024:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                self._record_error(f"喜马拉雅网页音频文件过小: {total_size} 字节")
+                return False
+            if expected_size and total_size < int(expected_size * 0.8):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                self._record_error(
+                    f"喜马拉雅网页音频文件不完整: {total_size}/{expected_size} 字节"
+                )
+                return False
+
+            valid, validation_error = self._validate_mobile_media(temp_path, 3, content_type)
+            if not valid:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                self._record_error(f"喜马拉雅网页音频{validation_error}，已拒绝保存")
+                return False
+
+            actual_extension = self._mobile_media_extension(temp_path, 3)
+            final_path = str(Path(save_path).with_suffix(actual_extension))
+            os.replace(temp_path, final_path)
+
+            self.last_error = ""
+            self.last_error_type = ""
+            self.last_download_source = "web_v3"
+            self.last_download_size = total_size
+            self.last_download_expected_size = expected_size
+            self.last_download_quality_label = quality_label
+            self.last_download_path = final_path
+            print(
+                f"SUCCESS: 喜马拉雅网页版下载成功: {Path(final_path).name} "
+                f"({quality_label}, {total_size / 1024 / 1024:.2f}MB)"
+            )
+            return True
+        except Exception as exc:
+            temp_path = f"{save_path}.part"
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            self._record_error(f"喜马拉雅网页版下载异常: {exc}")
+            return False
 
     @classmethod
     def _wait_for_mobile_v4_slot(cls):
@@ -1447,6 +1880,11 @@ class XimalayaDownloadManager:
         """
         self.last_error = ""
         self.last_error_type = ""
+        self.last_download_source = ""
+        self.last_download_size = 0
+        self.last_download_expected_size = 0
+        self.last_download_quality_label = ""
+        self.last_download_path = ""
         print(f"🚀🚀🚀 新版下载方法被调用! 🚀🚀🚀")
         print(f"📥 开始下载音频: {chapter_title} ({quality})")
 
@@ -1471,10 +1909,44 @@ class XimalayaDownloadManager:
             )
 
         if str(quality or "").strip() == self.WEB_AUTO_QUALITY:
-            # The legacy web path chooses what the web endpoint exposes.  The
-            # UI intentionally offers no misleading per-bitrate selector.
-            quality = "M4A_96K"
-            print("🌐 使用喜马拉雅网页版接口（自动选择网页端可用音频）")
+            print("🌐 使用喜马拉雅网页 V3 播放接口（按当前登录账号权限自动选择音质）")
+            if self._download_web_authorized(
+                track_id,
+                save_path,
+                chapter_title,
+                progress_callback=progress_callback,
+            ):
+                return True
+
+            # Do not hide a definitive login/entitlement result behind the
+            # anonymous free endpoint. Only technical failures use it as a
+            # compatibility fallback for public chapters.
+            if self.last_error_type in {"restricted", "rate_limited"}:
+                return False
+
+            web_error = self.last_error or "喜马拉雅网页 V3 接口下载失败"
+            web_error_type = self.last_error_type or "download_failed"
+            print("   WARN: 网页 V3 接口暂时不可用，尝试公开免费音频接口")
+            if self._download_m4a_direct_api(
+                track_id,
+                "96K",
+                save_path,
+                chapter_title,
+                progress_callback=progress_callback,
+            ):
+                self.last_error = ""
+                self.last_error_type = ""
+                if not self.last_download_source:
+                    self.last_download_source = "public_free_redirect"
+                self.last_download_path = self.last_download_path or save_path
+                return True
+
+            fallback_error = self.last_error or "公开免费音频接口下载失败"
+            self._record_error(
+                f"{web_error}；公开免费接口回退失败: {fallback_error}",
+                error_type=web_error_type,
+            )
+            return False
 
         mobile_profile = self._mobile_quality_profile(quality)
         if mobile_profile:
