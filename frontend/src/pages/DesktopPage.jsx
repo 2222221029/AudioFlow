@@ -1,4 +1,5 @@
 import '../styles/desktop.css';
+import {useEffect, useRef} from 'react';
 import {Icon, IconSprite} from '../components/Icons.jsx';
 import {AppLogo} from '../components/AppLogo.jsx';
 import {MiniPlayer} from '../components/Player.jsx';
@@ -33,23 +34,30 @@ const NAV = [
 
 export default function DesktopPage() {
   const app = useAudioFlowApp();
-  const {page, setPage, query, setQuery, platform, setPlatform, downloads, config, actions, busy, metrics, status} = app;
+  const mainRef = useRef(null);
+  const {page, setPage, query, setQuery, platform, setPlatform, config, actions, busy, metrics, status, serviceState} = app;
   const switchPage = (id) => {
     setPage(id);
-    if (id === 'downloads') actions.loadDownloads();
-    if (id === 'subscriptions') actions.loadSubscriptions();
-    if (id === 'cookies') actions.loadCookies();
-    if (id === 'notifications') actions.loadNotifications();
+    requestAnimationFrame(() => {
+      mainRef.current?.scrollTo({top: 0, left: 0, behavior: 'auto'});
+      window.scrollTo({top: 0, left: 0, behavior: 'auto'});
+    });
+    if (id === 'downloads') actions.loadDownloads().catch(() => {});
+    if (id === 'subscriptions') actions.loadSubscriptions().catch(() => {});
+    if (id === 'cookies') actions.loadCookies().catch(() => {});
+    if (id === 'notifications') actions.loadNotifications().catch(() => {});
     if (id === 'settings') {
-      actions.loadConfig();
-      actions.loadLogs();
-      actions.loadEvents();
+      actions.loadConfig().catch(() => {});
+      actions.loadLogs().catch(() => {});
+      actions.loadEvents().catch(() => {});
     }
   };
 
-  // 连接状态标签
-  const statusLabel = status === '就绪' ? '在线' : status === '搜索中' ? '搜索中' : status === '错误' ? '离线' : status;
-  const statusClass = status === '错误' ? 'danger' : status === '就绪' ? 'ok' : 'warn';
+  useEffect(() => {
+    requestAnimationFrame(() => mainRef.current?.scrollTo({top: 0, left: 0, behavior: 'auto'}));
+  }, [page]);
+
+  const statusClass = serviceState === 'online' ? 'ok' : serviceState === 'checking' ? 'warn' : 'danger';
 
   return (
     <>
@@ -69,7 +77,10 @@ export default function DesktopPage() {
             ))}
           </nav>
           <div className="nav-foot">
-            <div><b>状态</b> <span className={`status-text-${statusClass}`}>{statusLabel} v{config.version || '-'}</span></div>
+            <div className="service-status-row">
+              <div><b>状态</b> <span className={`status-text-${statusClass}`}>{status} v{config.version || '-'}</span></div>
+              <button className="service-retry-btn" type="button" disabled={serviceState === 'checking'} onClick={() => actions.checkServiceConnection({reload: true})} aria-label="重新检测服务连接" title="重新检测服务连接"><Icon id="i-refresh" className="icon icon-sm" /></button>
+            </div>
             <div style={{marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap'}}>
               <span title="活跃">▶ {metrics.activeDownloads}</span>
               <span title="已完成" style={{color: 'var(--success)'}}>✓ {metrics.completedDownloads}</span>
@@ -90,10 +101,10 @@ export default function DesktopPage() {
           </header>
         )}
 
-        <main className="main">
+        <main className="main" ref={mainRef}>
           {page === 'search' && <SearchPage app={app} />}
-          {page === 'downloads' && <PageShell title="下载管理" subtitle="实时下载进度、失败重试、并发与目录" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadDownloads}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><DownloadsPage app={app} /></PageShell>}
-          {page === 'subscriptions' && <PageShell title="订阅管理" subtitle="追更喜欢的专辑，新章节自动加入下载队列" action={<button className="btn btn-ghost btn-sm" onClick={() => actions.loadSubscriptions({refreshLocal: true})}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><SubscriptionsPage app={app} /></PageShell>}
+          {page === 'downloads' && <PageShell title="下载管理" subtitle="实时下载进度、失败重试、并发与目录" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadDownloads}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><DownloadsPage app={app} onNavigate={() => switchPage('search')} /></PageShell>}
+          {page === 'subscriptions' && <PageShell title="订阅管理" subtitle="追更喜欢的专辑，新章节自动加入下载队列" action={<button className="btn btn-ghost btn-sm" onClick={() => actions.loadSubscriptions({refreshLocal: true})}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><SubscriptionsPage app={app} onNavigate={() => switchPage('search')} /></PageShell>}
           {page === 'personal' && <PageShell title="个人中心" subtitle="查看各平台的收听历史、收藏、订阅、已购"><PersonalPage app={app} /></PageShell>}
           {page === 'cookies' && <PageShell title="账号管理" subtitle="为各平台提供登录态，支持扫码、浏览器抓取与手动粘贴" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadCookies}><Icon id="i-refresh" className="icon icon-sm" />刷新状态</button>}><CookiesPage app={app} /></PageShell>}
           {page === 'notifications' && <PageShell title="通知系统" subtitle="配置下载、订阅等事件的外部推送渠道" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadNotifications}><Icon id="i-refresh" className="icon icon-sm" />刷新配置</button>}><NotificationsPage app={app} /></PageShell>}
@@ -119,7 +130,7 @@ function PageShell({title, subtitle, action, children}) {
 }
 
 function SearchPage({app}) {
-  const {results, selectedAlbum, subscriptions, metrics, config, status, actions, searchHistory, query, setQuery} = app;
+  const {results, selectedAlbum, subscriptions, metrics, config, status, serviceState, actions, searchHistory, query, setQuery} = app;
   const platformCount = Math.max(SEARCH_PLATFORMS.length - 1, 0);
 
   const handleHistoryClick = (keyword) => {
@@ -144,7 +155,7 @@ function SearchPage({app}) {
         <div className="metric"><div className="metric-label">搜索结果</div><div className="metric-value">{results.length}</div><div className="metric-foot">本次返回条目</div></div>
         <div className="metric"><div className="metric-label">活跃下载</div><div className="metric-value">{metrics.activeDownloads}</div><div className="metric-foot">正在进行</div></div>
         <div className="metric"><div className="metric-label">已订阅</div><div className="metric-value">{subscriptions.length}</div><div className="metric-foot">自动追更专辑</div></div>
-        <div className="metric"><div className="metric-label">服务端</div><div className="metric-value" style={{fontSize: 18}}>{status}</div><div className="metric-foot">版本 {config.version || '-'}</div></div>
+        <button className={`metric metric-service state-${serviceState}`} type="button" onClick={() => actions.checkServiceConnection({reload: true})} disabled={serviceState === 'checking'} title="重新检测服务连接" aria-label={`服务端状态：${status}，重新检测连接`}><div className="metric-label">服务端</div><div className="metric-value" style={{fontSize: 18}}>{status}</div><div className="metric-foot">版本 {config.version || '-'} · 点击检测</div></button>
       </div>
       <div className="results-grid">
         <div className="glass" style={{overflow: 'hidden', display: 'flex', flexDirection: 'column'}}>

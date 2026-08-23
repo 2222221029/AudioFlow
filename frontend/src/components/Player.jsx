@@ -83,10 +83,10 @@ export function MiniPlayer({app, mobile = false}) {
       <div className="mini-player show">
         <div className="mp-cover" style={player.cover ? {backgroundImage: `url("${player.cover}")`} : undefined} />
         <div className="mp-info"><div className="mp-title">{player.title}</div><div className="mp-sub">{player.sub}</div></div>
-        <button className="mp-btn" onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章"><Icon id="i-arrow-left" /></button>
-        <button className="mp-btn" onClick={togglePlayback} title={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
-        <button className="mp-btn" onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章"><Icon id="i-arrow-right" /></button>
-        <button className="mp-btn close" onClick={close}><Icon id="i-close" /></button>
+        <button className="mp-btn" onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章" aria-label="上一章"><Icon id="i-arrow-left" /></button>
+        <button className="mp-btn" onClick={togglePlayback} title={player.playing ? '暂停' : '播放'} aria-label={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
+        <button className="mp-btn" onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章" aria-label="下一章"><Icon id="i-arrow-right" /></button>
+        <button className="mp-btn close" onClick={close} aria-label="关闭播放器" title="关闭播放器"><Icon id="i-close" /></button>
         <audio ref={audioRef} src={player.url} preload="metadata" playsInline />
       </div>
     );
@@ -95,10 +95,10 @@ export function MiniPlayer({app, mobile = false}) {
     <div className="mini-player show">
       <div className="mini-cover" style={player.cover ? {backgroundImage: `url("${player.cover}")`} : undefined} />
       <div className="mini-info"><div className="mini-title">{player.title}</div><div className="mini-sub">{player.sub}</div></div>
-      <button className="mini-btn" onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章"><Icon id="i-arrow-left" /></button>
-      <button className="mini-btn primary" onClick={togglePlayback} title={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
-      <button className="mini-btn" onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章"><Icon id="i-arrow-right" /></button>
-      <button className="mini-btn close" onClick={close}><Icon id="i-close" /></button>
+      <button className="mini-btn" onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章" aria-label="上一章"><Icon id="i-arrow-left" /></button>
+      <button className="mini-btn primary" onClick={togglePlayback} title={player.playing ? '暂停' : '播放'} aria-label={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
+      <button className="mini-btn" onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章" aria-label="下一章"><Icon id="i-arrow-right" /></button>
+      <button className="mini-btn close" onClick={close} aria-label="关闭播放器" title="关闭播放器"><Icon id="i-close" /></button>
       <audio ref={audioRef} src={player.url} preload="metadata" playsInline />
     </div>
   );

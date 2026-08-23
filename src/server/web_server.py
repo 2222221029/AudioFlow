@@ -1632,6 +1632,7 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     album = normalize_album(album)
     chapters = list(chapters or [])
     options = dict(options or {})
+    previous_task = task_snapshot(task_id)
     active_chapters = active_task_chapter_tasks(album)
     pending_chapters = [chapter for chapter in chapters if chapter_key(chapter) not in active_chapters]
     if not pending_chapters and active_chapters:
@@ -1663,7 +1664,18 @@ def start_download_task(task_id, album, chapters, options, source="web"):
         percent=0,
         warning=warning,
         skipped_active_chapter_count=skipped_active_chapter_count,
-        created_at=time.time(),
+        success=0,
+        failed=0,
+        success_chapters=[],
+        failed_chapters=[],
+        error="",
+        failure_reason="",
+        task_info={},
+        started_at=None,
+        finished_at=None,
+        history_compacted=False,
+        chapter_count=len(chapters),
+        created_at=previous_task.get("created_at") or time.time(),
     )
     thread = threading.Thread(
         target=run_download_task,
@@ -2869,22 +2881,25 @@ def api_downloads():
 
 @app.post("/api/downloads/retry-unfinished")
 def api_retry_unfinished_downloads():
-    created = []
+    retried = []
+    skipped = []
     for task in task_snapshot():
         status = task.get("status")
         if status not in ("interrupted", "failed", "partial", "stopped"):
             continue
-        chapters = task.get("failed_chapters") or []
-        if not chapters and status in ("interrupted", "failed", "stopped"):
-            chapters = task.get("chapters") or []
-        if not chapters:
-            continue
-        album = task.get("album") or {"title": task.get("title"), "platform": (task.get("task_info") or {}).get("platform")}
-        options = task.get("options") or {}
-        new_task_id = f"retry-{uuid.uuid4().hex[:12]}"
-        created.append(start_download_task(new_task_id, album, chapters, options, source=f"retry-unfinished:{task.get('id')}"))
-    append_background_event("download", "重试未完成任务", f"创建 {len(created)} 个重试任务", {"count": len(created)})
-    return json_ok(count=len(created), tasks=created)
+        task_id = task.get("id")
+        retried_task, error = retry_existing_download_task(task_id, task, source=f"retry-unfinished:{task_id}")
+        if error:
+            skipped.append({"task_id": task_id, "error": error})
+        else:
+            retried.append(retried_task)
+    append_background_event(
+        "download",
+        "重试未完成任务",
+        f"重新尝试 {len(retried)} 个任务，跳过 {len(skipped)} 个",
+        {"count": len(retried), "skipped_count": len(skipped)},
+    )
+    return json_ok(count=len(retried), tasks=retried, skipped=skipped)
 
 
 @app.get("/api/downloads/<task_id>")
@@ -2920,6 +2935,27 @@ def stop_worker(worker):
         return
     setattr(worker, "_is_stopped", True)
     setattr(worker, "_is_paused", False)
+
+
+def retry_existing_download_task(task_id, task, source):
+    if not task_id:
+        return None, "任务 ID 缺失"
+    if live_worker(task_id):
+        return None, "任务仍在运行，请稍后重试"
+    chapters = task.get("chapters") or task.get("failed_chapters") or []
+    if not chapters:
+        return None, "没有可重试的失败章节"
+    album = task.get("album") or {"title": task.get("title"), "platform": (task.get("task_info") or {}).get("platform")}
+    options = dict(task.get("options") or {})
+    if not options and task.get("task_info"):
+        info = task.get("task_info") or {}
+        options = {"download_dir": info.get("download_dir"), "quality": info.get("quality"), "voice": info.get("voice_config")}
+    if options.get("voice"):
+        options["voice"] = resolve_voice_for_album(album, options.get("voice"))
+    retried_task = start_download_task(task_id, album, chapters, options, source=source)
+    if retried_task.get("id") != task_id:
+        return None, "失败章节已在其他下载任务中"
+    return retried_task, None
 
 
 @app.post("/api/downloads/<task_id>/pause")
@@ -2981,21 +3017,14 @@ def api_download_retry_failed(task_id):
     task = task_snapshot(task_id)
     if not task:
         return json_error("任务不存在", 404)
-    chapters = task.get("failed_chapters") or []
-    if not chapters and task.get("status") in ("failed", "interrupted", "stopped"):
-        chapters = task.get("chapters") or []
-    if not chapters:
-        return json_error("没有可重试的失败章节")
-    album = task.get("album") or {"title": task.get("title"), "platform": (task.get("task_info") or {}).get("platform")}
-    options = task.get("options") or {}
-    if not options and task.get("task_info"):
-        info = task.get("task_info") or {}
-        options = {"download_dir": info.get("download_dir"), "quality": info.get("quality"), "voice": info.get("voice_config")}
-    if options.get("voice"):
-        options["voice"] = resolve_voice_for_album(album, options.get("voice"))
-    new_task_id = f"retry-{uuid.uuid4().hex[:12]}"
-    new_task = start_download_task(new_task_id, album, chapters, options, source=f"retry:{task_id}")
-    return json_ok(task_id=new_task.get("id") or new_task_id, task=new_task, deduplicated=bool(new_task.get("deduplicated")))
+    if task.get("status") not in ("failed", "partial", "interrupted", "stopped"):
+        return json_error("当前任务状态不可重试", 409)
+    # Re-run the original chapter set so this task keeps coherent totals. The
+    # worker skips valid files that already exist and only downloads the gaps.
+    retried_task, error = retry_existing_download_task(task_id, task, source=f"retry:{task_id}")
+    if error:
+        return json_error(error, 409)
+    return json_ok(task_id=task_id, task=retried_task, retried=True, deduplicated=bool(retried_task.get("deduplicated")))
 
 
 @app.delete("/api/downloads/<task_id>")
@@ -3905,12 +3934,25 @@ def api_delete_cookie(platform):
     return json_ok(deleted=True, platform=platform, config_file=str(cookie_manager.config_file))
 
 
-_COOKIE_EXPORT_PLATFORMS = ["xmly", "lrts", "qidian", "qtfm", "fanqie", "fanqie_tingshu", "qimao", "yuntu", "kuwo", "netease", "lizhi"]
+_COOKIE_EXPORT_PLATFORMS = [
+    "xmly",
+    MOBILE_CREDENTIAL_PLATFORM,
+    "lrts",
+    "qidian",
+    "qtfm",
+    "fanqie",
+    "fanqie_tingshu",
+    "qimao",
+    "yuntu",
+    "kuwo",
+    "netease",
+    "lizhi",
+]
 
 
 @app.get("/api/cookies/export")
 def api_export_cookies():
-    """导出所有平台的明文 Cookie（整个站点已需登录才能访问）。"""
+    """导出所有平台的明文凭证，包括喜马拉雅移动版 V4 凭证。"""
     cookie_manager.load()
     data = {}
     for p in _COOKIE_EXPORT_PLATFORMS:

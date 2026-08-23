@@ -34,6 +34,22 @@ const XMLY_MOBILE_QUALITY_HELP = {
   'M4A 24K': '严格请求移动端 level 0。',
 };
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const input = document.createElement('textarea');
+  input.value = text;
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand('copy');
+  input.remove();
+  if (!copied) throw new Error('浏览器不支持剪贴板写入');
+}
+
 export function Toast({toast}) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -42,16 +58,56 @@ export function Toast({toast}) {
     const timer = setTimeout(() => setVisible(false), 2400);
     return () => clearTimeout(timer);
   }, [toast]);
-  return <div className={`toast ${visible ? 'show' : ''} ${toast?.kind || 'ok'}`}>{toast?.message || ''}</div>;
+  const isError = toast?.kind === 'err';
+  return <div className={`toast ${visible ? 'show' : ''} ${toast?.kind || 'ok'}`} role={isError ? 'alert' : 'status'} aria-live={isError ? 'assertive' : 'polite'} aria-atomic="true">{toast?.message || ''}</div>;
 }
 
 export function Modal({modal, onClose}) {
+  const dialogRef = useRef(null);
+  const previousFocusRef = useRef(null);
+  useEffect(() => {
+    if (!modal) return undefined;
+    previousFocusRef.current = document.activeElement;
+    const dialog = dialogRef.current;
+    const title = dialog?.querySelector('.modal-title');
+    if (title) title.id = 'audioflow-modal-title';
+    const focusable = () => [...(dialog?.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
+    (focusable()[0] || dialog)?.focus();
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape' && modal.close !== false) {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) {
+        event.preventDefault();
+        dialog?.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previousFocusRef.current?.focus?.();
+    };
+  }, [modal, onClose]);
   if (!modal) return null;
   return (
     <div className="modal-backdrop show" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="modal">
+      <div className="modal" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="audioflow-modal-title" aria-label="操作对话框" tabIndex={-1}>
         {modal.close !== false && (
-          <button className="modal-close-btn" onClick={onClose} title="关闭">
+          <button className="modal-close-btn" onClick={onClose} title="关闭" aria-label="关闭对话框">
             <Icon id="i-close" className="icon icon-sm" />
           </button>
         )}
@@ -78,24 +134,24 @@ export function LoginModal({onSubmit, error, loading}) {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   return (
-    <div className="login-overlay show">
+    <div className="login-overlay show" role="dialog" aria-modal="true" aria-labelledby="audioflow-login-title">
       <form className="login-card" onSubmit={(event) => { event.preventDefault(); onSubmit({username, password}); }}>
         <div className="login-brand">
           <div className="login-logo"><AppLogo /></div>
           <div>
-            <div className="login-title">AudioFlow</div>
+            <div className="login-title" id="audioflow-login-title">AudioFlow</div>
             <div className="login-sub">登录后继续管理下载与订阅</div>
           </div>
         </div>
         <label className="login-field">
           <span>账号</span>
-          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus />
         </label>
         <label className="login-field">
           <span>密码</span>
           <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="默认密码 admin" />
         </label>
-        <div className="login-error">{error}</div>
+        <div className="login-error" role="alert" aria-live="polite">{error}</div>
         <button className="btn btn-primary login-submit" disabled={loading} type="submit">{loading ? '登录中...' : '登录'}</button>
         <div className="login-hint">默认账号 admin，默认密码 admin。登录后请在系统设置中修改密码。</div>
       </form>
@@ -193,7 +249,7 @@ export function ChapterList({chapters, selected, onToggle, onPlay, mobile = fals
             <span className="chapter-index">{chapter.order_num || index + 1}</span>
             <span className="chapter-title" title={title}>{title}</span>
             <span className="chapter-duration">{fmtDuration(chapter.duration || chapter.duration_sec)}</span>
-            <button className="icon-btn" onClick={(event) => { event.stopPropagation(); onPlay(chapter); }} title="试听"><Icon id="i-play" /></button>
+            <button className="icon-btn" onClick={(event) => { event.stopPropagation(); onPlay(chapter); }} title="试听" aria-label={`试听 ${chapterTitle(chapter)}`}><Icon id="i-play" /></button>
           </div>
         );
       })}
@@ -313,7 +369,7 @@ export function AlbumDetail({app, mobile = false}) {
   );
 }
 
-export function DownloadsPage({app}) {
+export function DownloadsPage({app, onNavigate}) {
   const {downloads, downloadPagination, downloadStatusFilter, metrics, actions, setModal, closeModal, busy} = app;
   const confirmDelete = (id) => setModal({content: <ConfirmModal icon="i-trash" title="清除任务记录" message="只清除历史记录，不会删除已下载文件。" okText="清除" danger onClose={closeModal} onOk={() => { closeModal(); actions.deleteDownload(id); }} />});
   const confirmCleanup = (statuses) => setModal({content: <ConfirmModal icon="i-trash" title="批量清理任务" message="将清理符合条件的历史任务记录，不会删除已下载文件。" okText="清理" danger onClose={closeModal} onOk={() => { closeModal(); actions.cleanupDownloads(statuses); }} />});
@@ -339,21 +395,30 @@ export function DownloadsPage({app}) {
         <div className="metric"><div className="metric-label">失败</div><div className="metric-value">{metrics.failedDownloads}</div><div className="metric-foot">失败 / 部分完成</div></div>
         <div className="metric"><div className="metric-label">合计</div><div className="metric-value">{pg.total}</div><div className="metric-foot">所有任务</div></div>
       </div>
-      <div className="glass glass-pad compact-tools">
-        <div className="seg-control" style={{marginRight: 'auto'}}>
+      <div className="glass glass-pad download-controls">
+        <div className="download-controls-main">
+        <div className="seg-control">
           {STATUS_FILTERS.map((f) => (
             <button key={f.key} className={downloadStatusFilter === f.key ? 'active' : ''} onClick={() => actions.loadDownloads(1, f.key)}>{f.label}</button>
           ))}
         </div>
+        <div className="download-primary-actions">
+        <button className="btn btn-primary btn-sm" disabled={busy.retryUnfinishedDownloads || (!metrics.failedDownloads && !metrics.interruptedDownloads)} onClick={actions.retryUnfinishedDownloads}><BusyIcon busy={busy.retryUnfinishedDownloads} icon="i-refresh" />重试未完成</button>
         {hasRunning && <button className="btn btn-ghost btn-sm" disabled={busy['batchDownload:pause']} onClick={() => actions.batchControlDownloads('pause')}><BusyIcon busy={busy['batchDownload:pause']} icon="i-pause" />全部暂停</button>}
+        </div>
+        </div>
+        <details className="secondary-actions">
+          <summary><Icon id="i-more" className="icon icon-sm" />更多操作</summary>
+          <div className="secondary-actions-menu">
         {hasStoppable && <button className="btn btn-danger btn-sm" disabled={busy['batchDownload:stop']} onClick={() => actions.batchControlDownloads('stop')}><BusyIcon busy={busy['batchDownload:stop']} icon="i-close" />全部停止</button>}
         <button className="btn btn-ghost btn-sm" disabled={busy.cleanupDownloads} onClick={() => confirmCleanup(['completed'])}><BusyIcon busy={busy.cleanupDownloads} icon="i-trash" />清理已完成</button>
         <button className="btn btn-ghost btn-sm" disabled={busy.cleanupDownloads} onClick={() => confirmCleanup(['failed', 'partial', 'interrupted', 'stopped'])}><Icon id="i-trash" className="icon icon-sm" />清理失败/中断</button>
-        <button className="btn btn-primary btn-sm" disabled={busy.retryUnfinishedDownloads} onClick={actions.retryUnfinishedDownloads}><BusyIcon busy={busy.retryUnfinishedDownloads} icon="i-refresh" />重试未完成</button>
+          </div>
+        </details>
       </div>
       <div id="downloadList">
         {!downloads.length
-          ? <div className="empty"><Icon id="i-download" />{pg.total ? '该筛选条件下暂无任务' : '暂无下载任务'}</div>
+          ? <div className="empty empty-action"><Icon id="i-download" /><span>{pg.total ? '该筛选条件下暂无任务' : '暂无下载任务'}</span><button className="btn btn-primary btn-sm" onClick={pg.total ? () => actions.loadDownloads(1, 'all') : onNavigate}>{pg.total ? '清除筛选' : '前往搜索'}</button></div>
           : downloads.map((task) => <TaskCard key={task.id} task={task} actions={actions} busy={busy} onDelete={confirmDelete} />)}
       </div>
       {pg.total_pages > 1 && (
@@ -452,9 +517,9 @@ export function PersonalPage({app, mobile = false}) {
         </div>
       </div>
       <div className="personal-auth-actions">
-        {platformMeta.qr && <button className="icon-btn personal-auth-btn primary" onClick={openPersonalLogin} title={platformMeta.qr === 'lrts' ? '验证码登录' : '扫码登录'}><Icon id={platformMeta.qr === 'lrts' ? 'i-mobile' : 'i-qr'} /></button>}
-        {platform !== 'lrts' && <button className="icon-btn personal-auth-btn" onClick={openPersonalCookieScript} title="手动输入 Cookie"><Icon id="i-globe" /></button>}
-        {personalLoggedIn && <button className="icon-btn personal-auth-btn danger" onClick={deletePersonalCookie} title="删除个人中心登录"><Icon id="i-trash" /></button>}
+        {platformMeta.qr && <button className="icon-btn personal-auth-btn primary" onClick={openPersonalLogin} title={platformMeta.qr === 'lrts' ? '验证码登录' : '扫码登录'} aria-label={platformMeta.qr === 'lrts' ? '验证码登录' : '扫码登录'}><Icon id={platformMeta.qr === 'lrts' ? 'i-mobile' : 'i-qr'} /></button>}
+        {platform !== 'lrts' && <button className="icon-btn personal-auth-btn" onClick={openPersonalCookieScript} title="手动输入 Cookie" aria-label="手动输入 Cookie"><Icon id="i-globe" /></button>}
+        {personalLoggedIn && <button className="icon-btn personal-auth-btn danger" onClick={deletePersonalCookie} title="删除个人中心登录" aria-label="删除个人中心登录"><Icon id="i-trash" /></button>}
       </div>
     </div>
   );
@@ -538,24 +603,55 @@ function TaskCard({task, actions, busy, onDelete}) {
   const canRetry = failedCount > 0 || ['failed', 'partial', 'interrupted', 'stopped'].includes(status);
   const canDelete = !['queued', 'running', 'paused'].includes(status);
   const busyPrefix = `download:${task.id}:`;
+  const hasDiagnostics = Boolean(task.failure_reason || task.error || task.warning || task.failed_chapters?.length);
+  const diagnosticsText = JSON.stringify({
+    task_id: task.id,
+    title: task.title || '',
+    status,
+    progress: `${task.completed || 0}/${task.total || 0}`,
+    failed_count: failedCount,
+    failure_reason: task.failure_reason || '',
+    error: task.error || '',
+    warning: task.warning || '',
+    failed_chapters: task.failed_chapters || [],
+  }, null, 2);
+  const copyDiagnostics = async () => {
+    try {
+      await copyText(diagnosticsText);
+      actions.showToast('已复制任务诊断信息', 'ok');
+    } catch (error) {
+      actions.showToast('复制失败：' + error.message, 'err');
+    }
+  };
   return (
     <div className="task-card">
       <div className="task-head"><div className="task-title" title={task.title || task.id}>{task.title || task.id}</div><span className={`task-state state-${status}`}>{taskStatusText(status)}</span></div>
       <div className="progress-bar"><div className="progress-fill" style={{width: `${pct}%`}} /></div>
-      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{failedCount > 0 ? <span style={{color: 'var(--danger)'}}>失败 {failedCount} 章</span> : null}{task.failure_reason ? <span style={{color: 'var(--warning)'}}>原因：{task.failure_reason}</span> : null}{task.error ? <span style={{color: 'var(--danger)'}}>{task.error}</span> : null}</div>
-      {task.warning ? <div className="task-meta"><span style={{color: 'var(--warning)'}}>{task.warning}</span></div> : null}
+      <div className="task-meta"><span>{task.completed || 0}/{task.total || 0} 章</span><span>{pct}%</span>{failedCount > 0 ? <span style={{color: 'var(--danger)'}}>失败 {failedCount} 章</span> : null}</div>
+      {hasDiagnostics && (
+        <details className="task-error-details">
+          <summary><Icon id="i-alert" className="icon icon-sm" />查看失败详情</summary>
+          <div className="task-error-content">
+            {task.failure_reason && <p><strong>失败原因</strong>{task.failure_reason}</p>}
+            {task.error && <p><strong>错误信息</strong>{task.error}</p>}
+            {task.warning && <p><strong>提示</strong>{task.warning}</p>}
+            {task.failed_chapters?.length ? <pre>{JSON.stringify(task.failed_chapters, null, 2)}</pre> : null}
+            <button className="btn btn-ghost btn-tiny" type="button" onClick={copyDiagnostics}><Icon id="i-copy" className="icon icon-sm" />复制诊断信息</button>
+          </div>
+        </details>
+      )}
       <div className="task-actions">
         {canPause && <button className="btn btn-ghost btn-tiny" disabled={busy[`${busyPrefix}pause`]} onClick={() => actions.controlDownload(task.id, 'pause')}><BusyIcon busy={busy[`${busyPrefix}pause`]} icon="i-pause" />暂停</button>}
         {canResume && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}resume`]} onClick={() => actions.controlDownload(task.id, 'resume')}><BusyIcon busy={busy[`${busyPrefix}resume`]} icon="i-play" />继续</button>}
         {canStop && <button className="btn btn-danger btn-tiny" disabled={busy[`${busyPrefix}stop`]} onClick={() => actions.controlDownload(task.id, 'stop')}><BusyIcon busy={busy[`${busyPrefix}stop`]} icon="i-close" />停止</button>}
-        {canRetry && <button className="btn btn-ghost btn-tiny" disabled={busy[`${busyPrefix}retry-failed`]} onClick={() => actions.controlDownload(task.id, 'retry-failed')}><BusyIcon busy={busy[`${busyPrefix}retry-failed`]} icon="i-refresh" />重试失败</button>}
-        {canDelete && <button className="btn btn-ghost btn-tiny" onClick={() => onDelete(task.id)}><Icon id="i-trash" className="icon icon-sm" />清除记录</button>}
+        {canRetry && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}retry-failed`]} onClick={() => actions.controlDownload(task.id, 'retry-failed')}><BusyIcon busy={busy[`${busyPrefix}retry-failed`]} icon="i-refresh" />重试失败</button>}
+        {canDelete && <button className="btn btn-ghost btn-tiny task-record-action" onClick={() => onDelete(task.id)}><Icon id="i-trash" className="icon icon-sm" />清除记录</button>}
       </div>
     </div>
   );
 }
 
-export function SubscriptionsPage({app}) {
+export function SubscriptionsPage({app, onNavigate}) {
   const {subscriptions, subscriptionSettings, subscriptionScheduler = {}, subscriptionJobs, actions, setModal, closeModal, busy} = app;
   const [enabled, setEnabled] = useState(true);
   const [autoDownload, setAutoDownload] = useState(true);
@@ -612,37 +708,16 @@ export function SubscriptionsPage({app}) {
   };
   return (
     <>
-      <div className="glass glass-pad subscription-controls">
-        <div className="sub-controls-settings">
-        <div className="subscription-control-group">
-          <span className="control-group-title">订阅检测</span>
-          <label className="check-row"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>启用自动检测</span></label>
-          <label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span>发现缺失后自动下载</span></label>
-          <label className="check-row interval-row"><span>检测间隔（小时）</span><input className="field-input interval-input" type="number" min="1" max="720" value={hours} onChange={(e) => setHours(e.target.value)} /></label>
-        </div>
-        <div className="subscription-control-group">
-          <span className="control-group-title">个人订阅同步</span>
-          <label className="check-row"><input type="checkbox" checked={personalSyncEnabled} onChange={(e) => setPersonalSyncEnabled(e.target.checked)} /><span>同步喜马拉雅个人订阅</span></label>
-          <label className="check-row interval-row">
-            <span>同步频率</span>
-            <input className="field-input interval-input" type="number" min="1" max="43200" value={personalSyncInterval} onChange={(e) => setPersonalSyncInterval(e.target.value)} />
-            <select className="field-select interval-input" value={personalSyncUnit} onChange={(e) => setPersonalSyncUnit(e.target.value)}>
-              <option value="minutes">分钟</option>
-              <option value="hours">小时</option>
-            </select>
-          </label>
-        </div>
-        </div>
-        <div className="sub-controls-actions">
-        <button className="btn btn-primary btn-sm" disabled={busy.subscriptionSettings} onClick={saveSettings}><BusyIcon busy={busy.subscriptionSettings} icon="i-check" />保存</button>
-        <button className="btn btn-ghost btn-sm" disabled={busy.runSubscriptions} onClick={actions.runSubscriptionsNow}><BusyIcon busy={busy.runSubscriptions} icon="i-refresh" />立即检测并补全</button>
-        <button className="btn btn-ghost btn-sm" disabled={busy.personalSubscriptionSync} onClick={actions.runPersonalSubscriptionSyncNow}><BusyIcon busy={busy.personalSubscriptionSync} icon="i-refresh" />立即同步个人订阅</button>
-        <button className="btn btn-ghost btn-sm" disabled={busy.rebuildIndex} onClick={actions.rebuildSubscriptionIndex}><BusyIcon busy={busy.rebuildIndex} icon="i-folder" />重建本地索引</button>
-        <button className="btn btn-ghost btn-sm" disabled={busy['subscriptionBatch:check']} onClick={() => actions.batchSubscriptions('check', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:check']} icon="i-refresh" />批量检测</button>
-        <button className="btn btn-primary btn-sm" disabled={busy['subscriptionBatch:complete']} onClick={() => actions.batchSubscriptions('complete', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:complete']} icon="i-download" />批量补全</button>
-        <button className="btn btn-danger btn-sm" disabled={busy['subscriptionBatch:cancel']} onClick={cancelAll}><BusyIcon busy={busy['subscriptionBatch:cancel']} icon="i-trash" />批量取消</button>
-        <button className="btn btn-ghost btn-sm" onClick={doExportSubs}><Icon id="i-download" className="icon icon-sm" />导出订阅</button>
-        <button className="btn btn-ghost btn-sm" disabled={busy.importSubscriptions} onClick={() => setModal({content: <SubscriptionImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入订阅</button>
+      <div className="glass glass-pad subscription-overview">
+        <div className="subscription-overview-main">
+          <div>
+            <strong>{subscriptions.length} 个订阅专辑</strong>
+            <span>{schedulerRunning ? '正在检测更新' : schedulerStarted ? '自动检测已就绪' : '自动检测尚未启动'}</span>
+          </div>
+          <div className="subscription-primary-actions">
+            <button className="btn btn-ghost btn-sm" disabled={busy.runSubscriptions} onClick={actions.runSubscriptionsNow}><BusyIcon busy={busy.runSubscriptions} icon="i-refresh" />立即检测</button>
+            <button className="btn btn-primary btn-sm" disabled={!subscriptions.length || busy['subscriptionBatch:complete']} onClick={() => actions.batchSubscriptions('complete', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:complete']} icon="i-download" />批量补全</button>
+          </div>
         </div>
         <div className="subscription-scheduler">
           <span className={schedulerStarted ? 'ok' : 'muted'}>调度器：{schedulerRunning ? '检测中' : schedulerStarted ? '待命' : '未启动'}</span>
@@ -655,7 +730,7 @@ export function SubscriptionsPage({app}) {
         </div>
       </div>
       <div className="sub-grid">
-        {!subscriptions.length ? <div className="empty"><Icon id="i-star" />暂无订阅<br />在专辑详情点击"订阅追更"</div> : subscriptions.map((sub) => {
+        {!subscriptions.length ? <div className="empty empty-action"><Icon id="i-star" /><span>暂无订阅，在专辑详情可添加追更</span><button className="btn btn-primary btn-sm" onClick={onNavigate}>前往搜索</button></div> : subscriptions.map((sub) => {
           const album = sub.album || sub;
           const stats = sub.stats || {};
           const activeJob = Object.values(subscriptionJobs).find((job) => job.sid === sub.id && ['queued', 'running'].includes(job.status));
@@ -706,6 +781,45 @@ export function SubscriptionsPage({app}) {
           );
         })}
       </div>
+      <details className="glass subscription-options">
+        <summary><span><Icon id="i-settings" />自动化设置</span><small>检测频率、自动下载与个人订阅同步</small></summary>
+        <div className="subscription-options-body">
+          <div className="subscription-settings-grid">
+            <div className="subscription-control-group">
+              <span className="control-group-title">订阅检测</span>
+              <label className="check-row"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /><span>启用自动检测</span></label>
+              <label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span>发现缺失后自动下载</span></label>
+              <label className="check-row interval-row"><span>检测间隔（小时）</span><input className="field-input interval-input" type="number" min="1" max="720" value={hours} onChange={(e) => setHours(e.target.value)} /></label>
+            </div>
+            <div className="subscription-control-group">
+              <span className="control-group-title">个人订阅同步</span>
+              <label className="check-row"><input type="checkbox" checked={personalSyncEnabled} onChange={(e) => setPersonalSyncEnabled(e.target.checked)} /><span>同步喜马拉雅个人订阅</span></label>
+              <label className="check-row interval-row">
+                <span>同步频率</span>
+                <input className="field-input interval-input" type="number" min="1" max="43200" value={personalSyncInterval} onChange={(e) => setPersonalSyncInterval(e.target.value)} />
+                <select className="field-select interval-input" value={personalSyncUnit} onChange={(e) => setPersonalSyncUnit(e.target.value)}>
+                  <option value="minutes">分钟</option>
+                  <option value="hours">小时</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div className="subscription-options-actions">
+            <button className="btn btn-primary btn-sm" disabled={busy.subscriptionSettings} onClick={saveSettings}><BusyIcon busy={busy.subscriptionSettings} icon="i-check" />保存设置</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy.personalSubscriptionSync} onClick={actions.runPersonalSubscriptionSyncNow}><BusyIcon busy={busy.personalSubscriptionSync} icon="i-refresh" />立即同步个人订阅</button>
+          </div>
+        </div>
+      </details>
+      <details className="glass subscription-options subscription-maintenance">
+        <summary><span><Icon id="i-more" />数据与批量操作</span><small>导入导出、索引维护与取消订阅</small></summary>
+        <div className="subscription-options-body subscription-maintenance-actions">
+          <button className="btn btn-ghost btn-sm" disabled={busy.rebuildIndex} onClick={actions.rebuildSubscriptionIndex}><BusyIcon busy={busy.rebuildIndex} icon="i-folder" />重建本地索引</button>
+          <button className="btn btn-ghost btn-sm" disabled={!subscriptions.length || busy['subscriptionBatch:check']} onClick={() => actions.batchSubscriptions('check', subscriptions.map((item) => item.id))}><BusyIcon busy={busy['subscriptionBatch:check']} icon="i-refresh" />批量检测</button>
+          <button className="btn btn-ghost btn-sm" disabled={!subscriptions.length} onClick={doExportSubs}><Icon id="i-download" className="icon icon-sm" />导出订阅</button>
+          <button className="btn btn-ghost btn-sm" disabled={busy.importSubscriptions} onClick={() => setModal({content: <SubscriptionImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入订阅</button>
+          <button className="btn btn-danger btn-sm" disabled={!subscriptions.length || busy['subscriptionBatch:cancel']} onClick={cancelAll}><BusyIcon busy={busy['subscriptionBatch:cancel']} icon="i-trash" />批量取消</button>
+        </div>
+      </details>
     </>
   );
 }
@@ -770,17 +884,17 @@ export function CookiesPage({app}) {
   const doExport = async (mode) => {
     try {
       const data = await actions.exportCookies();
-      if (!Object.keys(data || {}).length) { actions.showToast('当前没有可导出的 Cookie', 'err'); return; }
+      if (!Object.keys(data || {}).length) { actions.showToast('当前没有可导出的平台凭证', 'err'); return; }
       const text = JSON.stringify(data, null, 2);
       if (mode === 'copy') {
-        await navigator.clipboard.writeText(text);
-        actions.showToast('已复制全部 Cookie 到剪贴板', 'ok');
+        await copyText(text);
+        actions.showToast('已复制全部平台凭证到剪贴板', 'ok');
       } else {
         const blob = new Blob([text], {type: 'application/json'});
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `audioflow-cookies-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `audioflow-credentials-${new Date().toISOString().slice(0, 10)}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();

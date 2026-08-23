@@ -13,6 +13,7 @@ class SubscriptionJobsTest(unittest.TestCase):
         web_server.subscription_jobs.clear()
         with web_server.task_lock:
             web_server.tasks.clear()
+            web_server.task_workers.clear()
 
     def test_cleanup_marks_stale_running_job_failed(self):
         web_server.subscription_jobs["job-1"] = {
@@ -58,6 +59,93 @@ class SubscriptionJobsTest(unittest.TestCase):
 
         self.assertEqual(task["id"], "active-same")
         self.assertTrue(task["deduplicated"])
+
+    def test_retry_failed_reuses_original_task(self):
+        task_id = "failed-task"
+        album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
+        failed_chapter = {"id": "track-1", "title": "Chapter 1", "_error": "timeout"}
+        successful_chapter = {"id": "track-2", "title": "Chapter 2"}
+        with web_server.task_lock:
+            web_server.tasks[task_id] = {
+                "id": task_id,
+                "status": "partial",
+                "album": album,
+                "chapters": [failed_chapter, successful_chapter],
+                "failed_chapters": [failed_chapter],
+                "success_chapters": [successful_chapter],
+                "options": {"download_dir": "downloads"},
+                "success": 1,
+                "failed": 1,
+                "error": "timeout",
+                "failure_reason": "network",
+                "created_at": 123,
+                "finished_at": 456,
+            }
+
+        with (
+            web_server.app.test_request_context(),
+            mock.patch.object(web_server, "save_tasks"),
+            mock.patch.object(web_server, "_write_album_source_file"),
+            mock.patch.object(web_server.threading, "Thread") as thread,
+        ):
+            response = web_server.api_download_retry_failed(task_id)
+
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["task_id"], task_id)
+        self.assertEqual(set(web_server.tasks), {task_id})
+        retried = web_server.tasks[task_id]
+        self.assertEqual(retried["status"], "queued")
+        self.assertEqual(retried["created_at"], 123)
+        self.assertEqual(retried["chapters"], [failed_chapter, successful_chapter])
+        self.assertEqual(retried["total"], 2)
+        self.assertEqual(retried["success"], 0)
+        self.assertEqual(retried["failed"], 0)
+        self.assertEqual(retried["failed_chapters"], [])
+        self.assertEqual(retried["error"], "")
+        self.assertIsNone(retried["finished_at"])
+        thread.return_value.start.assert_called_once_with()
+
+    def test_retry_unfinished_reuses_each_original_task(self):
+        with web_server.task_lock:
+            web_server.tasks.update({
+                "failed-one": {
+                    "id": "failed-one",
+                    "status": "failed",
+                    "album": {"id": "album-1", "title": "One", "platform": "Ximalaya"},
+                    "chapters": [{"id": "track-1", "title": "Chapter 1"}],
+                    "options": {"download_dir": "downloads"},
+                    "created_at": 101,
+                },
+                "partial-two": {
+                    "id": "partial-two",
+                    "status": "partial",
+                    "album": {"id": "album-2", "title": "Two", "platform": "Ximalaya"},
+                    "chapters": [{"id": "track-2", "title": "Chapter 2"}],
+                    "failed_chapters": [{"id": "track-2", "title": "Chapter 2"}],
+                    "options": {"download_dir": "downloads"},
+                    "created_at": 202,
+                },
+            })
+
+        with (
+            web_server.app.test_request_context(),
+            mock.patch.object(web_server, "save_tasks"),
+            mock.patch.object(web_server, "_write_album_source_file"),
+            mock.patch.object(web_server, "append_background_event"),
+            mock.patch.object(web_server.threading, "Thread") as thread,
+        ):
+            response = web_server.api_retry_unfinished_downloads()
+
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["skipped"], [])
+        self.assertEqual(set(web_server.tasks), {"failed-one", "partial-two"})
+        self.assertTrue(all(task["status"] == "queued" for task in web_server.tasks.values()))
+        self.assertEqual(web_server.tasks["failed-one"]["created_at"], 101)
+        self.assertEqual(web_server.tasks["partial-two"]["created_at"], 202)
+        self.assertEqual(thread.call_count, 2)
 
     def test_subscription_job_dedupes_same_album_regardless_of_mode(self):
         with mock.patch.object(web_server.threading, "Thread") as thread:

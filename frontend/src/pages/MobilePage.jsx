@@ -33,7 +33,7 @@ const VIEW_META = {
   discover: {title: '发现', subtitle: '跨平台搜索有声书', icon: 'i-search'},
   downloads: {title: '下载', subtitle: '任务队列与进度', icon: 'i-download'},
   subscriptions: {title: '订阅', subtitle: '追更与自动补全', icon: 'i-bookmark'},
-  cookies: {title: 'Cookie', subtitle: '平台登录态管理', icon: 'i-cookie', parent: 'more'},
+  cookies: {title: '账号管理', subtitle: '平台凭证与登录状态', icon: 'i-cookie', parent: 'more'},
   personal: {title: '个人中心', subtitle: '历史、收藏与书架', icon: 'i-user'},
   notifications: {title: '通知', subtitle: '下载、订阅与系统推送', icon: 'i-bell', parent: 'more'},
   themes: {title: '主题', subtitle: '界面主题与外观', icon: 'i-palette', parent: 'more'},
@@ -42,7 +42,7 @@ const VIEW_META = {
 };
 
 function MobileHeader({app, installable, switchView, searchAndShowResults}) {
-  const {mobileView, query, setQuery, platform, setPlatform, busy, actions} = app;
+  const {mobileView, query, setQuery, platform, setPlatform, busy, actions, status, serviceState} = app;
   const meta = VIEW_META[mobileView] || VIEW_META.discover;
   const showBack = Boolean(meta.parent);
   const title = meta.title;
@@ -55,12 +55,13 @@ function MobileHeader({app, installable, switchView, searchAndShowResults}) {
           <span>AudioFlow</span>
         </button>
         <div className="native-top-actions">
-          <button className="native-icon-btn" onClick={() => switchView('settings')} title="系统设置"><Icon id="i-settings" /></button>
+          <button className={`native-service-btn state-${serviceState}`} type="button" disabled={serviceState === 'checking'} onClick={() => actions.checkServiceConnection({reload: true})} aria-label={`服务状态：${status}，点击重新检测`}><span />{status}</button>
+          <button className="native-icon-btn" onClick={() => switchView('settings')} title="系统设置" aria-label="系统设置"><Icon id="i-settings" /></button>
         </div>
       </div>
 
       <div className="native-title-row">
-        {showBack && <button className="native-back" onClick={() => switchView(meta.parent)}><Icon id="i-arrow-left" /></button>}
+        {showBack && <button className="native-back" onClick={() => switchView(meta.parent)} aria-label={`返回${VIEW_META[meta.parent]?.title || '上一级'}`}><Icon id="i-arrow-left" /></button>}
         <div className="native-title-copy">
           <h1>{title}</h1>
           <p>{meta.subtitle}</p>
@@ -158,7 +159,7 @@ function DiscoverView({app, switchView, searchAndShowResults}) {
 function MoreView({app, installable, switchView}) {
   const {metrics, subscriptions, config, status, actions} = app;
   const cards = [
-    {id: 'cookies', icon: 'i-cookie', title: 'Cookie 管理', sub: '扫码、浏览器抓取、手动粘贴'},
+    {id: 'cookies', icon: 'i-cookie', title: '账号管理', sub: '平台凭证、扫码登录与手动录入'},
     {id: 'notifications', icon: 'i-bell', title: '通知系统', sub: '下载、订阅与外部推送'},
     {id: 'themes', icon: 'i-palette', title: '主题外观', sub: '界面主题与配色'},
     {id: 'settings', icon: 'i-settings', title: '系统设置', sub: '目录、音质、日志'},
@@ -207,8 +208,8 @@ function MoreView({app, installable, switchView}) {
 function RoutedContent({app, installable, switchView, searchAndShowResults}) {
   const {mobileView} = app;
   if (mobileView === 'discover') return <DiscoverView app={app} switchView={switchView} searchAndShowResults={searchAndShowResults} />;
-  if (mobileView === 'downloads') return <section className="view native-view active"><DownloadsPage app={app} /></section>;
-  if (mobileView === 'subscriptions') return <section className="view native-view active"><SubscriptionsPage app={app} /></section>;
+  if (mobileView === 'downloads') return <section className="view native-view active"><DownloadsPage app={app} onNavigate={() => switchView('discover')} /></section>;
+  if (mobileView === 'subscriptions') return <section className="view native-view active"><SubscriptionsPage app={app} onNavigate={() => switchView('discover')} /></section>;
   if (mobileView === 'cookies') return <section className="view native-view active"><CookiesPage app={app} /></section>;
   if (mobileView === 'personal') return <section className="view native-view active"><PersonalPage app={app} mobile /></section>;
   if (mobileView === 'notifications') return <section className="view native-view active"><NotificationsPage app={app} /></section>;
@@ -222,6 +223,9 @@ export default function MobilePage() {
   const [installable, setInstallable] = useState(false);
   const {mobileView, setMobileView, actions} = app;
   useEffect(() => setupInstallPrompt(setInstallable), []);
+  useEffect(() => {
+    requestAnimationFrame(() => window.scrollTo({top: 0, left: 0, behavior: 'auto'}));
+  }, [mobileView]);
 
   const activeTab = useMemo(() => {
     const meta = VIEW_META[mobileView];
@@ -231,14 +235,15 @@ export default function MobilePage() {
   const switchView = (id) => {
     const next = id === 'accounts' ? 'cookies' : id;
     setMobileView(next);
-    if (next === 'downloads') actions.loadDownloads();
-    if (next === 'subscriptions') actions.loadSubscriptions();
-    if (next === 'cookies') actions.loadCookies();
-    if (next === 'notifications') actions.loadNotifications();
+    requestAnimationFrame(() => window.scrollTo({top: 0, left: 0, behavior: 'auto'}));
+    if (next === 'downloads') actions.loadDownloads().catch(() => {});
+    if (next === 'subscriptions') actions.loadSubscriptions().catch(() => {});
+    if (next === 'cookies') actions.loadCookies().catch(() => {});
+    if (next === 'notifications') actions.loadNotifications().catch(() => {});
     if (next === 'settings') {
-      actions.loadConfig();
-      actions.loadLogs(100);
-      actions.loadEvents();
+      actions.loadConfig().catch(() => {});
+      actions.loadLogs(100).catch(() => {});
+      actions.loadEvents().catch(() => {});
     }
   };
 
@@ -258,9 +263,9 @@ export default function MobilePage() {
       {app.selectedAlbum && (
         <div className="detail-page show native-detail-page">
           <div className="detail-head">
-            <button className="icon-btn" onClick={app.actions.closeAlbum}><Icon id="i-arrow-left" /></button>
+            <button className="icon-btn" onClick={app.actions.closeAlbum} aria-label="返回搜索结果"><Icon id="i-arrow-left" /></button>
             <div className="title">专辑详情</div>
-            <button className="icon-btn" onClick={() => { app.actions.closeAlbum(); switchView('more'); }} title="更多"><Icon id="i-more" /></button>
+            <button className="icon-btn" onClick={() => { app.actions.closeAlbum(); switchView('more'); }} title="更多" aria-label="打开更多功能"><Icon id="i-more" /></button>
           </div>
           <AlbumDetail app={app} mobile />
         </div>

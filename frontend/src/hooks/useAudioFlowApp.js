@@ -168,7 +168,7 @@ export function useAudioFlowApp() {
   const [config, setConfig] = useState({});
   const [logs, setLogs] = useState([]);
   const [events, setEvents] = useState([]);
-  const [status, setStatus] = useState('就绪');
+  const [serviceState, setServiceState] = useState('checking');
   const [busy, setBusy] = useState({});
   const [diagnostics, setDiagnostics] = useState(null);
   const [toast, setToastState] = useState(null);
@@ -182,6 +182,15 @@ export function useAudioFlowApp() {
   const audioRef = useRef(null);
   const prevDownloadStatusRef = useRef({});
   const foregroundRefreshRef = useRef(0);
+  const hasCachedDataRef = useRef(downloads.length > 0 || subscriptions.length > 0);
+  const initializedRef = useRef(false);
+
+  const status = useMemo(() => ({
+    checking: '检测中',
+    online: '在线',
+    offline: '离线',
+    cached: '缓存数据',
+  }[serviceState] || '离线'), [serviceState]);
 
   const showToast = useCallback((message, kind = 'ok') => {
     setToastState({message, kind, id: Date.now()});
@@ -256,6 +265,7 @@ export function useAudioFlowApp() {
     if (data.summary) setDownloadSummary(data.summary);
     if (status !== undefined && status !== downloadStatusFilter) setDownloadStatusFilter(useStatus);
     saveCachedList(DOWNLOADS_CACHE_KEY, tasks);
+    if (tasks.length) hasCachedDataRef.current = true;
     prevDownloadStatusRef.current = Object.fromEntries(tasks.map((t) => [t.id, t.status]));
     return tasks;
   }, [downloadStatusFilter]);
@@ -300,6 +310,7 @@ export function useAudioFlowApp() {
     const activeItems = (data.subscriptions || []).filter((item) => (item.status || 'active') === 'active');
     setSubscriptions(activeItems);
     saveCachedList(SUBSCRIPTIONS_CACHE_KEY, activeItems);
+    if (activeItems.length) hasCachedDataRef.current = true;
     setSubscriptionSettings(data.settings || {});
     setSubscriptionScheduler(data.scheduler || {});
     return activeItems;
@@ -342,7 +353,7 @@ export function useAudioFlowApp() {
     if (key && !NO_COOKIE_KEYS.includes(key) && !(info.has_cookie || info.has_server)) {
       showToast(platform + ' 需要先在账号管理中登录或设置 Cookie', 'err');
       setPage('cookies');
-      setMobileView('accounts');
+      setMobileView('cookies');
       return false;
     }
     return true;
@@ -363,12 +374,9 @@ export function useAudioFlowApp() {
     pushSearchHistory(keyword);
     setSearchHistory(loadSearchHistory());
     await runBusy('search', async () => {
-      setStatus('搜索中');
       const data = await api('/api/search?q=' + encodeURIComponent(keyword) + '&platform=' + encodeURIComponent(platform));
       setResults(data.results || []);
-      setStatus('就绪');
     }).catch((error) => {
-      setStatus('错误');
       showToast('搜索失败：' + error.message, 'err');
     });
   }, [ensurePlatformLogin, platform, query, runBusy, showToast]);
@@ -582,8 +590,8 @@ export function useAudioFlowApp() {
 
   const controlDownload = useCallback(async (id, action) => {
     await runBusy('download:' + id + ':' + action, async () => {
-      const data = await api('/api/downloads/' + encodeURIComponent(id) + '/' + action, {method: 'POST'});
-      showToast(action === 'retry-failed' ? '已创建重试任务 ' + (data.task_id || '') : '操作已发送', 'ok');
+      await api('/api/downloads/' + encodeURIComponent(id) + '/' + action, {method: 'POST'});
+      showToast(action === 'retry-failed' ? '已重新尝试该任务' : '操作已发送', 'ok');
       loadDownloads();
     }).catch((error) => {
       showToast(error.message, 'err');
@@ -625,7 +633,7 @@ export function useAudioFlowApp() {
   const retryUnfinishedDownloads = useCallback(async () => {
     await runBusy('retryUnfinishedDownloads', async () => {
       const data = await api('/api/downloads/retry-unfinished', {method: 'POST'});
-      showToast('已创建重试任务 ' + (data.count || 0) + ' 个', 'ok');
+      showToast('已重新尝试 ' + (data.count || 0) + ' 个未完成任务', 'ok');
       await loadDownloads();
       loadEvents().catch(() => {});
     }).catch((error) => showToast('重试失败：' + error.message, 'err'));
@@ -857,6 +865,28 @@ export function useAudioFlowApp() {
     return data.config || {};
   }, []);
 
+  const checkServiceConnection = useCallback(async ({reload = false} = {}) => {
+    setServiceState('checking');
+    try {
+      await api('/health');
+      setServiceState('online');
+      if (reload) {
+        await Promise.allSettled([
+          loadConfig(),
+          loadCookies(),
+          loadNotifications(),
+          loadSubscriptions(),
+          loadDownloads(),
+          loadEvents(),
+        ]);
+      }
+      return true;
+    } catch (_error) {
+      setServiceState(hasCachedDataRef.current ? 'cached' : 'offline');
+      return false;
+    }
+  }, [loadConfig, loadCookies, loadDownloads, loadEvents, loadNotifications, loadSubscriptions]);
+
   const saveNotifications = useCallback(async (nextConfig) => {
     await runBusy('notifications', async () => {
       const data = await api('/api/notifications', {method: 'POST', body: nextConfig});
@@ -895,13 +925,10 @@ export function useAudioFlowApp() {
   }, [requireLogin]);
 
   useEffect(() => {
-    loadConfig().catch(() => {});
-    loadCookies().catch(() => {});
-    loadNotifications().catch(() => {});
-    loadSubscriptions().catch(() => {});
-    loadDownloads().catch(() => {});
-    loadEvents().catch(() => {});
-  }, [loadConfig, loadCookies, loadDownloads, loadEvents, loadNotifications, loadSubscriptions]);
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    checkServiceConnection({reload: true});
+  }, [checkServiceConnection]);
 
   useEffect(() => {
     requestNotificationPermission();
@@ -913,6 +940,10 @@ export function useAudioFlowApp() {
       const now = Date.now();
       if (now - foregroundRefreshRef.current < 1200) return;
       foregroundRefreshRef.current = now;
+      if (serviceState !== 'online') {
+        checkServiceConnection({reload: true});
+        return;
+      }
       if (page === 'downloads' || mobileView === 'downloads') {
         loadDownloads().catch(() => {});
         return;
@@ -935,10 +966,11 @@ export function useAudioFlowApp() {
       window.removeEventListener('online', refreshVisibleData);
       document.removeEventListener('visibilitychange', refreshVisibleData);
     };
-  }, [loadDownloads, loadSubscriptionScheduler, loadSubscriptions, mobileView, page]);
+  }, [checkServiceConnection, loadDownloads, loadSubscriptionScheduler, loadSubscriptions, mobileView, page, serviceState]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
+      if (serviceState !== 'online') return;
       if (page !== 'downloads' && mobileView !== 'downloads') return;
       const pg = downloadPagination.page || 1;
       const data = await api(`/api/downloads?page=${pg}&limit=20&status=${encodeURIComponent(downloadStatusFilter)}`).catch(() => null);
@@ -958,10 +990,11 @@ export function useAudioFlowApp() {
       saveCachedList(DOWNLOADS_CACHE_KEY, tasks);
     }, 3000);
     return () => clearInterval(timer);
-  }, [mobileView, page, showToast, downloadStatusFilter, downloadPagination.page]);
+  }, [mobileView, page, serviceState, showToast, downloadStatusFilter, downloadPagination.page]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
+      if (serviceState !== 'online') return;
       if (page !== 'subscriptions' && mobileView !== 'subscriptions') return;
       const scheduler = await loadSubscriptionScheduler().catch(() => null);
       if (!scheduler) return;
@@ -971,7 +1004,7 @@ export function useAudioFlowApp() {
       }
     }, 5000);
     return () => clearInterval(timer);
-  }, [loadSubscriptionScheduler, loadSubscriptions, mobileView, page, subscriptionScheduler.last_run_at]);
+  }, [loadSubscriptionScheduler, loadSubscriptions, mobileView, page, serviceState, subscriptionScheduler.last_run_at]);
 
   useEffect(() => {
     const timers = Object.values(subscriptionJobs)
@@ -1042,6 +1075,7 @@ export function useAudioFlowApp() {
     busy,
     diagnostics,
     status,
+    serviceState,
     toast,
     modal,
     loginVisible,
@@ -1118,6 +1152,7 @@ export function useAudioFlowApp() {
       clearEvents,
       loadDiagnostics,
       loadNotifications,
+      checkServiceConnection,
       saveNotifications,
       testNotifications,
       changePassword,
