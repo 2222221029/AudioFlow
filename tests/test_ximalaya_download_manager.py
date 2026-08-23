@@ -1239,7 +1239,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_download_path, str(save_path))
         self.assertEqual(
             get.call_args_list[0].args[0],
-            "http://mobile.ximalaya.com/mobile/redirect/free/play/265392006/96",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/265392006/2",
         )
         api_query = parse_qs(urlparse(get.call_args_list[3].args[0]).query)
         self.assertEqual(api_query["device"], ["web"])
@@ -1545,7 +1545,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_download_path, str(save_path))
         self.assertEqual(
             get.call_args.args[0],
-            "http://mobile.ximalaya.com/mobile/redirect/free/play/261300454/96",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/261300454/2",
         )
 
     def test_web_auto_technical_failure_does_not_call_authorized_api(self):
@@ -1566,7 +1566,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 )
 
         self.assertFalse(ok)
-        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_count, 2)
         authorized.assert_not_called()
         self.assertEqual(manager.last_error_type, "download_failed")
         self.assertIn("HTTP 503", manager.last_error)
@@ -1598,9 +1598,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_error_type, "restricted")
 
     def test_successful_member_redirect_keeps_original_download_path(self):
+        audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
         audio = FakeResponse(
-            headers={"content-type": "audio/mp4", "content-length": "4096"},
-            body=b"ftyp" + (b"audio" * 1000),
+            headers={"content-type": "audio/mp4", "content-length": str(len(audio_body))},
+            body=audio_body,
         )
 
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1616,9 +1617,43 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(get.call_count, 1)
         self.assertEqual(
             get.call_args.args[0],
-            "http://mobile.ximalaya.com/mobile/redirect/free/play/member-track/96",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/2",
         )
         self.assertEqual(get.call_args.kwargs["headers"]["Cookie"], "_token=member")
+
+    def test_legacy_redirect_uses_level_96_alias_after_truncated_level_2(self):
+        audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
+        truncated = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(audio_body) + 100)},
+            body=audio_body,
+        )
+        complete = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(audio_body))},
+            body=audio_body,
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[truncated, complete],
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "member-track", "M4A_96K", str(save_path)
+                    )
+                self.assertEqual(save_path.read_bytes(), audio_body)
+                self.assertFalse(Path(str(save_path) + ".part").exists())
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(
+            get.call_args_list[1].args[0],
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/96",
+        )
+        self.assertEqual(manager.last_download_source, "legacy_web_redirect")
 
     def test_public_free_track_falls_back_after_redirect_ret_130(self):
         redirect_error = FakeResponse(

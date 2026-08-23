@@ -534,10 +534,16 @@ def load_tasks():
         loaded = raw.get("tasks", {}) if isinstance(raw, dict) else {}
         changed = False
         for task in loaded.values():
-            if task.get("status") in ("queued", "running", "paused"):
+            if task.get("status") in ("queued", "running", "paused", "stopping"):
+                states = task.get("chapter_states") or {}
+                task["chapter_states"] = {
+                    key: state for key, state in states.items()
+                    if (state or {}).get("status") != "downloading"
+                }
                 task["status"] = "interrupted"
                 task["error"] = "服务重启后任务已中断，可重试失败章节或重新添加下载。"
                 task["failure_reason"] = "服务重启中断"
+                task["finished_at"] = time.time()
                 changed = True
         if changed:
             TASKS_FILE.write_text(json.dumps({"tasks": loaded}, ensure_ascii=False, indent=2), encoding="utf-8")

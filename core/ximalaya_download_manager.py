@@ -223,13 +223,14 @@ class XimalayaDownloadManager:
         if cookie_string:
             print(f"🍪 XimalayaDownloadManager已设置Cookie")
     
-        # 音质级别映射（根据映射规则md）
-        # 注意：音质级别从0, 1直接跳到3，没有Level 2！
+        # Legacy redirect levels are endpoint-specific aliases.  For member
+        # tracks, level 2 and level 96 currently resolve to the same 96K M4A;
+        # prefer the standard level 2 route and retain level 96 as a fallback.
         self.quality_level_map = {
             '24K': 0,   # 24k标准音质 (约3MB)
             '48K': 1,   # 48k高清音质 (约6MB)
             '64K': 1,   # 64k也映射到1 (约6MB)
-            '96K': 96,   # 96k超高音质（VIP）(约12MB) - Level 96
+            '96K': 2,   # 96k超高音质（VIP）
         }
         self.last_error = ""
         self.last_error_type = ""
@@ -2108,115 +2109,166 @@ class XimalayaDownloadManager:
         :param chapter_title: 章节标题
         :return: 下载是否成功
         """
-        # 获取质量级别
-        quality_level = self.quality_level_map.get(audio_quality, 3)
-        
-        print(f"🎵 使用直接下载API - 音质: {audio_quality} (Level {quality_level})")
-        
-        # 构建直接下载URL（使用正确的质量级别）
-        direct_url = f"http://mobile.ximalaya.com/mobile/redirect/free/play/{track_id}/{quality_level}"
-        
-        print(f"   🔗 直接下载URL: {direct_url}")
-        
-        # 使用手机端Headers
+        primary_level = self.quality_level_map.get(audio_quality, 2)
+        quality_levels = [primary_level]
+        if audio_quality == '96K' and primary_level != 96:
+            quality_levels.append(96)
+
+        print(f"🎵 使用旧版直连API - 音质: {audio_quality} (Level {primary_level})")
+
         mobile_headers = {
-            'User-Agent': 'XimalayaFM/8.6.93 (iPhone; iOS 16.6; Scale/3.00)',
+            'User-Agent': 'ting_9.4.2_AndroidPhone_2210132C_1440x2560',
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'Referer': 'https://m.ximalaya.com/',
             'X-Requested-With': 'XMLHttpRequest',
         }
-        
-        # 添加Cookie（如果有）- 用于VIP/付费内容
+
         if self.cookie_string:
             mobile_headers['Cookie'] = self.cookie_string
-            print(f"   🍪 已添加Cookie到移动端API请求")
-        
-        try:
-            # 发送请求（跟随重定向）
-            response = self.session.get(direct_url, headers=mobile_headers, stream=True, allow_redirects=True, timeout=30)
-            
-            if response.status_code == 200:
-                # 检查响应内容类型
-                content_type = response.headers.get('content-type', '').lower()
-                
-                # 初始化first_chunk
-                first_chunk = b''
-                
-                # 检查是否返回错误信息而不是音频文件
-                if 'application/json' in content_type or response.headers.get('content-length', '0') == '32':
-                    # 读取少量内容检查是否是错误响应
+            print("   🍪 已携带本地登录 Cookie")
+
+        final_path = Path(save_path)
+        temp_path = final_path.with_name(final_path.name + '.part')
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+
+        for attempt_index, quality_level in enumerate(quality_levels):
+            direct_url = (
+                "https://mobile.ximalaya.com/mobile/redirect/free/play/"
+                f"{track_id}/{quality_level}"
+            )
+            print(f"   🔗 请求旧直连 Level {quality_level}")
+            try:
+                temp_path.unlink(missing_ok=True)
+                response = self.session.get(
+                    direct_url,
+                    headers=mobile_headers,
+                    stream=True,
+                    allow_redirects=True,
+                    timeout=(10, 120),
+                )
+
+                if response.status_code != 200:
+                    status_code = response.status_code
+                    close = getattr(response, 'close', None)
+                    if close:
+                        close()
+                    self._record_error(f"HTTP {status_code}", status_code)
+                    if status_code in (401, 403):
+                        return False
+                    if attempt_index + 1 < len(quality_levels):
+                        print(f"   ↪️ Level {quality_level} 返回 HTTP {status_code}，尝试兼容别名")
+                        continue
+                    return False
+
+                content_type = str(response.headers.get('content-type', '')).lower()
+                try:
+                    content_length = int(response.headers.get('content-length') or 0)
+                except (TypeError, ValueError):
+                    content_length = 0
+
+                iterator = response.iter_content(chunk_size=512 * 1024)
+                first_chunk = next(iterator, b'')
+                prefix = first_chunk.lstrip()[:16].lower()
+                if 'json' in content_type or prefix.startswith(b'{'):
                     try:
-                        first_chunk = next(response.iter_content(chunk_size=100))
-                        if first_chunk and first_chunk.startswith(b'{') and b'msg' in first_chunk:
-                            try:
-                                import json
-                                error_data = json.loads(first_chunk.decode('utf-8'))
-                                if error_data.get('ret') == 130:
-                                    # ret=130 is overloaded: for some old, still-public
-                                    # free tracks it only means the requested redirect
-                                    # quality is unavailable.  Fall back only after an
-                                    # anonymous endpoint proves the track is neither
-                                    # VIP, paid nor a sample.
-                                    if self._download_confirmed_public_fallback(
-                                        track_id, audio_quality, save_path,
-                                        progress_callback=progress_callback,
-                                    ):
-                                        return True
-                                    if self.last_error_type == 'download_failed':
-                                        return False
-                                    print(f"❌ 权限不足: 需要VIP权限才能下载HQ音质")
-                                    self._record_error("权限不足")
-                                    return False
-                                else:
-                                    print(f"❌ API返回错误: {error_data}")
-                                    self._record_error(
-                                        f"API error ret={error_data.get('ret')}: {error_data.get('msg', 'unknown')}"
-                                    )
-                                    return False
-                            except Exception as exc:
-                                self._record_error(f"invalid API error response: {exc}")
-                                return False
-                    except StopIteration:
-                        first_chunk = b''
-                
-                # 流式下载
-                content_length = int(response.headers.get('content-length') or 0)
-                total_size = len(first_chunk)
-                Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(save_path, 'wb') as f:
+                        error_data = json.loads(first_chunk.decode('utf-8'))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        error_data = {}
+                    close = getattr(response, 'close', None)
+                    if close:
+                        close()
+                    if error_data.get('ret') == 130:
+                        if self._download_confirmed_public_fallback(
+                            track_id,
+                            audio_quality,
+                            save_path,
+                            progress_callback=progress_callback,
+                        ):
+                            return True
+                        if self.last_error_type == 'download_failed':
+                            return False
+                        self._record_error(
+                            f"权限不足: {error_data.get('msg') or 'VIP required'}",
+                            error_type='restricted',
+                        )
+                        return False
+
+                    self._record_error(
+                        f"API error ret={error_data.get('ret')}: "
+                        f"{error_data.get('msg') or 'unknown'}"
+                    )
+                    if attempt_index + 1 < len(quality_levels):
+                        print(f"   ↪️ Level {quality_level} 返回非权限错误，尝试兼容别名")
+                        continue
+                    return False
+
+                total_size = 0
+                with temp_path.open('wb') as output:
                     if first_chunk:
-                        f.write(first_chunk)
+                        output.write(first_chunk)
+                        total_size += len(first_chunk)
                         if progress_callback:
                             progress_callback(total_size, content_length)
-                    for chunk in response.iter_content(chunk_size=512000):
-                        if chunk:
-                            f.write(chunk)
-                            total_size += len(chunk)
-                            if progress_callback:
-                                progress_callback(total_size, content_length)
-                
-                # 验证文件大小
-                size_mb = total_size / (1024 * 1024)
-                print(f"✅ 下载成功: {save_path} ({size_mb:.2f}MB)")
+                    for chunk in iterator:
+                        if not chunk:
+                            continue
+                        output.write(chunk)
+                        total_size += len(chunk)
+                        if progress_callback:
+                            progress_callback(total_size, content_length)
 
+                close = getattr(response, 'close', None)
+                if close:
+                    close()
+
+                validation_error = ''
+                if total_size <= 1024:
+                    validation_error = f"文件过小（{total_size} 字节）"
+                elif content_length and total_size != content_length:
+                    validation_error = (
+                        f"文件不完整（应为 {content_length} 字节，"
+                        f"实际 {total_size} 字节）"
+                    )
+                else:
+                    valid, media_error = self._validate_mobile_media(
+                        str(temp_path), 2, content_type
+                    )
+                    if not valid:
+                        validation_error = media_error
+
+                if validation_error:
+                    temp_path.unlink(missing_ok=True)
+                    self._record_error(f"旧版直连{validation_error}，已拒绝保存")
+                    if attempt_index + 1 < len(quality_levels):
+                        print(f"   ↪️ Level {quality_level} 校验失败，尝试兼容别名")
+                        continue
+                    return False
+
+                os.replace(temp_path, final_path)
+                size_mb = total_size / (1024 * 1024)
+                print(
+                    f"✅ 旧版直连下载成功: {final_path.name} "
+                    f"({audio_quality}, Level {quality_level}, {size_mb:.2f}MB)"
+                )
                 self.last_error = ''
                 self.last_error_type = ''
                 self.last_download_source = 'legacy_web_redirect'
                 self.last_download_size = total_size
                 self.last_download_expected_size = content_length
                 self.last_download_quality_label = audio_quality
-                self.last_download_path = save_path
+                self.last_download_path = str(final_path)
                 return True
-            else:
-                print(f"❌ 下载失败: HTTP {response.status_code}")
-                self._record_error(f"HTTP {response.status_code}", response.status_code)
+            except Exception as exc:
+                temp_path.unlink(missing_ok=True)
+                self._record_error(f"download exception: {exc}")
+                if attempt_index + 1 < len(quality_levels):
+                    print(f"   ↪️ Level {quality_level} 下载异常，尝试兼容别名")
+                    continue
+                print(f"❌ 旧版直连下载异常: {exc}")
                 return False
-                
-        except Exception as e:
-            print(f"❌ 下载异常: {e}")
-            self._record_error(f"download exception: {e}")
-            return False
+
+        return False
     
     def _download_mp3_from_web(self, track_id: str, audio_quality: str, save_path: str, chapter_title: str, progress_callback=None) -> bool:
         """

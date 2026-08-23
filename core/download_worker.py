@@ -6,7 +6,7 @@ import os
 import time
 import threading
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from core.safe_logging import log_context
 
 # 每个失败章节最多自动重试次数
@@ -46,6 +46,7 @@ class DownloadWorker(QThread):
         self.voice_config = voice_config
         self._is_paused = False
         self._is_stopped = False
+        self._control_condition = threading.Condition()
         self.coin_reference_id = None  # 自用版不使用旧额度机制，保留参数兼容旧调用
         self._progress_lock = threading.Lock()
         self._chapter_progress = {}
@@ -291,16 +292,40 @@ class DownloadWorker(QThread):
 
     def pause(self):
         """暂停下载任务。"""
-        self._is_paused = True
+        with self._control_condition:
+            self._is_paused = True
 
     def resume(self):
         """继续下载任务。"""
-        self._is_paused = False
+        with self._control_condition:
+            self._is_paused = False
+            self._control_condition.notify_all()
 
     def stop(self):
         """请求停止下载任务。"""
-        self._is_stopped = True
-        self._is_paused = False
+        with self._control_condition:
+            self._is_stopped = True
+            self._is_paused = False
+            self._control_condition.notify_all()
+
+    def _wait_until_active(self):
+        """Block while paused and return False as soon as stop is requested."""
+        with self._control_condition:
+            while self._is_paused and not self._is_stopped:
+                self._control_condition.wait(timeout=0.2)
+            return not self._is_stopped
+
+    def _wait_interruptibly(self, seconds):
+        """Wait for a retry delay while still reacting quickly to stop/pause."""
+        deadline = time.monotonic() + max(0.0, float(seconds or 0))
+        while True:
+            if not self._wait_until_active():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            with self._control_condition:
+                self._control_condition.wait(timeout=min(0.2, remaining))
 
     # ------------------------------------------------------------------
     # 主下载循环
@@ -360,102 +385,108 @@ class DownloadWorker(QThread):
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 print(f"🚀 开始下载...")
                 futures = {}
-                print(f"📝 正在准备下载任务...")
-                for i, chapter in enumerate(self.chapters, 1):
+                chapter_iter = iter(enumerate(self.chapters, 1))
+
+                def submit_next():
+                    if not self._wait_until_active():
+                        return False
+                    try:
+                        i, chapter = next(chapter_iter)
+                    except StopIteration:
+                        return False
                     if total_chapters <= 100 or i <= 5 or i > total_chapters - 5 or i % 500 == 0:
                         print(f"   🔍 准备下载章节 {i}/{total_chapters}: title={chapter.get('title', '未知')[:20]}..., "
                               f"order_num={chapter.get('order_num', 'None')}")
-                    chapter_index = i
-                    # _download_chapter_with_retry 自行创建线程安全的 Manager，不再传入共享实例
-                    future = executor.submit(self._download_chapter_with_retry, chapter, chapter_index)
-                    futures[future] = (chapter_index, chapter)
+                    future = executor.submit(self._download_chapter_with_retry, chapter, i)
+                    futures[future] = (i, chapter)
+                    return True
 
-                print(f"✅ 任务准备完成，开始下载...")
+                print(f"📝 正在准备下载任务...")
+                for _ in range(max_workers):
+                    if not submit_next():
+                        break
+                print(f"✅ 首批任务准备完成，开始下载...")
 
                 completed_count = 0
                 last_update_time = 0
 
-                for future in as_completed(futures):
-                    # 检查停止标志
-                    if self._is_stopped:
-                        print(f"⏹️ 下载任务已停止")
-                        for f in futures:
-                            if not f.done():
-                                f.cancel()
-                        # 保留已成功的数据，不清零
-                        self.download_completed.emit(
-                            self.task_id,
-                            self.success_count,
-                            self.failed_count,
-                            self.success_chapters,
-                            self.failed_chapters,
-                        )
-                        return
+                while futures:
+                    if not self._wait_until_active():
+                        for pending in futures:
+                            pending.cancel()
+                        break
 
-                    # 暂停等待
-                    while self._is_paused and not self._is_stopped:
-                        self.msleep(50)
+                    done, _ = wait(tuple(futures), timeout=0.2, return_when=FIRST_COMPLETED)
+                    if not done:
+                        continue
 
-                    if self._is_stopped:
-                        print(f"⏹️ 下载任务已停止")
-                        for f in futures:
-                            if not f.done():
-                                f.cancel()
-                        self.download_completed.emit(
-                            self.task_id,
-                            self.success_count,
-                            self.failed_count,
-                            self.success_chapters,
-                            self.failed_chapters,
-                        )
-                        return
+                    for future in done:
+                        chapter_index, chapter = futures.pop(future)
+                        if self._is_stopped:
+                            break
+                        completed_count += 1
 
-                    chapter_index, chapter = futures[future]
-                    completed_count += 1
-
-                    try:
-                        success = future.result(timeout=120)
-                        if success:
-                            self.success_count += 1
-                            self.success_chapters.append(chapter)
-                            self.chapter_status_updated.emit(self.task_id, chapter, 'success')
-                        else:
+                        try:
+                            success = future.result()
+                            if success:
+                                self.success_count += 1
+                                self.success_chapters.append(chapter)
+                                self.chapter_status_updated.emit(self.task_id, chapter, 'success')
+                            else:
+                                self.failed_count += 1
+                                if not chapter.get('_error'):
+                                    chapter['_error'] = '下载失败'
+                                self.failed_chapters.append(chapter)
+                                self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
+                                print(f"   ❌ 章节下载失败: {chapter.get('title', '未知章节')} - "
+                                      f"{chapter.get('_error', '未知错误')}")
+                        except TimeoutError:
+                            print(f"   ⏱️ 下载章节超时: {chapter.get('title', '未知章节')}")
                             self.failed_count += 1
-                            if not chapter.get('_error'):
-                                chapter['_error'] = '下载失败'
+                            chapter['_error'] = '下载超时（2分钟）'
                             self.failed_chapters.append(chapter)
                             self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
-                            print(f"   ❌ 章节下载失败: {chapter.get('title', '未知章节')} - "
-                                  f"{chapter.get('_error', '未知错误')}")
-                    except TimeoutError:
-                        print(f"   ⏱️ 下载章节超时: {chapter.get('title', '未知章节')}")
-                        self.failed_count += 1
-                        chapter['_error'] = '下载超时（2分钟）'
-                        self.failed_chapters.append(chapter)
-                        self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
-                    except Exception as e:
-                        print(f"   ❌ 下载章节时出错: {e}")
-                        self.failed_count += 1
-                        chapter['_error'] = f'下载异常: {str(e)[:50]}'
-                        self.failed_chapters.append(chapter)
-                        self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
+                        except Exception as e:
+                            print(f"   ❌ 下载章节时出错: {e}")
+                            self.failed_count += 1
+                            chapter['_error'] = f'下载异常: {str(e)[:50]}'
+                            self.failed_chapters.append(chapter)
+                            self.chapter_status_updated.emit(self.task_id, chapter, 'failed')
 
-                    # 进度上报失败绝不能中断下载循环（否则文件继续下完、进度却卡在中途）
-                    try:
-                        current_time = time.time()
-                        with self._progress_lock:
-                            self._completed_for_progress = completed_count
-                            self._chapter_progress.pop(chapter_index, None)
-                            self._emit_realtime_progress_locked()
-                        if current_time - last_update_time >= 0.2 or completed_count == len(self.chapters):
-                            self.progress_updated.emit(self.task_id, completed_count, len(self.chapters))
-                            last_update_time = current_time
-                            # 进度日志每 20 章（或最后一章）打印一次，避免上千集时刷屏
-                            if completed_count % 20 == 0 or completed_count == len(self.chapters):
-                                print(f"📊 下载进度: {completed_count}/{len(self.chapters)} "
-                                      f"({int(completed_count / len(self.chapters) * 100)}%)")
-                    except Exception as progress_exc:
-                        print(f"   ⚠️ 进度上报失败(已忽略，不影响下载): {progress_exc}")
+                        # 进度上报失败绝不能中断下载循环（否则文件继续下完、进度却卡在中途）
+                        try:
+                            current_time = time.time()
+                            with self._progress_lock:
+                                self._completed_for_progress = completed_count
+                                self._chapter_progress.pop(chapter_index, None)
+                                self._emit_realtime_progress_locked()
+                            if current_time - last_update_time >= 0.2 or completed_count == len(self.chapters):
+                                self.progress_updated.emit(self.task_id, completed_count, len(self.chapters))
+                                last_update_time = current_time
+                                if completed_count % 20 == 0 or completed_count == len(self.chapters):
+                                    print(f"📊 下载进度: {completed_count}/{len(self.chapters)} "
+                                          f"({int(completed_count / len(self.chapters) * 100)}%)")
+                        except Exception as progress_exc:
+                            print(f"   ⚠️ 进度上报失败(已忽略，不影响下载): {progress_exc}")
+
+                        if not submit_next():
+                            continue
+
+                    if self._is_stopped:
+                        for pending in futures:
+                            pending.cancel()
+                        break
+
+            if self._is_stopped:
+                print(f"⏹️ 下载任务已停止")
+                self.download_completed.emit(
+                    self.task_id,
+                    self.success_count,
+                    self.failed_count,
+                    self.success_chapters,
+                    self.failed_chapters,
+                )
+                return
 
             print(f"🎉 下载任务完成: 成功 {self.success_count} 个，失败 {self.failed_count} 个")
             self.download_completed.emit(
@@ -504,6 +535,8 @@ class DownloadWorker(QThread):
 
     def _download_chapter_with_retry_impl(self, chapter, chapter_index):
         """带自动重试的章节下载入口（在线程池中执行）。"""
+        if not self._wait_until_active():
+            return False
         self.chapter_status_updated.emit(self.task_id, chapter, 'downloading')
         # 动态导入异常类型，避免循环依赖
         try:
@@ -522,7 +555,7 @@ class DownloadWorker(QThread):
         max_retries = len(_XIMALAYA_V4_RATE_LIMIT_BACKOFF) if is_ximalaya_v4 else _MAX_RETRIES
 
         for attempt in range(max_retries + 1):
-            if self._is_stopped:
+            if not self._wait_until_active():
                 return False
 
             if attempt > 0:
@@ -533,7 +566,8 @@ class DownloadWorker(QThread):
                     wait = attempt * _RETRY_BACKOFF
                 reason = '平台限流冷却' if previous_error_type == 'rate_limited' else '重试'
                 print(f"   🔄 章节 {chapter_index} 第 {attempt} 次{reason}，等待 {wait}s…")
-                time.sleep(wait)
+                if not self._wait_interruptibly(wait):
+                    return False
                 chapter.pop('_error', None)
                 chapter.pop('_error_type', None)
 
@@ -544,10 +578,8 @@ class DownloadWorker(QThread):
                 if _RateLimitError and isinstance(e, _RateLimitError):
                     wait_sec = _RATE_LIMIT_WAIT
                     print(f"   ⏳ 章节 {chapter_index} 触发限速，等待 {wait_sec}s 后重试…")
-                    for _ in range(wait_sec):
-                        if self._is_stopped:
-                            return False
-                        time.sleep(1)
+                    if not self._wait_interruptibly(wait_sec):
+                        return False
                     chapter.pop('_error', None)
                     chapter['_error'] = '限速重试中'
                     # 重试本次（attempt 不递增）
@@ -562,10 +594,8 @@ class DownloadWorker(QThread):
                 elif _IllegalRequestError and isinstance(e, _IllegalRequestError):
                     wait_sec = _LRTS_ILLEGAL_WAIT
                     print(f"   🧊 章节 {chapter_index} 触发懒人听书风控({e})，冷却 {wait_sec}s 后重试…")
-                    for _ in range(wait_sec):
-                        if self._is_stopped:
-                            return False
-                        time.sleep(1)
+                    if not self._wait_interruptibly(wait_sec):
+                        return False
                     chapter.pop('_error', None)
                     chapter['_error'] = '非法请求冷却重试中'
                     try:
@@ -592,7 +622,7 @@ class DownloadWorker(QThread):
                 print(f"   ⛔ 章节 {chapter_index} 为凭证/权限或音质不可用错误，不再自动重试")
                 return False
 
-            if self._is_stopped:
+            if not self._wait_until_active():
                 return False
 
         print(f"   ❌ 章节 {chapter_index} 重试 {max_retries} 次后仍失败")
@@ -719,14 +749,7 @@ class DownloadWorker(QThread):
         thread_name = threading.current_thread().name
 
         try:
-            if self._is_stopped:
-                print(f"⏹️ [线程 {thread_name}] 任务已停止，跳过章节 {chapter_index}")
-                return False
-
-            while self._is_paused and not self._is_stopped:
-                time.sleep(0.05)
-
-            if self._is_stopped:
+            if not self._wait_until_active():
                 print(f"⏹️ [线程 {thread_name}] 任务已停止，跳过章节 {chapter_index}")
                 return False
 
@@ -905,11 +928,7 @@ class DownloadWorker(QThread):
                 return success
 
             # ---- 暂停/停止二次检查 ----
-            if self._is_stopped:
-                return False
-            while self._is_paused and not self._is_stopped:
-                time.sleep(0.05)
-            if self._is_stopped:
+            if not self._wait_until_active():
                 return False
 
             # ---- 获取音频 URL ----

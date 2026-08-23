@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 import sys
 from pathlib import Path
@@ -35,6 +37,31 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertEqual(job["finished_at"], 100 + web_server.SUBSCRIPTION_JOB_RUNNING_TIMEOUT_SECONDS + 1)
         self.assertEqual(job["error"], job["message"])
         append_event.assert_called_once()
+
+    def test_load_tasks_recovers_stopping_task_and_clears_inflight_states(self):
+        payload = {
+            "tasks": {
+                "task-1": {
+                    "id": "task-1",
+                    "status": "stopping",
+                    "chapter_states": {
+                        "1": {"status": "success"},
+                        "2": {"status": "downloading"},
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_file = Path(tmp) / "tasks.json"
+            tasks_file.write_text(json.dumps(payload), encoding="utf-8")
+            with mock.patch.object(web_server, "TASKS_FILE", tasks_file):
+                loaded = web_server.load_tasks()
+
+        task = loaded["task-1"]
+        self.assertEqual(task["status"], "interrupted")
+        self.assertEqual(task["failure_reason"], "服务重启中断")
+        self.assertEqual(set(task["chapter_states"]), {"1"})
+        self.assertIsNotNone(task["finished_at"])
 
     def test_active_task_chapter_keys_are_scoped_to_album(self):
         album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}

@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -17,6 +18,9 @@ class FakeCookieManager:
 
     def set_cookie(self, key, value):
         self.values[key] = value
+
+    def get_download_threads(self):
+        return int(self.values.get("download_threads") or 2)
 
 
 class DownloadWorkerTest(unittest.TestCase):
@@ -44,6 +48,57 @@ class DownloadWorkerTest(unittest.TestCase):
         worker.stop()
         self.assertTrue(worker._is_stopped)
         self.assertFalse(worker._is_paused)
+
+    def test_paused_worker_does_not_dispatch_chapters_until_resumed(self):
+        worker = self.make_worker()
+        worker.cookie_manager = FakeCookieManager()
+        started = threading.Event()
+        release = threading.Event()
+
+        def download(_chapter, _index):
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        worker.pause()
+        with mock.patch.object(worker, "_download_chapter_with_retry", side_effect=download) as call:
+            runner = threading.Thread(target=worker._run_download_task)
+            runner.start()
+            self.assertFalse(started.wait(timeout=0.15))
+            self.assertEqual(call.call_count, 0)
+            worker.resume()
+            self.assertTrue(started.wait(timeout=1))
+            release.set()
+            runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+
+    def test_stopped_worker_does_not_dispatch_beyond_active_pool(self):
+        worker = self.make_worker()
+        worker.chapters = [
+            {"id": str(index), "title": f"第{index}章"}
+            for index in range(1, 21)
+        ]
+        worker.cookie_manager = FakeCookieManager()
+        worker.cookie_manager.set_cookie("download_threads", "2")
+        started = threading.Event()
+        release = threading.Event()
+
+        def download(_chapter, _index):
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        with mock.patch.object(worker, "_download_chapter_with_retry", side_effect=download) as call:
+            runner = threading.Thread(target=worker._run_download_task)
+            runner.start()
+            self.assertTrue(started.wait(timeout=1))
+            worker.stop()
+            release.set()
+            runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+        self.assertLessEqual(call.call_count, 2)
 
     def test_progress_callback_emits_bounded_percent(self):
         worker = self.make_worker()
@@ -283,13 +338,13 @@ class DownloadWorkerTest(unittest.TestCase):
                 return False
             return True
 
-        with mock.patch.object(worker, "_download_single_chapter", side_effect=first_limited_then_ok), mock.patch(
-            "core.download_worker.time.sleep"
-        ) as sleep:
+        with mock.patch.object(worker, "_download_single_chapter", side_effect=first_limited_then_ok), mock.patch.object(
+            worker, "_wait_interruptibly", return_value=True
+        ) as wait_for_retry:
             result = worker._download_chapter_with_retry(chapter, 1)
 
         self.assertTrue(result)
-        sleep.assert_any_call(15)
+        wait_for_retry.assert_any_call(15)
 
     def test_chapter_retry_emits_downloading_state(self):
         worker = self.make_worker()
