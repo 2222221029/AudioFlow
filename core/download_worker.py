@@ -1172,8 +1172,9 @@ class DownloadWorker(QThread):
                 self._dbg(f"✅ 下载成功: {chapter_title}")
                 return True
             else:
-                print(f"❌ 下载失败: {chapter_title}")
-                chapter['_error'] = chapter.get('_error') or '下载失败（原因未知）'
+                error = str(chapter.get('_error') or '下载失败（原因未知）').strip()
+                chapter['_error'] = error
+                print(f"❌ 下载失败: {chapter_title}；原因: {error}")
                 return False
 
         except Exception as e:

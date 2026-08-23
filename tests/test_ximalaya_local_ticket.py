@@ -65,6 +65,24 @@ class XimalayaLocalTicketTest(unittest.TestCase):
         with self.assertRaises(LocalTicketError):
             generate_mobile_ticket({"cookie": "channel=android"})
 
+    def test_default_generates_a_fresh_ticket_for_each_request(self):
+        generated = [
+            mock.Mock(bytes=bytes.fromhex("00112233445566778899aabbccddeeff")),
+            mock.Mock(bytes=bytes.fromhex("ffeeddccbbaa99887766554433221100")),
+        ]
+        with mock.patch.dict("os.environ", {
+            "XIMALAYA_LOCAL_TICKET_TTL_SECONDS": "0",
+        }), mock.patch(
+            "core.ximalaya_local_ticket.time.time", return_value=1787328000
+        ), mock.patch(
+            "core.ximalaya_local_ticket.uuid.uuid4", side_effect=generated
+        ) as uuid4:
+            first = generate_mobile_ticket(self.credentials)
+            second = generate_mobile_ticket(self.credentials)
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(uuid4.call_count, 2)
+
     def test_reuses_one_ticket_within_session_ttl(self):
         generated_uuid = mock.Mock(bytes=bytes.fromhex("00112233445566778899aabbccddeeff"))
         with mock.patch.dict("os.environ", {

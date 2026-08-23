@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -149,6 +151,27 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertTrue(ok)
         save_path = manager.download_audio.call_args.args[1]
         self.assertEqual(os.path.basename(save_path), "0003-003 失落 [杜比全景声].m4a")
+
+    def test_ximalaya_failure_log_includes_v4_error(self):
+        worker = self.make_worker()
+        worker.quality = "喜马拉雅移动端接口（自动最高音质）"
+        manager = mock.MagicMock()
+        manager.download_audio.return_value = False
+        manager.get_thread_download_result.return_value = {
+            "error": "喜马拉雅无损音质接口拒绝请求: 凭证验证失败 (ret=1001)",
+            "error_type": "rate_limited",
+        }
+        worker.search_manager = mock.MagicMock()
+        worker.search_manager.ximalaya_manager = manager
+        chapter = {"id": "893621590", "title": "003 失落", "order_num": 3}
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            ok = worker._download_single_chapter(chapter, 1)
+
+        self.assertFalse(ok)
+        self.assertIn("凭证验证失败 (ret=1001)", output.getvalue())
+        self.assertEqual(chapter["_error_type"], "rate_limited")
 
     def test_ximalaya_skip_url_fallback_covers_web_endpoint_default(self):
         worker = self.make_worker()

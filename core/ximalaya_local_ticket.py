@@ -45,10 +45,10 @@ class LocalTicketError(ValueError):
 
 def _ticket_cache_ttl() -> float:
     try:
-        value = float(os.getenv("XIMALAYA_LOCAL_TICKET_TTL_SECONDS", "900") or "900")
+        value = float(os.getenv("XIMALAYA_LOCAL_TICKET_TTL_SECONDS", "0") or "0")
     except (TypeError, ValueError):
-        value = 900.0
-    return max(60.0, min(value, 3600.0))
+        value = 0.0
+    return max(0.0, min(value, 3600.0))
 
 
 def clear_mobile_ticket_cache() -> None:
@@ -112,29 +112,7 @@ def generate_mobile_ticket(value, business: str = "playTrack", scene: str = "pla
     xuid = "XAU" + _b64u(stable_id + signature)
 
     sdk_version, app_version = _session_versions(credentials)
-    cookie_digest = hashlib.sha256(
-        credentials.get("cookie", "").encode("utf-8")
-    ).hexdigest()
-    cache_key = (
-        uid,
-        stable_hex,
-        cookie_digest,
-        sdk_version,
-        app_version,
-        str(business),
-        str(scene),
-    )
-    now = time.monotonic()
-    ttl = _ticket_cache_ttl()
-
-    # x-tk is a short-lived session credential, not a per-track signature. The
-    # official client reuses it; minting a new random ticket for every chapter
-    # causes hundreds of credential validations and triggers the V4 risk window.
-    with _TICKET_CACHE_LOCK:
-        cached = _TICKET_CACHE.get(cache_key)
-        if cached and now - cached[0] < ttl:
-            return cached[1]
-
+    def mint_ticket() -> str:
         timestamp = int(time.time()).to_bytes(4, "big")
         random_part = bytes(a ^ b for a, b in zip(uuid.uuid4().bytes, stable_id))
         prefix = f"T{xuid[1]}C"
@@ -148,6 +126,34 @@ def generate_mobile_ticket(value, business: str = "playTrack", scene: str = "pla
         ticket = prefix + _b64u(
             timestamp + stable_id + random_part + ticket_signature + suffix
         )
+        return ticket
+
+    ttl = _ticket_cache_ttl()
+    if ttl <= 0:
+        return mint_ticket()
+
+    cookie_digest = hashlib.sha256(
+        credentials.get("cookie", "").encode("utf-8")
+    ).hexdigest()
+    cache_key = (
+        uid,
+        stable_hex,
+        cookie_digest,
+        sdk_version,
+        app_version,
+        str(business),
+        str(scene),
+    )
+    now = time.monotonic()
+
+    # Ticket reuse is opt-in because some V4 sessions reject replayed x-tk
+    # values even while the underlying mobile login remains valid.
+    with _TICKET_CACHE_LOCK:
+        cached = _TICKET_CACHE.get(cache_key)
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+
+        ticket = mint_ticket()
 
         if len(_TICKET_CACHE) >= _TICKET_CACHE_MAX_ENTRIES:
             oldest_key = min(_TICKET_CACHE, key=lambda key: _TICKET_CACHE[key][0])

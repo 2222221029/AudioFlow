@@ -63,9 +63,8 @@ class XimalayaDownloadManager:
     _MOBILE_V4_CONFIGURED_INTERVAL = _positive_env_float(
         "XIMALAYA_V4_MIN_INTERVAL", 0.75, 0.0
     )
-    # Reusing one local x-tk removes the per-chapter credential-validation
-    # burst. An optional hourly cap remains available for unusually strict
-    # accounts, but defaults to disabled so media throughput stays high.
+    # An optional hourly cap remains available for unusually strict accounts,
+    # but defaults to disabled so media throughput stays high.
     _MOBILE_V4_BASE_INTERVAL = max(
         _MOBILE_V4_CONFIGURED_INTERVAL,
         (
@@ -82,6 +81,7 @@ class XimalayaDownloadManager:
         "XIMALAYA_V4_JITTER", 0.35, 0.0
     )
     _MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
+    _MOBILE_V4_COOLDOWN_LOGGED_UNTIL = 0.0
     _MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
     _MOBILE_V4_SUCCESS_STREAK = 0
     _MOBILE_V4_RECOVERY_SUCCESSES = 100
@@ -211,6 +211,7 @@ class XimalayaDownloadManager:
         outside this lock.
         """
         while True:
+            cooldown_message = ""
             with cls._MOBILE_V4_REQUEST_LOCK:
                 now = time.monotonic()
                 next_slot = max(
@@ -222,7 +223,16 @@ class XimalayaDownloadManager:
                         0.0, cls._MOBILE_V4_JITTER
                     )
                     return
+                if (
+                    now < cls._MOBILE_V4_RATE_LIMITED_UNTIL
+                    and cls._MOBILE_V4_RATE_LIMITED_UNTIL > cls._MOBILE_V4_COOLDOWN_LOGGED_UNTIL
+                ):
+                    cls._MOBILE_V4_COOLDOWN_LOGGED_UNTIL = cls._MOBILE_V4_RATE_LIMITED_UNTIL
+                    remaining = max(1, int(cls._MOBILE_V4_RATE_LIMITED_UNTIL - now + 0.999))
+                    cooldown_message = f"   ⏳ V4 接口全局冷却中，约 {remaining}s 后继续请求"
                 wait = min(next_slot - now, 1.0)
+            if cooldown_message:
+                print(cooldown_message)
             # Re-check once per second so a cooldown raised by another worker
             # also applies to callers that were already waiting for a slot.
             time.sleep(wait)
@@ -253,6 +263,7 @@ class XimalayaDownloadManager:
             cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
             cls._MOBILE_V4_SUCCESS_STREAK = 0
             cls._MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
+            cls._MOBILE_V4_COOLDOWN_LOGGED_UNTIL = 0.0
             cls._MOBILE_V4_MIN_INTERVAL = cls._MOBILE_V4_BASE_INTERVAL
 
     @classmethod

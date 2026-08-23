@@ -117,6 +117,20 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(sleep.call_args_list, [mock.call(1.0), mock.call(1.0)])
         self.assertEqual(XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT, 12.0)
 
+    def test_v4_slot_reports_global_cooldown_once(self):
+        XimalayaDownloadManager._MOBILE_V4_RATE_LIMITED_UNTIL = 130.0
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), mock.patch(
+            "core.ximalaya_download_manager.time.monotonic",
+            side_effect=[100.0, 130.0],
+        ), mock.patch("core.ximalaya_download_manager.time.sleep") as sleep:
+            XimalayaDownloadManager._wait_for_mobile_v4_slot()
+
+        self.assertEqual(sleep.call_args_list, [mock.call(1.0)])
+        self.assertEqual(output.getvalue().count("V4 接口全局冷却中"), 1)
+        self.assertIn("约 30s 后继续请求", output.getvalue())
+
     def test_v4_speed_recovers_gradually_after_sustained_success(self):
         XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = 1.0
         XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = 4.0
