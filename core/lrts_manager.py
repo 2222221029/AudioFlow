@@ -87,7 +87,7 @@ def _audio_quality(value=None) -> int:
     return max(1, min(4, normalized))
 
 
-_LRTS_AUDIO_CONCURRENCY = max(1, min(3, _env_int("LRTS_AUDIO_CONCURRENCY", 1)))
+_LRTS_AUDIO_CONCURRENCY = max(1, min(3, _env_int("LRTS_AUDIO_CONCURRENCY", 2)))
 _RATE_SEMAPHORE = threading.Semaphore(_LRTS_AUDIO_CONCURRENCY)
 _RATE_LOCK = threading.Lock()
 _LAST_REQUEST_TIME = 0.0
@@ -96,8 +96,8 @@ _LAST_REQUEST_TIME = 0.0
 # aggressively, so the effective gap is dynamic (see _note_request_ok /
 # _note_rate_limited): start conservative, converge down to this floor while
 # requests succeed, and escalate immediately on a throttle response.
-_MIN_REQUEST_INTERVAL = max(0.3, _env_float("LRTS_MIN_REQUEST_INTERVAL", 0.5))
-_START_REQUEST_INTERVAL = max(_MIN_REQUEST_INTERVAL, _env_float("LRTS_START_REQUEST_INTERVAL", 0.8))
+_MIN_REQUEST_INTERVAL = max(0.3, _env_float("LRTS_MIN_REQUEST_INTERVAL", 0.3))
+_START_REQUEST_INTERVAL = max(_MIN_REQUEST_INTERVAL, _env_float("LRTS_START_REQUEST_INTERVAL", 0.5))
 _MAX_REQUEST_INTERVAL = max(_MIN_REQUEST_INTERVAL, _env_float("LRTS_MAX_REQUEST_INTERVAL", 8.0))
 _RATE_STATE_LOCK = threading.Lock()
 _CURRENT_INTERVAL = _START_REQUEST_INTERVAL

@@ -104,6 +104,32 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(manager._mobile_quality_profile("M4A 64K")["level"], 1)
         self.assertIsNone(manager._mobile_quality_profile("M4A 96K"))
 
+    def test_ximalaya_manager_reuses_downloader_session_per_thread(self):
+        from core.ximalaya_manager import XimalayaManager
+
+        manager = XimalayaManager()
+        downloader = mock.Mock()
+        downloader.download_audio_by_quality.return_value = True
+        downloader.last_error = ""
+        downloader.last_error_type = ""
+        downloader.last_download_source = "mobile_v4_lossless"
+        downloader.last_download_size = 4096
+        downloader.last_download_expected_size = 4096
+        downloader.last_download_quality_label = "无损音质"
+        downloader.last_download_path = "track.flac"
+
+        with mock.patch(
+            "core.ximalaya_download_manager.XimalayaDownloadManager",
+            return_value=downloader,
+        ) as factory:
+            self.assertTrue(manager.download_audio("123", "one.flac", "无损真人录制"))
+            self.assertTrue(manager.download_audio("124", "two.flac", "无损真人录制"))
+            manager.mobile_credentials = {"cookie": "updated-session"}
+            self.assertTrue(manager.download_audio("125", "three.flac", "无损真人录制"))
+
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(downloader.download_audio_by_quality.call_count, 3)
+
     def test_v4_slot_wait_rechecks_instead_of_prebooking_a_burst(self):
         XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = 2.0
         XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = 10.0
@@ -699,7 +725,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(query["device"], ["android2"])
         self.assertEqual(manager._last_mobile_ticket_source, "local")
 
-    def test_local_rate_limit_never_calls_stale_bridge_provider(self):
+    def test_local_validation_gate_retries_without_stale_bridge_provider(self):
         credentials = {
             "cookie": (
                 "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.52.3;"
@@ -715,6 +741,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         }):
             manager = XimalayaDownloadManager(mobile_credentials=credentials)
             with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                XimalayaDownloadManager, "_MOBILE_V4_TRANSIENT_ATTEMPTS", 3
+            ), mock.patch.object(
+                XimalayaDownloadManager, "_mark_mobile_v4_rate_limited", return_value=60.0
+            ), mock.patch.object(
                 manager.session, "get", return_value=denied
             ) as get, mock.patch(
                 "core.ximalaya_download_manager.requests.post"
@@ -724,10 +754,56 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 )
 
         self.assertFalse(ok)
-        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_count, 3)
         post.assert_not_called()
         self.assertEqual(manager.last_error_type, "rate_limited")
-        self.assertIn("登录通常仍然有效", manager.last_error)
+        self.assertIn("连续 3 次", manager.last_error)
+        self.assertIn("ret=1001", manager.last_error)
+
+    def test_local_validation_gate_refreshes_ticket_until_success(self):
+        body = b"fLaC" + (b"audio" * 1000)
+        denied = FakeResponse(json_data={"ret": 1001, "msg": "凭证验证失败"})
+        info = self._spatial_info(
+            3, "无损音质", "https://audio.example/member-lossless.flac", len(body)
+        )
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": str(len(body))},
+            body=body,
+        )
+        credentials = {
+            "cookie": (
+                "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.52.3;"
+                "1&_token=123456&mobile-session"
+            ),
+            "user_agent": "ting_9.4.52.3(com.ximalaya.ting.android,Android)",
+            "api_device": "android2",
+        }
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "local",
+            "XIMALAYA_TICKET_PROVIDER_URL": "",
+        }):
+            manager = XimalayaDownloadManager(mobile_credentials=credentials)
+            with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                "core.ximalaya_download_manager.generate_mobile_ticket",
+                side_effect=["fresh-ticket-1", "fresh-ticket-2"],
+            ) as ticket, mock.patch(
+                "core.ximalaya_download_manager.time.time",
+                side_effect=[1786632464.075, 1786632465.275],
+            ), mock.patch.object(
+                manager.session, "get", side_effect=[denied, info, audio]
+            ) as get:
+                ok = manager.download_audio_by_quality(
+                    "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                )
+
+        self.assertTrue(ok)
+        self.assertEqual(ticket.call_count, 2)
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["headers"]["x-tk"] for call in get.call_args_list[:2]],
+            ["fresh-ticket-1", "fresh-ticket-2"],
+        )
 
     def test_ret_minus_three_refreshes_ticket_and_sign_until_success(self):
         body = b"fLaC" + (b"audio" * 1000)

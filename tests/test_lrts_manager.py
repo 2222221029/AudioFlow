@@ -306,10 +306,10 @@ class LrtsAdaptivePacingTest(unittest.TestCase):
             lm._MAX_REQUEST_INTERVAL,
             lm._LAST_REQUEST_TIME,
         )
-        lm._MIN_REQUEST_INTERVAL = 0.5
-        lm._START_REQUEST_INTERVAL = 0.8
+        lm._MIN_REQUEST_INTERVAL = 0.3
+        lm._START_REQUEST_INTERVAL = 0.5
         lm._MAX_REQUEST_INTERVAL = 8.0
-        lm._CURRENT_INTERVAL = 0.8
+        lm._CURRENT_INTERVAL = 0.5
         lm._CONSECUTIVE_OK = 0
         lm._LAST_REQUEST_TIME = 0.0
 
@@ -326,18 +326,18 @@ class LrtsAdaptivePacingTest(unittest.TestCase):
     def test_consecutive_successes_recover_toward_fast_floor(self):
         for _ in range(4):
             lm._note_request_ok()
-        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.6, places=6)
+        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.3, places=6)
         for _ in range(4):
             lm._note_request_ok()
-        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.5, places=6)
+        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.3, places=6)
         for _ in range(12):
             lm._note_request_ok()
-        self.assertEqual(lm._CURRENT_INTERVAL, 0.5)  # 到达下限后不再下降
+        self.assertEqual(lm._CURRENT_INTERVAL, 0.3)  # 到达下限后不再下降
 
     def test_rate_limit_escalates_and_caps(self):
-        lm._CURRENT_INTERVAL = 0.5
+        lm._CURRENT_INTERVAL = 0.3
         lm._note_rate_limited()
-        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.9, places=6)
+        self.assertAlmostEqual(lm._CURRENT_INTERVAL, 0.54, places=6)
         for _ in range(10):
             lm._note_rate_limited()
         self.assertEqual(lm._CURRENT_INTERVAL, 8.0)  # 上限封顶
@@ -347,7 +347,7 @@ class LrtsAdaptivePacingTest(unittest.TestCase):
             lm._note_request_ok()
         lm._note_rate_limited()
         self.assertEqual(lm._CONSECUTIVE_OK, 0)
-        self.assertGreater(lm._CURRENT_INTERVAL, 0.8)
+        self.assertGreater(lm._CURRENT_INTERVAL, 0.5)
         for _ in range(3):
             lm._note_request_ok()
         self.assertEqual(lm._CONSECUTIVE_OK, 3)  # 未达到恢复阈值

@@ -26,6 +26,7 @@ class XimalayaManager:
         self.cookie_string = ""
         self.mobile_credentials = {}
         self._download_result_local = threading.local()
+        self._download_manager_local = threading.local()
         self.session = requests.Session()
         self.user_id = None
         self.user_token = None
@@ -1391,13 +1392,32 @@ class XimalayaManager:
             return aes_url
         xor_url = self._decrypt_audio_url_xor(encrypted_url)
         return xor_url if xor_url else encrypted_url
+
+    def _thread_download_manager(self):
+        """Reuse one downloader session per worker thread and credential set."""
+        from .ximalaya_download_manager import XimalayaDownloadManager
+
+        credential_signature = json.dumps(
+            self.mobile_credentials or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        signature = (str(self.cookie_string or ""), credential_signature)
+        cached = getattr(self._download_manager_local, "value", None)
+        if cached and cached[0] == signature:
+            return cached[1]
+
+        downloader = XimalayaDownloadManager(
+            cookie_string=self.cookie_string,
+            mobile_credentials=self.mobile_credentials,
+        )
+        self._download_manager_local.value = (signature, downloader)
+        return downloader
     
     def download_audio(self, url: str, save_path: str, quality: str | None = None, progress_callback=None) -> bool:
         """下载音频文件 - 增强版，支持多API备选下载"""
         try:
-            # 导入增强版下载管理器
-            from .ximalaya_download_manager import XimalayaDownloadManager
-            
             # 提取章节ID（支持多种URL格式）
             track_id = None
             
@@ -1421,11 +1441,8 @@ class XimalayaManager:
             if track_id:
                 print(f"🔄 使用增强版下载管理器下载 track_id: {track_id}")
                 
-                # 创建下载管理器实例，传入Cookie
-                downloader = XimalayaDownloadManager(
-                    cookie_string=self.cookie_string,
-                    mobile_credentials=self.mobile_credentials,
-                )
+                # 每个工作线程复用一个 Session，避免每集重复 DNS/TLS 建连。
+                downloader = self._thread_download_manager()
                 
                 # 如果没有提供音质参数，从保存路径推断用户选择的音质
                 if quality is None:

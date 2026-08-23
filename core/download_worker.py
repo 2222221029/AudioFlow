@@ -332,14 +332,16 @@ class DownloadWorker(QThread):
                 print(f"🎧 喜马拉雅并发下载: {max_workers}（跟随设置，可用 XMLY_DOWNLOAD_THREADS 覆盖）")
             if self.platform == '懒人听书':
                 # URL 解析由 lrts_manager 的全局间隔锁 + 自适应节流串行控制（防风控），
-                # 并发线程只并行音频 CDN 下载本身，因此默认 2 路下载是安全的。
-                lrts_workers = int(os.getenv("LRTS_DOWNLOAD_THREADS", "2") or "2")
+                # 并发线程主要并行音频 CDN 下载本身，播放地址请求会自动退避。
+                lrts_workers = int(os.getenv("LRTS_DOWNLOAD_THREADS", "3") or "3")
                 max_workers = max(1, min(3, lrts_workers, total_chapters))
                 print(f"📚 懒人听书下载并发: {max_workers}（可用 LRTS_DOWNLOAD_THREADS=1-3 调整；URL 解析自动节流防风控）")
             if self.platform == '番茄畅听':
-                # 每章需要 ffmpeg 解密+转码，CPU 密集；限制并发避免打满 NAS CPU
-                max_workers = max(1, min(2, max_workers, total_chapters))
-                print(f"🍅 番茄畅听 CPU 密集模式，并发数限制为: {max_workers}")
+                # ffmpeg 已限制为单进程单线程；默认 3 路兼顾 CDN 吞吐与 NAS CPU，
+                # 高性能设备可显式提高到 4 路。
+                fanqie_workers = int(os.getenv("FANQIE_DOWNLOAD_THREADS", "3") or "3")
+                max_workers = max(1, min(4, fanqie_workers, total_chapters))
+                print(f"🍅 番茄畅听下载并发: {max_workers}（可用 FANQIE_DOWNLOAD_THREADS=1-4 调整）")
             if self.platform in ('番茄听书', '七猫听书'):
                 print(f"📖 {self.platform} 并发下载，线程数: {max_workers}（与设置一致）")
             max_workers = max(1, min(64, max_workers, total_chapters))
@@ -643,9 +645,13 @@ class DownloadWorker(QThread):
             return m
 
         if platform == '番茄畅听':
+            cached = getattr(self._thread_managers, 'fanqie', None)
+            if cached is not None:
+                return cached
             from core.fanqie_manager import FanqieManager
             m = FanqieManager()
             _copy_cookies(sm.fanqie_manager if sm else None, m)
+            self._thread_managers.fanqie = m
             return m
 
         if platform == '番茄听书':
@@ -860,11 +866,8 @@ class DownloadWorker(QThread):
                 file_size = os.path.getsize(file_path)
                 if file_size > 1024:
                     size_mb = file_size / (1024 * 1024)
-                    if self.platform == '番茄畅听':
-                        self._dbg(f"ℹ️ 番茄畅听目标文件已存在 ({size_mb:.1f}MB)，继续走专用管线确认输出")
-                    else:
-                        self._dbg(f"✅ 文件已存在，跳过下载 ({size_mb:.1f}MB)")
-                        return True
+                    self._dbg(f"✅ 文件已存在，跳过下载 ({size_mb:.1f}MB)")
+                    return True
                 else:
                     self._dbg(f"🔄 文件损坏，重新下载")
             else:
@@ -1088,7 +1091,11 @@ class DownloadWorker(QThread):
                     changting_chapter_id = str(chapter_id).replace("chapter-", "", 1)
                     if hasattr(download_manager, 'download_changting_chapter'):
                         success = download_manager.download_changting_chapter(
-                            changting_chapter_id, voice_for_download, file_path, self.quality
+                            changting_chapter_id,
+                            voice_for_download,
+                            file_path,
+                            self.quality,
+                            play=fanqie_audio_info.get('play'),
                         )
                     else:
                         success = False

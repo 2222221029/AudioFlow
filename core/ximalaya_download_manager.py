@@ -60,17 +60,16 @@ class XimalayaDownloadManager:
     MOBILE_DOLBY_PREFERRED_QUALITY = "杜比全景声优先（自动降级）"
     MOBILE_VIVID_PREFERRED_QUALITY = "Audio Vivid 优先（自动降级）"
     MOBILE_LOSSLESS_PREFERRED_QUALITY = "无损优先（自动降级）"
-    # Only serialize/pace the tiny ticket + baseInfo control request.  Media
-    # responses are downloaded outside this lock, so CDN throughput and the
-    # worker's normal chapter concurrency are unaffected.
+    # Pace only the tiny ticket + baseInfo control request. Media responses are
+    # downloaded outside these controls, so CDN throughput and normal chapter
+    # concurrency remain independent.
     _MOBILE_V4_REQUEST_LOCK = threading.Lock()
-    _MOBILE_V4_SEQUENCE_LOCK = threading.Lock()
     _MOBILE_V4_LAST_REQUEST_AT = 0.0
     _MOBILE_V4_REQUESTS_PER_HOUR = _positive_env_float(
         "XIMALAYA_V4_REQUESTS_PER_HOUR", 0.0, 0.0
     )
     _MOBILE_V4_CONFIGURED_INTERVAL = _positive_env_float(
-        "XIMALAYA_V4_MIN_INTERVAL", 1.1, 1.1
+        "XIMALAYA_V4_MIN_INTERVAL", 0.25, 0.05
     )
     # An optional hourly cap remains available for unusually strict accounts,
     # but defaults to disabled so media throughput stays high.
@@ -87,7 +86,13 @@ class XimalayaDownloadManager:
         "XIMALAYA_V4_MAX_INTERVAL", 30.0, _MOBILE_V4_BASE_INTERVAL
     )
     _MOBILE_V4_JITTER = _positive_env_float(
-        "XIMALAYA_V4_JITTER", 0.2, 0.0
+        "XIMALAYA_V4_JITTER", 0.05, 0.0
+    )
+    _MOBILE_V4_CONTROL_CONCURRENCY = _bounded_env_int(
+        "XIMALAYA_V4_CONTROL_CONCURRENCY", 2, 1, 8
+    )
+    _MOBILE_V4_CONTROL_SEMAPHORE = threading.BoundedSemaphore(
+        _MOBILE_V4_CONTROL_CONCURRENCY
     )
     _MOBILE_V4_TRANSIENT_ATTEMPTS = _bounded_env_int(
         "XIMALAYA_V4_TRANSIENT_ATTEMPTS", 12, 1, 30
@@ -96,7 +101,9 @@ class XimalayaDownloadManager:
     _MOBILE_V4_COOLDOWN_LOGGED_UNTIL = 0.0
     _MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
     _MOBILE_V4_SUCCESS_STREAK = 0
-    _MOBILE_V4_RECOVERY_SUCCESSES = 100
+    _MOBILE_V4_RECOVERY_SUCCESSES = _bounded_env_int(
+        "XIMALAYA_V4_RECOVERY_SUCCESSES", 24, 4, 500
+    )
     _MOBILE_V4_COOLDOWN_SECONDS = _positive_env_float(
         "XIMALAYA_V4_COOLDOWN_SECONDS", 60.0, 1.0
     )
@@ -591,14 +598,16 @@ class XimalayaDownloadManager:
         device: str,
         profile_name: str,
     ) -> Tuple[Optional[dict], Optional[Dict[str, str]]]:
-        """Issue one globally serialized V4 request sequence.
+        """Issue a paced V4 request sequence with bounded control concurrency.
 
-        ``ret=-3`` is a transient gate observed on the App endpoint.  Retry it
-        with a fresh ticket and signature, but let credential and protocol
-        failures return to the existing error classifier immediately.
+        ``ret=-3`` and locally signed ``ret=1001`` are transient gates observed
+        on the App endpoint. Retry them with a fresh ticket and signature while
+        allowing other chapters to use intervening request slots.
         """
-        with self._MOBILE_V4_SEQUENCE_LOCK:
-            for transient_attempt in range(1, self._MOBILE_V4_TRANSIENT_ATTEMPTS + 1):
+        data = {}
+        transient_code = ""
+        for transient_attempt in range(1, self._MOBILE_V4_TRANSIENT_ATTEMPTS + 1):
+            with self._MOBILE_V4_CONTROL_SEMAPHORE:
                 self._wait_for_mobile_v4_slot()
                 timestamp = int(time.time() * 1000)
                 if not self._refresh_mobile_credentials_from_provider(
@@ -625,24 +634,32 @@ class XimalayaDownloadManager:
                 if not isinstance(data, dict):
                     self._record_error(f"喜马拉雅{profile_name}接口返回格式无效")
                     return None, None
-                if str(data.get("ret")) != "-3":
-                    return data, headers
-
-                if transient_attempt < self._MOBILE_V4_TRANSIENT_ATTEMPTS:
-                    print(
-                        f"   🔄 V4 短时限流 ret=-3，第 {transient_attempt}/"
-                        f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次未通过，刷新凭证后继续"
-                    )
-
-            message = str(data.get("msg") or data.get("message") or "请求过于频繁")
-            cooldown = self._mark_mobile_v4_rate_limited()
-            self._record_error(
-                f"喜马拉雅{profile_name}接口连续 "
-                f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次触发短时限流: {message} (ret=-3)；"
-                f"全局冷却 {cooldown:.0f} 秒后重新取票",
-                error_type="rate_limited",
+            ret_code = str(data.get("ret"))
+            local_validation_gate = (
+                ret_code == "1001"
+                and getattr(self, "_last_mobile_ticket_source", "") == "local"
             )
-            return None, None
+            if ret_code != "-3" and not local_validation_gate:
+                return data, headers
+
+            transient_code = ret_code
+            if transient_attempt < self._MOBILE_V4_TRANSIENT_ATTEMPTS:
+                reason = "短时限流" if ret_code == "-3" else "临时凭证校验"
+                print(
+                    f"   🔄 V4 {reason} ret={ret_code}，第 {transient_attempt}/"
+                    f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次未通过，刷新凭证后继续"
+                )
+
+        message = str(data.get("msg") or data.get("message") or "请求过于频繁")
+        cooldown = self._mark_mobile_v4_rate_limited()
+        reason = "短时限流" if transient_code == "-3" else "临时凭证校验"
+        self._record_error(
+            f"喜马拉雅{profile_name}接口连续 "
+            f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次未通过 V4 {reason}: "
+            f"{message} (ret={transient_code})；全局冷却 {cooldown:.0f} 秒后重新取票",
+            error_type="rate_limited",
+        )
+        return None, None
 
     def _mobile_v4_device_candidates(self):
         """Return signed device variants, preferring the captured request."""

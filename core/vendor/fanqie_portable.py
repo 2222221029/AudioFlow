@@ -55,6 +55,17 @@ from Crypto.Util.Padding import pad, unpad
 from Crypto.Util.number import bytes_to_long, long_to_bytes
 from requests.exceptions import ChunkedEncodingError, ConnectionError as ReqConnectionError
 
+_HTTP_LOCAL = threading.local()
+
+
+def _thread_http_session() -> requests.Session:
+    """Reuse TLS connections for consecutive API/CDN requests on one worker."""
+    session = getattr(_HTTP_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _HTTP_LOCAL.session = session
+    return session
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -1507,7 +1518,9 @@ def download_cdn(url: str, headers: dict, timeout: int = 180) -> bytes:
     last: Exception | None = None
     for attempt in range(4):
         try:
-            with requests.get(url, headers=hdrs, timeout=(30, timeout), stream=True) as r:
+            with _thread_http_session().get(
+                url, headers=hdrs, timeout=(30, timeout), stream=True
+            ) as r:
                 r.raise_for_status()
                 parts = [c for c in r.iter_content(262144) if c]
             data = b"".join(parts)
@@ -1788,6 +1801,7 @@ class FanqieClient:
         self._api_lock = threading.Lock()
         self._init_lock = threading.Lock()
         self._initialized = False
+        self.session = requests.Session()
         self.device_id = ""
         self.install_id = ""
         self.device_token = ""
@@ -1959,7 +1973,7 @@ class FanqieClient:
             h["content-type"] = "application/json; charset=utf-8"
         q = urlparse(url).query
         h.update(sign_headers(q, cookie=h.get("Cookie"), body=body, aid=_aid_from_query(q)))
-        resp = requests.request(method, url, headers=h, data=body, timeout=60)
+        resp = self.session.request(method, url, headers=h, data=body, timeout=60)
         self.cookies = merge_response_cookies(self.cookies, resp)
         self._refresh_cookie_header()
         return resp
@@ -2885,4 +2899,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

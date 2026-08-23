@@ -208,6 +208,22 @@ class DownloadWorkerTest(unittest.TestCase):
         self.assertNotIn("chapter_id", dl.call_args.kwargs)
         self.assertEqual(dl.call_args.args[:2], ("https://example.com/a.m4a", mock.ANY))
 
+    def test_fanqie_manager_is_reused_within_worker_thread(self):
+        from core.fanqie_manager import FanqieManager
+
+        worker = self.make_worker()
+        worker.platform = '番茄畅听'
+        worker.search_manager = mock.MagicMock()
+        manager = mock.MagicMock()
+
+        with mock.patch.object(FanqieManager, "__new__", return_value=manager) as create:
+            first = worker._make_thread_manager('番茄畅听')
+            second = worker._make_thread_manager('番茄畅听')
+
+        self.assertIs(first, manager)
+        self.assertIs(second, manager)
+        create.assert_called_once()
+
     def test_restricted_download_is_not_retried(self):
         worker = self.make_worker()
         chapter = {"id": "1", "title": "第一章"}

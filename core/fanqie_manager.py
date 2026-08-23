@@ -1286,6 +1286,8 @@ class FanqieManager:
         voice_name: str | Dict,
         output_path: str,
         quality: Optional[str] = None,
+        *,
+        play: Optional[Dict] = None,
     ) -> bool:
         """番茄畅听专用：走 playinfo → fanqie_portable.py CENC解密管线下载。
 
@@ -1302,7 +1304,9 @@ class FanqieManager:
             return False
 
         normalized_id = str(chapter_id).replace("chapter-", "", 1)
-        play = self._get_play_dict(normalized_id, voice_name)
+        # DownloadWorker already resolved playinfo to choose the output format.
+        # Reuse it here so each chapter performs one signed API request, not two.
+        play = play or self._get_play_dict(normalized_id, voice_name)
         if not play or not (play.get("main_url") or play.get("backup_url")):
             print(f"⚠️ 番茄畅听: 无 play dict，回退普通下载")
             return False
@@ -1359,7 +1363,7 @@ class FanqieManager:
             }
             
             print(f"🍅 下载番茄音频，使用专用请求头")
-            response = requests.get(url, headers=headers, stream=True, timeout=30)
+            response = self.session.get(url, headers=headers, stream=True, timeout=30)
             if response.status_code == 200:
                 total_size = int(response.headers.get('Content-Length') or 0)
                 downloaded_size = 0
