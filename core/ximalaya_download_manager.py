@@ -27,6 +27,14 @@ from .ximalaya_credentials import (
 from .ximalaya_local_ticket import LocalTicketError, generate_mobile_ticket
 
 
+def _positive_env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or str(default))
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(float(minimum), value)
+
+
 class XimalayaDownloadManager:
     """喜马拉雅下载管理器"""
 
@@ -49,20 +57,39 @@ class XimalayaDownloadManager:
     # worker's normal chapter concurrency are unaffected.
     _MOBILE_V4_REQUEST_LOCK = threading.Lock()
     _MOBILE_V4_LAST_REQUEST_AT = 0.0
-    _MOBILE_V4_BASE_INTERVAL = float(
-        os.getenv("XIMALAYA_V4_MIN_INTERVAL", "0.75") or "0.75"
+    _MOBILE_V4_REQUESTS_PER_HOUR = _positive_env_float(
+        "XIMALAYA_V4_REQUESTS_PER_HOUR", 0.0, 0.0
+    )
+    _MOBILE_V4_CONFIGURED_INTERVAL = _positive_env_float(
+        "XIMALAYA_V4_MIN_INTERVAL", 0.75, 0.0
+    )
+    # Reusing one local x-tk removes the per-chapter credential-validation
+    # burst. An optional hourly cap remains available for unusually strict
+    # accounts, but defaults to disabled so media throughput stays high.
+    _MOBILE_V4_BASE_INTERVAL = max(
+        _MOBILE_V4_CONFIGURED_INTERVAL,
+        (
+            3600.0 / _MOBILE_V4_REQUESTS_PER_HOUR
+            if _MOBILE_V4_REQUESTS_PER_HOUR > 0
+            else 0.0
+        ),
     )
     _MOBILE_V4_MIN_INTERVAL = _MOBILE_V4_BASE_INTERVAL
-    _MOBILE_V4_MAX_INTERVAL = float(
-        os.getenv("XIMALAYA_V4_MAX_INTERVAL", "12.0") or "12.0"
+    _MOBILE_V4_MAX_INTERVAL = _positive_env_float(
+        "XIMALAYA_V4_MAX_INTERVAL", 30.0, _MOBILE_V4_BASE_INTERVAL
     )
-    _MOBILE_V4_JITTER = float(
-        os.getenv("XIMALAYA_V4_JITTER", "0.2") or "0.2"
+    _MOBILE_V4_JITTER = _positive_env_float(
+        "XIMALAYA_V4_JITTER", 0.35, 0.0
     )
     _MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
     _MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
-    _MOBILE_V4_COOLDOWN_SECONDS = float(
-        os.getenv("XIMALAYA_V4_COOLDOWN_SECONDS", "15") or "15"
+    _MOBILE_V4_SUCCESS_STREAK = 0
+    _MOBILE_V4_RECOVERY_SUCCESSES = 100
+    _MOBILE_V4_COOLDOWN_SECONDS = _positive_env_float(
+        "XIMALAYA_V4_COOLDOWN_SECONDS", 60.0, 1.0
+    )
+    _MOBILE_V4_MAX_COOLDOWN_SECONDS = _positive_env_float(
+        "XIMALAYA_V4_MAX_COOLDOWN_SECONDS", 3600.0, _MOBILE_V4_COOLDOWN_SECONDS
     )
 
     # Android `libencrypt.so` URL decryption (PlayUrlUtil/EncryptUtil path).
@@ -183,35 +210,37 @@ class XimalayaDownloadManager:
         Serialize only the small metadata request here; media bytes still flow
         outside this lock.
         """
-        with cls._MOBILE_V4_REQUEST_LOCK:
-            now = time.monotonic()
-            if now < cls._MOBILE_V4_RATE_LIMITED_UNTIL:
-                wait = cls._MOBILE_V4_RATE_LIMITED_UNTIL - now
-                cls._MOBILE_V4_LAST_REQUEST_AT = cls._MOBILE_V4_RATE_LIMITED_UNTIL
-            else:
-                interval = cls._MOBILE_V4_MIN_INTERVAL + random.uniform(0.0, cls._MOBILE_V4_JITTER)
-                wait = max(
-                    0.0,
-                    interval
-                    - (now - cls._MOBILE_V4_LAST_REQUEST_AT),
+        while True:
+            with cls._MOBILE_V4_REQUEST_LOCK:
+                now = time.monotonic()
+                next_slot = max(
+                    cls._MOBILE_V4_RATE_LIMITED_UNTIL,
+                    cls._MOBILE_V4_LAST_REQUEST_AT + cls._MOBILE_V4_MIN_INTERVAL,
                 )
-                cls._MOBILE_V4_LAST_REQUEST_AT = max(
-                    now,
-                    cls._MOBILE_V4_LAST_REQUEST_AT + interval,
-                )
-        if wait > 0:
+                if now >= next_slot:
+                    cls._MOBILE_V4_LAST_REQUEST_AT = now + random.uniform(
+                        0.0, cls._MOBILE_V4_JITTER
+                    )
+                    return
+                wait = min(next_slot - now, 1.0)
+            # Re-check once per second so a cooldown raised by another worker
+            # also applies to callers that were already waiting for a slot.
             time.sleep(wait)
 
     @classmethod
     def _mark_mobile_v4_rate_limited(cls):
         with cls._MOBILE_V4_REQUEST_LOCK:
             cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS += 1
+            cls._MOBILE_V4_SUCCESS_STREAK = 0
             exponent = min(max(cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS - 1, 0), 5)
             cooldown = min(
                 cls._MOBILE_V4_COOLDOWN_SECONDS * (2 ** exponent),
-                1800.0,
+                cls._MOBILE_V4_MAX_COOLDOWN_SECONDS,
             )
-            cls._MOBILE_V4_RATE_LIMITED_UNTIL = time.monotonic() + cooldown
+            cls._MOBILE_V4_RATE_LIMITED_UNTIL = max(
+                cls._MOBILE_V4_RATE_LIMITED_UNTIL,
+                time.monotonic() + cooldown,
+            )
             cls._MOBILE_V4_MIN_INTERVAL = min(
                 cls._MOBILE_V4_MIN_INTERVAL * 2,
                 cls._MOBILE_V4_MAX_INTERVAL,
@@ -222,8 +251,28 @@ class XimalayaDownloadManager:
     def _clear_mobile_v4_rate_limit(cls):
         with cls._MOBILE_V4_REQUEST_LOCK:
             cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
+            cls._MOBILE_V4_SUCCESS_STREAK = 0
             cls._MOBILE_V4_RATE_LIMITED_UNTIL = 0.0
             cls._MOBILE_V4_MIN_INTERVAL = cls._MOBILE_V4_BASE_INTERVAL
+
+    @classmethod
+    def _mark_mobile_v4_success(cls):
+        """Recover speed gradually after a real V4 throttle response."""
+        with cls._MOBILE_V4_REQUEST_LOCK:
+            if cls._MOBILE_V4_MIN_INTERVAL <= cls._MOBILE_V4_BASE_INTERVAL:
+                cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
+                cls._MOBILE_V4_SUCCESS_STREAK = 0
+                return
+            cls._MOBILE_V4_SUCCESS_STREAK += 1
+            if cls._MOBILE_V4_SUCCESS_STREAK < cls._MOBILE_V4_RECOVERY_SUCCESSES:
+                return
+            cls._MOBILE_V4_MIN_INTERVAL = max(
+                cls._MOBILE_V4_BASE_INTERVAL,
+                cls._MOBILE_V4_MIN_INTERVAL * 0.8,
+            )
+            cls._MOBILE_V4_SUCCESS_STREAK = 0
+            if cls._MOBILE_V4_MIN_INTERVAL <= cls._MOBILE_V4_BASE_INTERVAL:
+                cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 0
 
     @classmethod
     def _mobile_quality_profile(cls, quality: str):
@@ -518,7 +567,15 @@ class XimalayaDownloadManager:
         if platform_device != "android":
             return [captured or platform_device]
 
-        first = captured if captured in {"android", "android2"} else "android"
+        if captured in {"android", "android2"}:
+            first = captured
+        else:
+            status = ximalaya_mobile_credential_status(self.mobile_credentials)
+            ticket_mode = str(os.environ.get("XIMALAYA_TICKET_MODE") or "auto").strip().lower()
+            local_mode = ticket_mode in {"local", "auto"}
+            # Locally generated tickets use the Android V4 direct/decrypt
+            # branch. Choosing it first avoids a guaranteed rejected probe.
+            first = "android2" if local_mode and status.get("local_ticket_ready") else "android"
         alternate = "android2" if first == "android" else "android"
         return [first, alternate]
 
@@ -928,39 +985,18 @@ class XimalayaDownloadManager:
                     self._record_error(f"喜马拉雅{profile['name']}接口返回格式无效")
                     return False
                 if (
-                    str(data.get("ret")) in {"50", "1001"}
-                    and getattr(self, "_last_mobile_ticket_source", "") == "local"
-                    and str(os.environ.get("XIMALAYA_TICKET_MODE") or "auto").strip().lower() == "auto"
-                    and self._ticket_provider_url()
+                    str(data.get("ret")) == "1001"
+                    and getattr(self, "_last_mobile_ticket_source", "") != "local"
+                    and index + 1 < len(device_candidates)
                 ):
-                    print("   ♻️ 本地 Ticket 被 V4 拒绝，自动回退现有 Bridge 重新取票")
-                    timestamp = int(time.time() * 1000)
-                    if not self._refresh_mobile_credentials_from_provider(
-                        track_id, level, timestamp, device, force_bridge=True
-                    ):
-                        return False
-                    headers = self._mobile_v4_headers()
-                    api_url = self._mobile_v4_request_url(
-                        track_id, timestamp, device, level,
-                        host=self.mobile_credentials.get("host", ""),
-                    )
-                    info_response = self.session.get(api_url, headers=headers, timeout=20)
-                    if info_response.status_code != 200:
-                        self._record_error(
-                            f"喜马拉雅{profile['name']}Bridge 回退接口 HTTP {info_response.status_code}",
-                            info_response.status_code,
-                        )
-                        return False
-                    data = info_response.json()
-                if str(data.get("ret")) == "1001" and index + 1 < len(device_candidates):
                     print(f"   ♻️ V4 device={device} 签名分支被拒绝，尝试 {device_candidates[index + 1]}")
                     continue
                 if data.get("ret") not in (None, 0, "0"):
                     break
 
-                # A valid V4 response proves the shared account/device window
-                # has recovered; restore normal request pacing immediately.
-                self._clear_mobile_v4_rate_limit()
+                # Recover speed conservatively after a throttle instead of
+                # jumping back to full rate after a single successful request.
+                self._mark_mobile_v4_success()
 
                 cand, enc, unauth = self._extract_authorized_mobile_url(data, level)
                 if cand:
@@ -984,10 +1020,16 @@ class XimalayaDownloadManager:
                 if str(data.get("ret")) == "50":
                     message = "移动端登录凭证已失效或请求头不完整，请从已登录 App 重新抓取同一次请求的完整请求头"
                 elif str(data.get("ret")) == "1001":
-                    message = (
-                        f"V4 请求协议校验失败（已尝试 device={','.join(attempted_devices)}）；"
-                        "请把同一次 baseInfo 的 GET 请求行、Cookie、x-tk 与 User-Agent 一起保存"
-                    )
+                    if getattr(self, "_last_mobile_ticket_source", "") == "local":
+                        message = (
+                            "本地 V4 凭证验证触发临时风控，账号登录通常仍然有效；"
+                            f"程序将降低请求速率并在冷却后重试（服务端：{message}）"
+                        )
+                    else:
+                        message = (
+                            f"V4 请求协议校验失败（已尝试 device={','.join(attempted_devices)}）；"
+                            "请把同一次 baseInfo 的 GET 请求行、Cookie、x-tk 与 User-Agent 一起保存"
+                        )
                 ret_code = str(data.get("ret"))
                 if ret_code == "1001":
                     cooldown = self._mark_mobile_v4_rate_limited()

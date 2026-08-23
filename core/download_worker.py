@@ -16,7 +16,7 @@ _RETRY_BACKOFF = 2
 _RATE_LIMIT_WAIT = 30
 # 懒人听书 status=4 / “非法请求AA” 通常是风控冷却，短间隔重试只会继续失败。
 _LRTS_ILLEGAL_WAIT = int(os.getenv("LRTS_ILLEGAL_REQUEST_WAIT", "180") or "180")
-_XIMALAYA_V4_RATE_LIMIT_BACKOFF = (15, 30, 60)
+_XIMALAYA_V4_RATE_LIMIT_BACKOFF = (15, 30, 60, 120, 300, 600)
 
 
 class DownloadWorker(QThread):

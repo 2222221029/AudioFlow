@@ -37,19 +37,22 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
             XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL,
             XimalayaDownloadManager._MOBILE_V4_COOLDOWN_SECONDS,
             XimalayaDownloadManager._MOBILE_V4_JITTER,
+            XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT,
         )
         XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = 0.0
         XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = 0.0
         XimalayaDownloadManager._MOBILE_V4_COOLDOWN_SECONDS = 0.0
         XimalayaDownloadManager._MOBILE_V4_JITTER = 0.0
+        XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = 0.0
         XimalayaDownloadManager._clear_mobile_v4_rate_limit()
 
     def tearDown(self):
-        base, minimum, cooldown, jitter = self._v4_timing
+        base, minimum, cooldown, jitter, last_request = self._v4_timing
         XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = base
         XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = minimum
         XimalayaDownloadManager._MOBILE_V4_COOLDOWN_SECONDS = cooldown
         XimalayaDownloadManager._MOBILE_V4_JITTER = jitter
+        XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = last_request
         XimalayaDownloadManager._clear_mobile_v4_rate_limit()
 
     @staticmethod
@@ -100,6 +103,31 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertEqual(manager._mobile_quality_profile("M4A 128K")["level"], 2)
         self.assertEqual(manager._mobile_quality_profile("M4A 64K")["level"], 1)
         self.assertIsNone(manager._mobile_quality_profile("M4A 96K"))
+
+    def test_v4_slot_wait_rechecks_instead_of_prebooking_a_burst(self):
+        XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = 2.0
+        XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = 10.0
+
+        with mock.patch(
+            "core.ximalaya_download_manager.time.monotonic",
+            side_effect=[10.0, 11.0, 12.0],
+        ), mock.patch("core.ximalaya_download_manager.time.sleep") as sleep:
+            XimalayaDownloadManager._wait_for_mobile_v4_slot()
+
+        self.assertEqual(sleep.call_args_list, [mock.call(1.0), mock.call(1.0)])
+        self.assertEqual(XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT, 12.0)
+
+    def test_v4_speed_recovers_gradually_after_sustained_success(self):
+        XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = 1.0
+        XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = 4.0
+        XimalayaDownloadManager._MOBILE_V4_CONSECUTIVE_RATE_LIMITS = 2
+        XimalayaDownloadManager._MOBILE_V4_SUCCESS_STREAK = 99
+
+        XimalayaDownloadManager._mark_mobile_v4_success()
+
+        self.assertEqual(XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL, 3.2)
+        self.assertEqual(XimalayaDownloadManager._MOBILE_V4_SUCCESS_STREAK, 0)
+        self.assertEqual(XimalayaDownloadManager._MOBILE_V4_CONSECUTIVE_RATE_LIMITS, 2)
 
     def test_mobile_auto_quality_steps_down_until_available(self):
         manager = XimalayaDownloadManager()
@@ -621,6 +649,71 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         query = parse_qs(urlparse(get.call_args.args[0]).query)
         self.assertEqual(query["device"], ["android2"])
         self.assertEqual(manager.last_error_type, "restricted")
+
+    def test_local_ticket_mode_uses_android2_without_a_rejected_probe(self):
+        body = b"fLaC" + (b"audio" * 1000)
+        info = self._spatial_info(
+            3, "无损音质", "https://audio.example/member-lossless.flac", len(body)
+        )
+        audio = FakeResponse(
+            headers={"content-type": "audio/flac", "content-length": str(len(body))},
+            body=body,
+        )
+        credentials = {
+            "cookie": (
+                "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.52.3;"
+                "1&_token=123456&mobile-session"
+            ),
+            "user_agent": "ting_9.4.52.3(com.ximalaya.ting.android,Android)",
+        }
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "local",
+            "XIMALAYA_TICKET_PROVIDER_URL": "",
+        }):
+            manager = XimalayaDownloadManager(mobile_credentials=credentials)
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "track.flac"
+                with mock.patch.object(manager.session, "get", side_effect=[info, audio]) as get:
+                    ok = manager.download_audio_by_quality(
+                        "539592153", "无损真人录制", str(save_path)
+                    )
+
+        self.assertTrue(ok)
+        self.assertEqual(get.call_count, 2)
+        query = parse_qs(urlparse(get.call_args_list[0].args[0]).query)
+        self.assertEqual(query["device"], ["android2"])
+        self.assertEqual(manager._last_mobile_ticket_source, "local")
+
+    def test_local_rate_limit_never_calls_stale_bridge_provider(self):
+        credentials = {
+            "cookie": (
+                "1&_device=android&22015971-35cb-4c99-bb32-b3be8cf79608&9.4.52.3;"
+                "1&_token=123456&mobile-session"
+            ),
+            "user_agent": "ting_9.4.52.3(com.ximalaya.ting.android,Android)",
+        }
+        denied = FakeResponse(json_data={"ret": 1001, "msg": "凭证验证失败"})
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.dict("os.environ", {
+            "XIMALAYA_TICKET_MODE": "auto",
+            "XIMALAYA_TICKET_PROVIDER_URL": "http://retired-bridge/ticket",
+        }):
+            manager = XimalayaDownloadManager(mobile_credentials=credentials)
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                manager.session, "get", return_value=denied
+            ) as get, mock.patch(
+                "core.ximalaya_download_manager.requests.post"
+            ) as post:
+                ok = manager.download_audio_by_quality(
+                    "539592153", "无损真人录制", str(Path(tmp) / "track.flac")
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 1)
+        post.assert_not_called()
+        self.assertEqual(manager.last_error_type, "rate_limited")
+        self.assertIn("登录通常仍然有效", manager.last_error)
 
     def test_lossless_rejects_lower_quality_response_without_fallback(self):
         info = FakeResponse(json_data={

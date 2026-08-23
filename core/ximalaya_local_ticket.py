@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
+import threading
 import time
 import uuid
 from typing import Mapping
@@ -32,10 +34,27 @@ _UA_VERSION_RE = re.compile(r"ting[_/](\d+(?:\.\d+){2,3})", re.I)
 _TICKET_SUFFIX_RE = re.compile(
     r"com\.ximalaya\.ting\.android!([^!]+)!([^!]+)!b=[^&!]+&s=[^&!]+&u=\d+"
 )
+_TICKET_CACHE = {}
+_TICKET_CACHE_LOCK = threading.Lock()
+_TICKET_CACHE_MAX_ENTRIES = 32
 
 
 class LocalTicketError(ValueError):
     pass
+
+
+def _ticket_cache_ttl() -> float:
+    try:
+        value = float(os.getenv("XIMALAYA_LOCAL_TICKET_TTL_SECONDS", "900") or "900")
+    except (TypeError, ValueError):
+        value = 900.0
+    return max(60.0, min(value, 3600.0))
+
+
+def clear_mobile_ticket_cache() -> None:
+    """Clear locally generated session tickets, primarily for account changes/tests."""
+    with _TICKET_CACHE_LOCK:
+        _TICKET_CACHE.clear()
 
 
 def _b64u(raw: bytes) -> str:
@@ -93,14 +112,45 @@ def generate_mobile_ticket(value, business: str = "playTrack", scene: str = "pla
     xuid = "XAU" + _b64u(stable_id + signature)
 
     sdk_version, app_version = _session_versions(credentials)
-    timestamp = int(time.time()).to_bytes(4, "big")
-    random_part = bytes(a ^ b for a, b in zip(uuid.uuid4().bytes, stable_id))
-    prefix = f"T{xuid[1]}C"
-    attr = f"b={business}&s={scene}&u={uid}"
-    suffix = "!".join(
-        ("com.ximalaya.ting.android", sdk_version, app_version, attr)
-    ).encode("utf-8")
-    ticket_signature = hashlib.sha256(
-        timestamp + stable_id + random_part + prefix.encode("ascii") + _TICKET_KEY + suffix
-    ).digest()
-    return prefix + _b64u(timestamp + stable_id + random_part + ticket_signature + suffix)
+    cookie_digest = hashlib.sha256(
+        credentials.get("cookie", "").encode("utf-8")
+    ).hexdigest()
+    cache_key = (
+        uid,
+        stable_hex,
+        cookie_digest,
+        sdk_version,
+        app_version,
+        str(business),
+        str(scene),
+    )
+    now = time.monotonic()
+    ttl = _ticket_cache_ttl()
+
+    # x-tk is a short-lived session credential, not a per-track signature. The
+    # official client reuses it; minting a new random ticket for every chapter
+    # causes hundreds of credential validations and triggers the V4 risk window.
+    with _TICKET_CACHE_LOCK:
+        cached = _TICKET_CACHE.get(cache_key)
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+
+        timestamp = int(time.time()).to_bytes(4, "big")
+        random_part = bytes(a ^ b for a, b in zip(uuid.uuid4().bytes, stable_id))
+        prefix = f"T{xuid[1]}C"
+        attr = f"b={business}&s={scene}&u={uid}"
+        suffix = "!".join(
+            ("com.ximalaya.ting.android", sdk_version, app_version, attr)
+        ).encode("utf-8")
+        ticket_signature = hashlib.sha256(
+            timestamp + stable_id + random_part + prefix.encode("ascii") + _TICKET_KEY + suffix
+        ).digest()
+        ticket = prefix + _b64u(
+            timestamp + stable_id + random_part + ticket_signature + suffix
+        )
+
+        if len(_TICKET_CACHE) >= _TICKET_CACHE_MAX_ENTRIES:
+            oldest_key = min(_TICKET_CACHE, key=lambda key: _TICKET_CACHE[key][0])
+            _TICKET_CACHE.pop(oldest_key, None)
+        _TICKET_CACHE[cache_key] = (now, ticket)
+        return ticket
