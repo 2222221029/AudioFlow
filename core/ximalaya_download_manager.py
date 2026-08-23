@@ -376,6 +376,29 @@ class XimalayaDownloadManager:
             cls._WEB_V3_MIN_INTERVAL = cls._WEB_V3_BASE_INTERVAL
 
     @classmethod
+    def _mark_web_v3_busy(cls):
+        """Ease Web V3 metadata traffic without pausing unrelated downloads."""
+        with cls._WEB_V3_STATE_LOCK:
+            previous = cls._WEB_V3_MIN_INTERVAL
+            # A soft busy response usually clears when metadata requests are
+            # spread out slightly. Keep this below the explicit-rate-limit
+            # ceiling and leave concurrent CDN transfers untouched.
+            ceiling = min(
+                cls._WEB_V3_MAX_INTERVAL,
+                max(cls._WEB_V3_BASE_INTERVAL, 1.5),
+            )
+            cls._WEB_V3_MIN_INTERVAL = min(
+                ceiling,
+                max(
+                    cls._WEB_V3_BASE_INTERVAL,
+                    previous + 0.05,
+                    previous * 1.25,
+                ),
+            )
+            cls._WEB_V3_SUCCESS_STREAK = 0
+            return cls._WEB_V3_MIN_INTERVAL, cls._WEB_V3_MIN_INTERVAL > previous
+
+    @classmethod
     def _wait_for_web_v3_slot(cls):
         """Pace only Web V3 metadata calls; media downloads stay concurrent."""
         while True:
@@ -591,10 +614,24 @@ class XimalayaDownloadManager:
                 or any(marker in message for marker in ("频繁", "稍后", "繁忙", "拥挤", "重试"))
             )
             if transient:
+                # ret=1001 / "系统繁忙" is a soft, per-request rejection: a
+                # nearby retry often succeeds and it must not freeze every
+                # worker. Reserve the shared cooldown for explicit throttling.
                 transient_rate_limit = (
-                    str(data.get("ret")) in {"-3", "429", "1001"}
-                    or any(marker in message for marker in ("频繁", "稍后", "繁忙", "拥挤"))
+                    str(data.get("ret")) in {"-3", "429"}
+                    or any(marker in message for marker in ("频繁", "请求过多", "限流"))
                 )
+                soft_busy = (
+                    str(data.get("ret")) == "1001"
+                    or any(marker in message for marker in ("稍后", "繁忙", "拥挤"))
+                )
+                if soft_busy and not transient_rate_limit:
+                    interval, changed = self._mark_web_v3_busy()
+                    if changed:
+                        print(
+                            "   INFO: Web V3 响应繁忙，播放地址请求间隔自动调整为 "
+                            f"{interval:.2f} 秒；音频下载并发不受影响"
+                        )
                 rate_limited = rate_limited or transient_rate_limit
                 last_reason = f"临时拒绝: {message} (ret={data.get('ret')})"
                 if attempt < self._WEB_V3_MAX_ATTEMPTS:

@@ -1390,7 +1390,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(sleep.call_args_list, [mock.call(1.0), mock.call(1.0)])
         self.assertEqual(XimalayaDownloadManager._WEB_V3_LAST_REQUEST_AT, 12.0)
 
-    def test_web_v3_system_busy_is_rate_limit_and_skips_low_quality_fallback(self):
+    def test_web_v3_system_busy_retries_without_global_cooldown(self):
         busy = FakeResponse(json_data={"ret": 1001, "msg": "系统繁忙，请稍后再试!"})
 
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1418,9 +1418,36 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertFalse(ok)
         self.assertEqual(get.call_count, 3)
         self.assertEqual(retry.call_count, 1)
-        self.assertTrue(retry.call_args.kwargs["rate_limited"])
-        self.assertEqual(manager.last_error_type, "rate_limited")
+        self.assertFalse(retry.call_args.kwargs["rate_limited"])
+        self.assertEqual(XimalayaDownloadManager._WEB_V3_RATE_LIMITED_UNTIL, 0.0)
+        self.assertGreater(XimalayaDownloadManager._WEB_V3_MIN_INTERVAL, 0.0)
+        self.assertEqual(manager.last_error_type, "download_failed")
         self.assertIn("系统繁忙", manager.last_error)
+
+    def test_web_v3_soft_busy_pacing_recovers_after_successes(self):
+        XimalayaDownloadManager._WEB_V3_BASE_INTERVAL = 0.25
+        XimalayaDownloadManager._WEB_V3_MIN_INTERVAL = 0.25
+        XimalayaDownloadManager._WEB_V3_MAX_INTERVAL = 5.0
+
+        first_interval, changed = XimalayaDownloadManager._mark_web_v3_busy()
+
+        self.assertTrue(changed)
+        self.assertGreater(first_interval, 0.25)
+        self.assertLessEqual(first_interval, 1.5)
+        self.assertEqual(XimalayaDownloadManager._WEB_V3_RATE_LIMITED_UNTIL, 0.0)
+
+        with mock.patch.object(
+            XimalayaDownloadManager,
+            "_WEB_V3_RECOVERY_SUCCESSES",
+            2,
+        ), mock.patch(
+            "core.ximalaya_download_manager.time.monotonic",
+            return_value=100.0,
+        ):
+            XimalayaDownloadManager._mark_web_v3_success()
+            XimalayaDownloadManager._mark_web_v3_success()
+
+        self.assertLess(XimalayaDownloadManager._WEB_V3_MIN_INTERVAL, first_interval)
 
     def test_web_v3_has_no_client_side_chapter_quota(self):
         track_info = FakeResponse(json_data={
