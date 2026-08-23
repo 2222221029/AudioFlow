@@ -627,11 +627,11 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .chapter-page-trigger .icon{width:14px;height:14px;color:var(--text-mute);transform:rotate(90deg);transition:transform var(--dur-normal) var(--ease-out),color var(--dur-fast) ease}
 .chapter-page-picker.open .chapter-page-trigger .icon{transform:rotate(-90deg);color:var(--primary)}
 .chapter-page-trigger:disabled{cursor:wait;opacity:.6}
-.chapter-page-menu{position:absolute;top:calc(100% + 8px);left:50%;width:244px;max-width:calc(100vw - 28px);transform:translateX(-50%);padding:8px;border:1px solid var(--border-hi);border-radius:13px;background:var(--panel-2);box-shadow:0 18px 44px -18px rgba(0,0,0,.62);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);animation:fadeIn var(--dur-fast) var(--ease-out)}
+.chapter-page-menu{position:absolute;top:calc(100% + 8px);left:0;width:min(244px,calc(100vw - 72px));max-width:none;transform:none;padding:8px;border:1px solid var(--border-hi);border-radius:12px;background:var(--panel-2);box-shadow:0 18px 44px -18px rgba(0,0,0,.62);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);animation:fadeIn var(--dur-fast) var(--ease-out);box-sizing:border-box}
 .chapter-page-menu-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 5px 9px;color:var(--text);font-size:12px;font-weight:800}
 .chapter-page-menu-head span{color:var(--text-faint);font-size:11px;font-weight:600}
-.chapter-page-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;max-height:min(264px,40vh);overflow-y:auto;overscroll-behavior:contain;padding:1px;scrollbar-width:thin}
-.chapter-page-grid button{height:39px;min-width:0;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--text-mute);font:inherit;font-size:13px;font-weight:750;cursor:pointer}
+.chapter-page-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;max-height:min(214px,32dvh);overflow-y:auto;overscroll-behavior:contain;padding:1px;scrollbar-width:thin;scrollbar-gutter:stable}
+.chapter-page-grid button{height:38px;min-width:0;padding:0;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--text-mute);font:inherit;font-size:12.5px;font-weight:750;cursor:pointer;touch-action:manipulation}
 .chapter-page-grid button:active,.chapter-page-grid button:focus-visible{background:var(--panel-hi);color:var(--text);border-color:var(--border)}
 .chapter-page-grid button.active{background:var(--primary-soft);color:var(--primary);border-color:var(--border-hi);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 12%,transparent)}
 .chapter-page-total{color:var(--text-mute)}

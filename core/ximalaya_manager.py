@@ -1439,8 +1439,6 @@ class XimalayaManager:
             
             # 如果成功提取到track_id，使用增强版下载管理器
             if track_id:
-                print(f"🔄 使用增强版下载管理器下载 track_id: {track_id}")
-                
                 # 每个工作线程复用一个 Session，避免每集重复 DNS/TLS 建连。
                 downloader = self._thread_download_manager()
                 

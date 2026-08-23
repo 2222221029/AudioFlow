@@ -32,6 +32,17 @@ class FakeResponse:
 
 class XimalayaDownloadManagerTest(unittest.TestCase):
     def setUp(self):
+        self._web_v3_timing = (
+            XimalayaDownloadManager._WEB_V3_BASE_INTERVAL,
+            XimalayaDownloadManager._WEB_V3_MIN_INTERVAL,
+            XimalayaDownloadManager._WEB_V3_MAX_INTERVAL,
+            XimalayaDownloadManager._WEB_V3_JITTER,
+            XimalayaDownloadManager._WEB_V3_LAST_REQUEST_AT,
+        )
+        XimalayaDownloadManager._WEB_V3_BASE_INTERVAL = 0.0
+        XimalayaDownloadManager._WEB_V3_MIN_INTERVAL = 0.0
+        XimalayaDownloadManager._WEB_V3_JITTER = 0.0
+        XimalayaDownloadManager._WEB_V3_LAST_REQUEST_AT = 0.0
         self._v4_timing = (
             XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL,
             XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL,
@@ -48,6 +59,13 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         XimalayaDownloadManager._clear_web_v3_rate_limit()
 
     def tearDown(self):
+        web_base, web_minimum, web_maximum, web_jitter, web_last_request = self._web_v3_timing
+        XimalayaDownloadManager._WEB_V3_BASE_INTERVAL = web_base
+        XimalayaDownloadManager._WEB_V3_MIN_INTERVAL = web_minimum
+        XimalayaDownloadManager._WEB_V3_MAX_INTERVAL = web_maximum
+        XimalayaDownloadManager._WEB_V3_JITTER = web_jitter
+        XimalayaDownloadManager._WEB_V3_LAST_REQUEST_AT = web_last_request
+        XimalayaDownloadManager._clear_web_v3_rate_limit()
         base, minimum, cooldown, jitter, last_request = self._v4_timing
         XimalayaDownloadManager._MOBILE_V4_BASE_INTERVAL = base
         XimalayaDownloadManager._MOBILE_V4_MIN_INTERVAL = minimum
@@ -55,7 +73,6 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         XimalayaDownloadManager._MOBILE_V4_JITTER = jitter
         XimalayaDownloadManager._MOBILE_V4_LAST_REQUEST_AT = last_request
         XimalayaDownloadManager._clear_mobile_v4_rate_limit()
-        XimalayaDownloadManager._clear_web_v3_rate_limit()
 
     @staticmethod
     def _mobile_credentials(ticket="member-mobile-ticket"):
@@ -1309,6 +1326,14 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         with contextlib.redirect_stdout(io.StringIO()):
             manager = XimalayaDownloadManager(cookie_string="_token=member")
             with mock.patch.object(
+                XimalayaDownloadManager,
+                "_WEB_V3_RETRY_BASE_SECONDS",
+                0.0,
+            ), mock.patch.object(
+                XimalayaDownloadManager,
+                "_WEB_V3_RATE_LIMIT_COOLDOWN_SECONDS",
+                0.0,
+            ), mock.patch.object(
                 manager.session,
                 "get",
                 side_effect=[FakeResponse(), throttled, track_info],
@@ -1330,6 +1355,56 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
             parse_qs(urlparse(second_api_url).query)["trackQualityLevel"],
             ["2"],
         )
+
+    def test_web_v3_slot_rechecks_instead_of_releasing_a_burst(self):
+        XimalayaDownloadManager._WEB_V3_MIN_INTERVAL = 2.0
+        XimalayaDownloadManager._WEB_V3_LAST_REQUEST_AT = 10.0
+
+        with mock.patch(
+            "core.ximalaya_download_manager.time.monotonic",
+            side_effect=[10.0, 11.0, 12.0],
+        ), mock.patch(
+            "core.ximalaya_download_manager.time.sleep"
+        ) as sleep, mock.patch(
+            "core.ximalaya_download_manager.random.uniform", return_value=0.0
+        ):
+            XimalayaDownloadManager._wait_for_web_v3_slot()
+
+        self.assertEqual(sleep.call_args_list, [mock.call(1.0), mock.call(1.0)])
+        self.assertEqual(XimalayaDownloadManager._WEB_V3_LAST_REQUEST_AT, 12.0)
+
+    def test_web_v3_system_busy_is_rate_limit_and_skips_low_quality_fallback(self):
+        busy = FakeResponse(json_data={"ret": 1001, "msg": "系统繁忙，请稍后再试!"})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                XimalayaDownloadManager,
+                "_WEB_V3_MAX_ATTEMPTS",
+                2,
+            ), mock.patch.object(
+                XimalayaDownloadManager,
+                "_wait_for_web_v3_slot",
+            ), mock.patch.object(
+                XimalayaDownloadManager,
+                "_sleep_before_web_v3_retry",
+            ) as retry, mock.patch.object(
+                manager.session,
+                "get",
+                side_effect=[FakeResponse(), busy, busy],
+            ) as get:
+                ok = manager.download_audio_by_quality(
+                    "265392006",
+                    manager.WEB_AUTO_QUALITY,
+                    str(Path(tmp) / "track.m4a"),
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(retry.call_count, 1)
+        self.assertTrue(retry.call_args.kwargs["rate_limited"])
+        self.assertEqual(manager.last_error_type, "rate_limited")
+        self.assertIn("系统繁忙", manager.last_error)
 
     def test_web_v3_has_no_client_side_chapter_quota(self):
         track_info = FakeResponse(json_data={
@@ -1365,6 +1440,14 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 XimalayaDownloadManager,
                 "_WEB_V3_MAX_ATTEMPTS",
                 2,
+            ), mock.patch.object(
+                XimalayaDownloadManager,
+                "_WEB_V3_RETRY_BASE_SECONDS",
+                0.0,
+            ), mock.patch.object(
+                XimalayaDownloadManager,
+                "_WEB_V3_RATE_LIMIT_COOLDOWN_SECONDS",
+                0.0,
             ), mock.patch.object(
                 manager.session,
                 "get",

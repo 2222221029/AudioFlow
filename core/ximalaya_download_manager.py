@@ -75,9 +75,25 @@ class XimalayaDownloadManager:
     _WEB_V3_RATE_LIMIT_COOLDOWN_SECONDS = _positive_env_float(
         "XIMALAYA_WEB_V3_RATE_LIMIT_COOLDOWN", 15.0, 0.0
     )
+    _WEB_V3_BASE_INTERVAL = _positive_env_float(
+        "XIMALAYA_WEB_V3_MIN_INTERVAL", 0.25, 0.0
+    )
+    _WEB_V3_MIN_INTERVAL = _WEB_V3_BASE_INTERVAL
+    _WEB_V3_MAX_INTERVAL = _positive_env_float(
+        "XIMALAYA_WEB_V3_MAX_INTERVAL", 5.0, _WEB_V3_BASE_INTERVAL
+    )
+    _WEB_V3_JITTER = _positive_env_float(
+        "XIMALAYA_WEB_V3_JITTER", 0.05, 0.0
+    )
+    _WEB_V3_RECOVERY_SUCCESSES = _bounded_env_int(
+        "XIMALAYA_WEB_V3_RECOVERY_SUCCESSES", 24, 4, 500
+    )
     _WEB_V3_STATE_LOCK = threading.Lock()
+    _WEB_V3_LAST_REQUEST_AT = 0.0
     _WEB_V3_RATE_LIMITED_UNTIL = 0.0
     _WEB_V3_COOLDOWN_LOGGED_UNTIL = 0.0
+    _WEB_V3_CONSECUTIVE_RATE_LIMITS = 0
+    _WEB_V3_SUCCESS_STREAK = 0
     # Pace only the tiny ticket + baseInfo control request. Media responses are
     # downloaded outside these controls, so CDN throughput and normal chapter
     # concurrency remain independent.
@@ -317,10 +333,11 @@ class XimalayaDownloadManager:
     def _wait_for_web_v3_cooldown(cls):
         """Honor a shared Retry-After window across all Web V3 workers."""
         with cls._WEB_V3_STATE_LOCK:
-            remaining = max(0.0, cls._WEB_V3_RATE_LIMITED_UNTIL - time.monotonic())
+            now = time.monotonic()
+            remaining = max(0.0, cls._WEB_V3_RATE_LIMITED_UNTIL - now)
             should_log = (
                 remaining > 0
-                and cls._WEB_V3_RATE_LIMITED_UNTIL > cls._WEB_V3_COOLDOWN_LOGGED_UNTIL
+                and cls._WEB_V3_COOLDOWN_LOGGED_UNTIL <= now
             )
             if should_log:
                 cls._WEB_V3_COOLDOWN_LOGGED_UNTIL = cls._WEB_V3_RATE_LIMITED_UNTIL
@@ -333,17 +350,81 @@ class XimalayaDownloadManager:
     def _mark_web_v3_rate_limited(cls, seconds: float):
         delay = max(0.0, min(float(seconds), cls._WEB_V3_MAX_BACKOFF_SECONDS))
         with cls._WEB_V3_STATE_LOCK:
+            now = time.monotonic()
+            new_limit_episode = now >= cls._WEB_V3_RATE_LIMITED_UNTIL
+            if new_limit_episode:
+                cls._WEB_V3_CONSECUTIVE_RATE_LIMITS += 1
+                cls._WEB_V3_SUCCESS_STREAK = 0
+                cls._WEB_V3_MIN_INTERVAL = min(
+                    max(cls._WEB_V3_BASE_INTERVAL, cls._WEB_V3_MIN_INTERVAL * 2),
+                    cls._WEB_V3_MAX_INTERVAL,
+                )
             cls._WEB_V3_RATE_LIMITED_UNTIL = max(
                 cls._WEB_V3_RATE_LIMITED_UNTIL,
-                time.monotonic() + delay,
+                now + delay,
             )
         return delay
 
     @classmethod
     def _clear_web_v3_rate_limit(cls):
         with cls._WEB_V3_STATE_LOCK:
+            cls._WEB_V3_LAST_REQUEST_AT = 0.0
             cls._WEB_V3_RATE_LIMITED_UNTIL = 0.0
             cls._WEB_V3_COOLDOWN_LOGGED_UNTIL = 0.0
+            cls._WEB_V3_CONSECUTIVE_RATE_LIMITS = 0
+            cls._WEB_V3_SUCCESS_STREAK = 0
+            cls._WEB_V3_MIN_INTERVAL = cls._WEB_V3_BASE_INTERVAL
+
+    @classmethod
+    def _wait_for_web_v3_slot(cls):
+        """Pace only Web V3 metadata calls; media downloads stay concurrent."""
+        while True:
+            cooldown_message = ""
+            with cls._WEB_V3_STATE_LOCK:
+                now = time.monotonic()
+                next_slot = max(
+                    cls._WEB_V3_RATE_LIMITED_UNTIL,
+                    cls._WEB_V3_LAST_REQUEST_AT + cls._WEB_V3_MIN_INTERVAL,
+                )
+                if now >= next_slot:
+                    cls._WEB_V3_LAST_REQUEST_AT = now + random.uniform(
+                        0.0, cls._WEB_V3_JITTER
+                    )
+                    return
+                if (
+                    now < cls._WEB_V3_RATE_LIMITED_UNTIL
+                    and cls._WEB_V3_COOLDOWN_LOGGED_UNTIL <= now
+                ):
+                    cls._WEB_V3_COOLDOWN_LOGGED_UNTIL = cls._WEB_V3_RATE_LIMITED_UNTIL
+                    remaining = max(1, int(cls._WEB_V3_RATE_LIMITED_UNTIL - now + 0.999))
+                    cooldown_message = (
+                        f"   WAIT: 喜马拉雅 Web V3 触发临时流控，约 {remaining}s 后自动继续"
+                    )
+                wait = min(next_slot - now, 1.0)
+            if cooldown_message:
+                print(cooldown_message)
+            time.sleep(wait)
+
+    @classmethod
+    def _mark_web_v3_success(cls):
+        """Gradually restore metadata request speed after sustained success."""
+        with cls._WEB_V3_STATE_LOCK:
+            if time.monotonic() < cls._WEB_V3_RATE_LIMITED_UNTIL:
+                return
+            if cls._WEB_V3_MIN_INTERVAL <= cls._WEB_V3_BASE_INTERVAL:
+                cls._WEB_V3_CONSECUTIVE_RATE_LIMITS = 0
+                cls._WEB_V3_SUCCESS_STREAK = 0
+                return
+            cls._WEB_V3_SUCCESS_STREAK += 1
+            if cls._WEB_V3_SUCCESS_STREAK < cls._WEB_V3_RECOVERY_SUCCESSES:
+                return
+            cls._WEB_V3_MIN_INTERVAL = max(
+                cls._WEB_V3_BASE_INTERVAL,
+                cls._WEB_V3_MIN_INTERVAL * 0.8,
+            )
+            cls._WEB_V3_SUCCESS_STREAK = 0
+            if cls._WEB_V3_MIN_INTERVAL <= cls._WEB_V3_BASE_INTERVAL:
+                cls._WEB_V3_CONSECUTIVE_RATE_LIMITS = 0
 
     @classmethod
     def _web_v3_retry_delay(cls, attempt: int, response=None, rate_limited: bool = False) -> float:
@@ -369,7 +450,6 @@ class XimalayaDownloadManager:
         )
         if limited:
             cls._mark_web_v3_rate_limited(delay)
-            print(f"   WAIT: Web V3 {reason}，全局冷却 {delay:.1f} 秒后重试")
             cls._wait_for_web_v3_cooldown()
         elif delay > 0:
             print(f"   RETRY: Web V3 {reason}，{delay:.1f} 秒后重试")
@@ -421,7 +501,7 @@ class XimalayaDownloadManager:
         rate_limited = False
 
         for attempt in range(1, self._WEB_V3_MAX_ATTEMPTS + 1):
-            self._wait_for_web_v3_cooldown()
+            self._wait_for_web_v3_slot()
             timestamp = int(time.time() * 1000)
             # Web V3 omits M4A_128 unless the highest web quality is requested.
             url = (
@@ -477,6 +557,7 @@ class XimalayaDownloadManager:
 
             last_data = data
             if data.get("ret") in (None, 0, "0"):
+                self._mark_web_v3_success()
                 return data.get("trackInfo") or {}, data
 
             message = str(data.get("msg") or data.get("message") or "未知错误")
@@ -510,7 +591,10 @@ class XimalayaDownloadManager:
                 or any(marker in message for marker in ("频繁", "稍后", "繁忙", "拥挤", "重试"))
             )
             if transient:
-                transient_rate_limit = "频繁" in message
+                transient_rate_limit = (
+                    str(data.get("ret")) in {"-3", "429", "1001"}
+                    or any(marker in message for marker in ("频繁", "稍后", "繁忙", "拥挤"))
+                )
                 rate_limited = rate_limited or transient_rate_limit
                 last_reason = f"临时拒绝: {message} (ret={data.get('ret')})"
                 if attempt < self._WEB_V3_MAX_ATTEMPTS:
@@ -1885,8 +1969,6 @@ class XimalayaDownloadManager:
         self.last_download_expected_size = 0
         self.last_download_quality_label = ""
         self.last_download_path = ""
-        print(f"🚀🚀🚀 新版下载方法被调用! 🚀🚀🚀")
-        print(f"📥 开始下载音频: {chapter_title} ({quality})")
 
         if str(quality or "").strip() == self.MOBILE_AUTO_QUALITY:
             print("🎼 使用喜马拉雅移动端 V4，按无损 → 128/96K → 64K → 24K 自动选择")
@@ -1909,7 +1991,6 @@ class XimalayaDownloadManager:
             )
 
         if str(quality or "").strip() == self.WEB_AUTO_QUALITY:
-            print("🌐 使用喜马拉雅网页 V3 播放接口（按当前登录账号权限自动选择音质）")
             if self._download_web_authorized(
                 track_id,
                 save_path,
@@ -2087,22 +2168,6 @@ class XimalayaDownloadManager:
                 # 验证文件大小
                 size_mb = total_size / (1024 * 1024)
                 print(f"✅ 下载成功: {save_path} ({size_mb:.2f}MB)")
-                
-                # 根据文件大小验证音质（根据映射规则md）
-                expected_sizes = {
-                    '96K': (10, 13),  # 96k超高音质约11.85MB
-                    '48K': (5, 8),    # 48k/64k高清音质约5.97MB
-                    '64K': (5, 8),    # 48k/64k高清音质约5.97MB
-                    '24K': (2, 4)     # 24k标准音质约3.03MB
-                }
-                
-                if audio_quality in expected_sizes:
-                    min_size, max_size = expected_sizes[audio_quality]
-                    if min_size <= size_mb <= max_size:
-                        print(f"   ✅ 音质验证通过: {audio_quality} ({size_mb:.2f}MB 在预期范围 {min_size}-{max_size}MB)")
-                    else:
-                        print(f"   ⚠️ 音质警告: 期望{audio_quality}应为{min_size}-{max_size}MB，实际{size_mb:.2f}MB")
-                        # 仍然返回True，因为下载成功了
                 
                 return True
             else:
