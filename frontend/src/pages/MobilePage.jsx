@@ -257,11 +257,11 @@ export default function MobilePage() {
       <IconSprite />
       <div className="shell native-shell">
         <MobileHeader app={app} installable={installable} switchView={switchView} searchAndShowResults={searchAndShowResults} />
-        <RoutedContent app={app} installable={installable} switchView={switchView} searchAndShowResults={searchAndShowResults} />
+        <RoutedContent key={mobileView} app={app} installable={installable} switchView={switchView} searchAndShowResults={searchAndShowResults} />
       </div>
 
       {app.selectedAlbum && (
-        <div className="detail-page show native-detail-page">
+        <div key={`${app.selectedAlbum.platform || ''}-${app.selectedAlbum.id || app.selectedAlbum.title || ''}`} className="detail-page show native-detail-page">
           <div className="detail-head">
             <button className="icon-btn" onClick={app.actions.closeAlbum} aria-label="返回搜索结果"><Icon id="i-arrow-left" /></button>
             <div className="title">专辑详情</div>

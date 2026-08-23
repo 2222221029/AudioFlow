@@ -12,6 +12,7 @@ import json
 import urllib.parse
 import threading
 from typing import List, Dict, Optional, Tuple
+from .safe_logging import log_context, log_event, platform_verbose_enabled
 from .time_api import get_timestamp_ms_str
 
 class XimalayaManager:
@@ -688,10 +689,18 @@ class XimalayaManager:
                     print(f"📖 获取专辑详情成功: {album_detail['title']}")
                     return album_detail
                 else:
-                    print(f"❌ 获取专辑详情失败: {data.get('msg', '未知错误')}")
+                    message = str(data.get('msg', '未知错误') or '未知错误')
+                    if 'WFP' in message.upper() or '校验' in message:
+                        log_event(
+                            "WARN",
+                            "网页详情接口校验未通过，章节接口仍会继续尝试",
+                            reason=message,
+                        )
+                    else:
+                        log_event("WARN", "专辑详情接口返回失败", reason=message)
                     return None
             else:
-                print(f"❌ 获取专辑详情失败: HTTP {response.status_code}")
+                log_event("WARN", "专辑详情接口请求失败", http_status=response.status_code)
                 return None
                 
         except Exception as e:
@@ -701,6 +710,7 @@ class XimalayaManager:
     def _fetch_chapters_multi_api(self, album_id: str, page: int, page_size: int) -> Dict[str, List[Dict]]:
         """顺序调用多个章节 API（避免在 QThread 内用线程池触发 interpreter shutdown）"""
         api_results = {}
+        api_errors = {}
         # old_api 多数专辑更稳定，放前面以减少无效请求
         fetchers = [
             ('old_api', self._fetch_chapters_old_api),
@@ -710,26 +720,44 @@ class XimalayaManager:
         for api_name, fetcher in fetchers:
             try:
                 result = fetcher(album_id, page, page_size)
-                if result:
-                    api_results[api_name] = result
-                    print(f"   📊 {api_name}: 获取到 {len(result)} 个章节")
-                else:
-                    print(f"   ⚠️ {api_name}: 返回空结果")
+                api_results[api_name] = list(result or [])
             except Exception as e:
-                print(f"   ❌ {api_name}: 获取失败 - {e}")
+                api_results[api_name] = []
+                api_errors[api_name] = str(e)
+        if api_errors and platform_verbose_enabled():
+            log_event("WARN", "部分章节接口调用异常", api_errors=api_errors)
         return api_results
 
-    def _pick_best_chapter_list(self, api_results: Dict[str, List[Dict]]) -> List[Dict]:
-        if not api_results:
+    def _pick_best_chapter_list(
+        self,
+        api_results: Dict[str, List[Dict]],
+        log_summary: bool = True,
+    ) -> List[Dict]:
+        available_results = {
+            api_name: chapters
+            for api_name, chapters in (api_results or {}).items()
+            if chapters
+        }
+        api_counts = ",".join(
+            f"{api_name}:{len(chapters or [])}"
+            for api_name, chapters in (api_results or {}).items()
+        ) or "none"
+        if not available_results:
+            if log_summary:
+                log_event("WARN", "所有章节接口均未返回数据", api_counts=api_counts)
             return []
         # 合并各 API 的章节并按 track_id 去重取并集（而非只取单一最多的一份）。
         # 原因：new_api 偶发被风控（WFP 校验失败）时只剩 old_api，会漏掉只在 new_api 的章节
         # （如专辑最新几集），导致订阅永远补不全。取并集让多个 API 互补，最大化完整性。
-        apis_by_size = sorted(api_results.keys(), key=lambda k: len(api_results[k]), reverse=True)
+        apis_by_size = sorted(
+            available_results.keys(),
+            key=lambda key: len(available_results[key]),
+            reverse=True,
+        )
         merged = []
         seen = set()
         for api_name in apis_by_size:
-            for ch in api_results[api_name]:
+            for ch in available_results[api_name]:
                 key = str(
                     ch.get('id') or ch.get('track_id') or ch.get('trackId')
                     or ch.get('order_num') or ch.get('title') or ''
@@ -740,45 +768,52 @@ class XimalayaManager:
                     seen.add(key)
                 merged.append(ch)
         base_api = apis_by_size[0]
-        base_len = len(api_results[base_api])
-        if len(merged) > base_len:
-            print(f"✅ 合并章节并集：基准 {base_api}={base_len} → 多 API 互补去重后 {len(merged)} 个")
-        else:
-            print(f"✅ 选择 {base_api} 的结果（{len(merged)} 个章节）")
-        for api_name, chapters in api_results.items():
-            print(f"   📊 {api_name}: {len(chapters)} 个章节")
+        base_len = len(available_results[base_api])
+        if log_summary:
+            log_event(
+                "INFO",
+                "章节接口结果已合并" if len(merged) > base_len else "章节接口选择完成",
+                selected_api=base_api,
+                api_counts=api_counts,
+                chapters=len(merged),
+            )
         return merged
 
-    def get_album_chapters(self, album_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
+    def get_album_chapters(
+        self,
+        album_id: str,
+        page: int = 1,
+        page_size: int = 200,
+        log_summary: bool = True,
+    ) -> List[Dict]:
         """获取专辑章节列表 - 多 API 取章节数最多的一份
         
         分页加载（page_size<=1000）使用顺序请求，不在后台 QThread 里再开线程池。
         """
-        try:
-            print(f"📚 获取章节: {album_id}, 页码: {page}, 每页: {page_size}")
+        with log_context(
+            platform="喜马拉雅",
+            operation="章节接口",
+            album_id=album_id,
+            page=page,
+            page_size=page_size,
+        ):
+            try:
+                if page_size > 1000:
+                    return self._fetch_chapters_concurrent(album_id, page_size)
 
-            if page_size > 1000:
-                return self._fetch_chapters_concurrent(album_id, page_size)
+                api_results = self._fetch_chapters_multi_api(album_id, page, page_size)
+                return self._pick_best_chapter_list(api_results, log_summary=log_summary)
 
-            api_results = self._fetch_chapters_multi_api(album_id, page, page_size)
-            best = self._pick_best_chapter_list(api_results)
-            if best:
-                return best
-
-            print(f"❌ 所有章节API都失败了")
-            print(f"💡 提示：喜马拉雅章节API可能需要有效的Cookie或被风险检测拦截")
-            return []
-
-        except RuntimeError as e:
-            if 'shutdown' in str(e).lower():
-                print(f"⚠️ 章节加载已中断（解释器关闭）: {e}")
+            except RuntimeError as e:
+                if 'shutdown' in str(e).lower():
+                    print(f"⚠️ 章节加载已中断（解释器关闭）: {e}")
+                    return []
+                raise
+            except Exception as e:
+                print(f"❌ 获取章节列表异常: {e}")
+                import traceback
+                traceback.print_exc()
                 return []
-            raise
-        except Exception as e:
-            print(f"❌ 获取章节列表异常: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
     
     def _fetch_chapters_new_api(self, book_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
         """新API获取章节 (mobile/v1/album/track)"""
@@ -948,21 +983,20 @@ class XimalayaManager:
     def _fetch_chapters_concurrent(self, album_id: str, page_size: int = 2000) -> List[Dict]:
         """并发获取大量章节 - 用于专辑章节数很多的情况"""
         try:
-            print(f"🔄 并发获取大量章节: {album_id}, 每页: {page_size}")
+            log_event("INFO", "尝试根据专辑总数执行大页加载")
             
             # 首先获取专辑信息确定总章节数
             album_detail = self.get_album_detail(album_id)
             total_episodes = album_detail.get('episodes', 0) if album_detail else 0
             
             if total_episodes <= 0:
-                print("⚠️ 无法获取专辑总章节数")
+                log_event("WARN", "无法从详情接口确定总章节数，大页加载已取消")
                 return []
-            
-            print(f"📊 专辑总章节数: {total_episodes}")
             
             # 计算需要多少页
             total_pages = (total_episodes + page_size - 1) // page_size
-            print(f"📊 需要获取 {total_pages} 页章节")
+            if platform_verbose_enabled():
+                log_event("INFO", "大页加载计划已生成", total=total_episodes, pages=total_pages)
             
             # 使用线程池并发获取所有页面
             import concurrent.futures
@@ -970,12 +1004,22 @@ class XimalayaManager:
             
             chapters = []
             max_workers = min(20, total_pages)  # 限制最大并发数
+
+            def fetch_page(page_number):
+                with log_context(
+                    platform="喜马拉雅",
+                    operation="章节接口",
+                    album_id=album_id,
+                    page=page_number,
+                    page_size=page_size,
+                ):
+                    return self._fetch_chapters_optimized(album_id, page_number, page_size)
             
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_page = {}
                     for page in range(1, total_pages + 1):
-                        future = executor.submit(self._fetch_chapters_optimized, album_id, page, page_size)
+                        future = executor.submit(fetch_page, page)
                         future_to_page[future] = page
 
                     for future in concurrent.futures.as_completed(future_to_page, timeout=120):
@@ -983,7 +1027,13 @@ class XimalayaManager:
                             page_chapters = future.result(timeout=30)
                             if page_chapters:
                                 chapters.extend(page_chapters)
-                                print(f"📚 获取到 {len(page_chapters)} 个章节 (总计: {len(chapters)})")
+                                if platform_verbose_enabled():
+                                    log_event(
+                                        "INFO",
+                                        "大页加载进度",
+                                        current_page=future_to_page[future],
+                                        loaded=len(chapters),
+                                    )
                         except Exception as e:
                             page = future_to_page[future]
                             print(f"❌ 获取第 {page} 页章节失败: {e}")
@@ -993,7 +1043,12 @@ class XimalayaManager:
                     return chapters
                 raise
             
-            print(f"✅ 并发获取完成，总共获取到 {len(chapters)} 个章节")
+            log_event(
+                "INFO" if chapters else "WARN",
+                "大页加载完成" if chapters else "大页加载未返回章节",
+                chapters=len(chapters),
+                pages=total_pages,
+            )
             return chapters
             
         except Exception as e:
@@ -1004,9 +1059,11 @@ class XimalayaManager:
     
     def _fetch_chapters_optimized(self, book_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
         """优化的移动端API章节获取 - 新API优先，失败自动降级"""
+        verbose = platform_verbose_enabled()
         # 🚀 优先尝试新API (mobile/v1/album/track)
         try:
-            print(f"🚀 优先使用新API获取章节: {book_id}, 页码: {page}")
+            if verbose:
+                log_event("INFO", "尝试新章节接口", current_page=page, api="new_api")
             
             current_time = get_timestamp_ms_str()
             new_api_url = f"https://mobile.ximalaya.com/mobile/v1/album/track/ts-{current_time}"
@@ -1030,7 +1087,6 @@ class XimalayaManager:
             if self.cookie_string:
                 headers['Cookie'] = self.cookie_string
             
-            print(f"🔍 新API请求: {new_api_url}")
             response = self.session.get(new_api_url, params=params, headers=headers, timeout=15)
             
             if response.status_code == 200:
@@ -1040,8 +1096,6 @@ class XimalayaManager:
                     tracks = data.get('data', {}).get('list', [])
                     
                     if tracks:
-                        print(f"✅ 新API成功获取 {len(tracks)} 个章节")
-                        
                         # 转换为标准格式
                         chapter_list = []
                         for item in tracks:
@@ -1063,19 +1117,21 @@ class XimalayaManager:
                         
                         return chapter_list
                     else:
-                        print(f"⚠️ 新API返回空列表，降级到旧API")
+                        if verbose:
+                            log_event("WARN", "新章节接口返回空列表，改用旧接口", api="new_api")
                 else:
-                    print(f"⚠️ 新API返回错误 ret={data.get('ret')}，降级到旧API")
+                    if verbose:
+                        log_event("WARN", "新章节接口返回失败，改用旧接口", api="new_api", ret=data.get('ret'))
             else:
-                print(f"⚠️ 新API HTTP {response.status_code}，降级到旧API")
+                if verbose:
+                    log_event("WARN", "新章节接口请求失败，改用旧接口", api="new_api", http_status=response.status_code)
                 
         except Exception as e:
-            print(f"⚠️ 新API异常: {e}，降级到旧API")
+            if verbose:
+                log_event("WARN", "新章节接口异常，改用旧接口", api="new_api", reason=str(e))
         
         # 📱 降级到旧API (fmobile-album/album/track)
         try:
-            print(f"📱 使用旧API获取章节: {book_id}, 页码: {page}")
-            
             chapter_list = []
             current_time = get_timestamp_ms_str()
             
@@ -1084,8 +1140,6 @@ class XimalayaManager:
                    f"?ac=4G&albumId={book_id}&device=android&isAsc=true"
                    f"&isQueryInvitationBrand=true&isVideoAsc=true&pageSize={page_size}"
                    f"&source=3&supportWebp=true&pageId={page}")
-            
-            print(f"🔍 旧API请求: {url}")
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36',
@@ -1117,7 +1171,6 @@ class XimalayaManager:
                         data_list = [item for item in list_items if isinstance(item, dict)]
             
             if not data_list:
-                print(f"🏁 旧API没有更多章节")
                 return []
             
             # 转换为标准格式
@@ -1142,7 +1195,6 @@ class XimalayaManager:
                 }
                 chapter_list.append(chapter)
             
-            print(f"   📚 旧API第{page}页获取到 {len(data_list)} 个章节")
             return chapter_list
             
         except Exception as e:

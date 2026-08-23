@@ -157,7 +157,7 @@ export function useAudioFlowApp() {
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [downloadQuality, setDownloadQuality] = useState(XMLY_MOBILE_INTERFACE);
-  const [ximalayaInterface, setXimalayaInterface] = useState(XMLY_MOBILE_INTERFACE);
+  const [ximalayaInterface, setXimalayaInterface] = useState(XMLY_WEB_INTERFACE);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
   const [downloadPagination, setDownloadPagination] = useState({page: 1, limit: 20, total: 0, total_pages: 1});
   const [downloadSummary, setDownloadSummary] = useState({total: 0, active_count: 0, completed_count: 0, failed_count: 0, interrupted_count: 0});

@@ -298,6 +298,12 @@ a{color:inherit;text-decoration:none}
 .result-card{display:flex;gap:12px;padding:12px;background:var(--panel);border:1px solid var(--border);
   border-radius:var(--radius-card);box-shadow:var(--shadow-card);margin-bottom:10px;color:var(--text);text-align:left;width:100%;align-items:center}
 .result-card:active{transform:scale(.99)}
+.result-card{animation:mobileResultIn .3s var(--ease-out) both}
+.native-section>.result-card:nth-of-type(2),.mobile-personal-results>.result-card:nth-of-type(2){animation-delay:.035s}
+.native-section>.result-card:nth-of-type(3),.mobile-personal-results>.result-card:nth-of-type(3){animation-delay:.07s}
+.native-section>.result-card:nth-of-type(4),.mobile-personal-results>.result-card:nth-of-type(4){animation-delay:.105s}
+.native-section>.result-card:nth-of-type(5),.mobile-personal-results>.result-card:nth-of-type(5){animation-delay:.14s}
+@keyframes mobileResultIn{from{opacity:0;transform:translateY(8px) scale(.995)}to{opacity:1;transform:none}}
 .result-cover{width:72px;height:72px;border-radius:14px;flex-shrink:0;background-size:cover;background-position:center;
   background-color:var(--primary-soft);display:flex;align-items:center;justify-content:center;
   color:var(--primary);font-weight:700;font-size:13px}
@@ -430,6 +436,8 @@ a{color:inherit;text-decoration:none}
 .detail-page.player-visible .detail-chapters{padding-bottom:86px}
 .detail-page.player-visible .detail-bar{padding-bottom:84px}
 .detail-page.show{transform:none}
+.native-detail-page.show{animation:mobileDetailIn .3s var(--ease-out) both}
+@keyframes mobileDetailIn{from{opacity:0;transform:translateY(18px) scale(.995)}to{opacity:1;transform:none}}
 .detail-bg{position:absolute;inset:0;
   background:
     radial-gradient(ellipse 80% 50% at 100% 0%, var(--bg-grad-a), transparent 65%),
@@ -612,6 +620,11 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .chapter-toolbar .ch-summary{margin-left:auto;color:var(--text-mute);font-size:11.5px;font-variant-numeric:tabular-nums}
 .chapter-pager{display:inline-flex;align-items:center;gap:6px;color:var(--text-mute);font-size:11.5px;font-variant-numeric:tabular-nums}
 .chapter-pager .icon-btn{width:34px;height:34px;min-height:34px;flex:0 0 34px}
+.chapter-page-picker{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.chapter-page-picker select{height:34px;min-width:76px;padding:0 22px 0 8px;border:1px solid var(--border);border-radius:9px;background:var(--panel-hi);color:var(--text);font:inherit;font-weight:650;outline:none;cursor:pointer}
+.chapter-page-picker select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
+.chapter-page-picker select:disabled{cursor:wait;opacity:.65}
+.chapter-page-total{color:var(--text-mute)}
 .seg-control{height:34px;padding:3px;display:inline-flex;align-items:center;gap:2px;border-radius:var(--radius-pill);background:var(--panel-hi);border:1px solid var(--border);box-sizing:border-box}
 .seg-control button{height:26px;padding:0 11px;border:0;border-radius:var(--radius-pill);background:transparent;color:var(--text-mute);font-size:12px;font-weight:700;white-space:nowrap}
 .seg-control button.active{background:linear-gradient(135deg,var(--aurora-a),var(--aurora-b));color:#fff;box-shadow:0 6px 16px -10px var(--aurora-a)}
@@ -1028,6 +1041,8 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 }
 .mobile-personal-row+.mobile-personal-row{border-top:1px solid var(--border)}
 .mobile-personal-row .icon{width:21px;height:21px;color:var(--text);stroke-width:2.25}
+.mobile-personal-row.active{background:var(--primary-soft);color:var(--primary)}
+.mobile-personal-row.active .icon{color:var(--primary)}
 .mobile-personal-row span{
   min-width:0;
   overflow:hidden;
@@ -1038,6 +1053,9 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 }
 .mobile-personal-row .icon-sm{width:16px;height:16px;color:var(--text-faint)}
 .mobile-personal-results{margin-top:14px}
+.personal-results-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 2px 10px}
+.personal-results-head strong{font-size:14px;color:var(--text)}
+.personal-results-head span{font-size:11.5px;color:var(--text-mute);font-variant-numeric:tabular-nums}
 .shell-personal ~ .tabbar{
   background:var(--panel-2);
   border-top:1px solid var(--border);

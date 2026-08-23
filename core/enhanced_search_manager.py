@@ -28,6 +28,7 @@ from .search_manager import SearchManager  # 导入SearchManager用于起点搜�
 from .kuwo_manager import KuwoManager  # 导入酷我听书管理器
 from .netease_cloud_audiobook_manager import NeteaseCloudAudiobookManager
 from .lizhi_manager import LizhiManager
+from .safe_logging import log_context, log_event, platform_verbose_enabled
 
 
 class EnhancedSearchManager:
@@ -358,6 +359,18 @@ class EnhancedSearchManager:
         return normalized
 
     def _search_platform(self, keyword: str, platform: str) -> List[Dict]:
+        started = time.monotonic()
+        with log_context(platform=platform, operation="搜索", query=keyword):
+            results = self._search_platform_impl(keyword, platform)
+            log_event(
+                "INFO" if results else "WARN",
+                "平台搜索完成" if results else "平台搜索无结果",
+                results=len(results),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return results
+
+    def _search_platform_impl(self, keyword: str, platform: str) -> List[Dict]:
         """Run one interactive first-page search without synchronous detail enrichment."""
         try:
             if platform == '喜马拉雅':
@@ -393,10 +406,9 @@ class EnhancedSearchManager:
             else:
                 return []
             results = self._normalize_search_books(books, platform)
-            print(f"✅ {platform} 首屏搜索完成，共 {len(results)} 条")
             return results
         except Exception as exc:
-            print(f"❌ {platform} 搜索失败: {exc}")
+            print(f"❌ 搜索请求失败: {exc}")
             return []
 
     def _search_platform_cached(self, keyword: str, platform: str) -> List[Dict]:
@@ -418,6 +430,19 @@ class EnhancedSearchManager:
         return results
 
     def search_books(self, keyword: str, platform: str = 'all') -> List[Dict]:
+        started = time.monotonic()
+        scope_platform = "全部平台" if platform == "all" else platform
+        with log_context(platform=scope_platform, operation="搜索", query=str(keyword or '').strip()):
+            results = self._search_books(keyword, platform)
+            log_event(
+                "INFO" if results else "WARN",
+                "聚合搜索完成" if platform == "all" else "搜索完成",
+                results=len(results),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return results
+
+    def _search_books(self, keyword: str, platform: str = 'all') -> List[Dict]:
         """Search one platform or aggregate first-page results concurrently."""
         keyword_stripped = str(keyword or '').strip()
         parsed_tingshu_id = parse_book_id(keyword_stripped) if platform in ('番茄听书', 'all') else None
@@ -744,6 +769,17 @@ class EnhancedSearchManager:
             return None
     
     def get_album_detail(self, album_id: str, platform: str) -> Optional[Dict]:
+        started = time.monotonic()
+        with log_context(platform=platform, operation="专辑详情", album_id=album_id):
+            detail = self._get_album_detail(album_id, platform)
+            log_event(
+                "INFO" if detail else "WARN",
+                "专辑详情加载完成" if detail else "未获取到专辑详情",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return detail
+
+    def _get_album_detail(self, album_id: str, platform: str) -> Optional[Dict]:
         """获取专辑详情"""
         try:
             # 🔧 统一platform处理：支持英文代码和中文名称
@@ -800,6 +836,34 @@ class EnhancedSearchManager:
         page_size: int = 100,
         voice: Optional[Dict] = None,
     ):
+        started = time.monotonic()
+        with log_context(
+            platform=platform,
+            operation="章节目录",
+            album_id=album_id,
+            page=page,
+            page_size=page_size,
+        ):
+            chapters, total = self._get_album_chapters_page(
+                album_id, platform, page=page, page_size=page_size, voice=voice
+            )
+            log_event(
+                "INFO" if chapters else "WARN",
+                "章节分页加载完成" if chapters else "当前页没有章节",
+                chapters=len(chapters),
+                total=total or "unknown",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return chapters, total
+
+    def _get_album_chapters_page(
+        self,
+        album_id: str,
+        platform: str,
+        page: int = 1,
+        page_size: int = 100,
+        voice: Optional[Dict] = None,
+    ):
         """Return one UI page plus an exact total when the provider exposes only a full directory."""
         page = max(1, int(page or 1))
         page_size = max(1, min(int(page_size or 100), 200))
@@ -840,6 +904,18 @@ class EnhancedSearchManager:
         return chapters, exact_total
     
     def get_album_chapters(self, album_id: str, platform: str) -> List[Dict]:
+        started = time.monotonic()
+        with log_context(platform=platform, operation="完整目录", album_id=album_id):
+            chapters = self._get_album_chapters(album_id, platform)
+            log_event(
+                "INFO" if chapters else "ERROR",
+                "专辑目录加载完成" if chapters else "专辑目录加载失败",
+                chapters=len(chapters),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return chapters
+
+    def _get_album_chapters(self, album_id: str, platform: str) -> List[Dict]:
         """获取专辑章节列表"""
         try:
             chapters = []
@@ -848,17 +924,34 @@ class EnhancedSearchManager:
                 # 喜马拉雅管理器在 page_size > 1000 时会走大页/并发加载，避免 50 条一页串行拉取。
                 chapters = self.ximalaya_manager.get_album_chapters(album_id, 1, 2000)
                 if not chapters:
+                    log_event("INFO", "大页加载不可用，改用稳定分页扫描", scan_page_size=200)
                     page = 1
                     page_size = 200
+                    verbose = platform_verbose_enabled()
                     while True:
-                        page_chapters = self.ximalaya_manager.get_album_chapters(album_id, page, page_size)
+                        page_chapters = self.ximalaya_manager.get_album_chapters(
+                            album_id,
+                            page,
+                            page_size,
+                            log_summary=verbose,
+                        )
                         if not page_chapters:
                             break
                         chapters.extend(page_chapters)
-                        if len(page_chapters) < page_size:
+                        is_last_page = len(page_chapters) < page_size
+                        if verbose or page == 1 or page % 10 == 0 or is_last_page:
+                            log_event(
+                                "INFO",
+                                "目录分页扫描进度",
+                                current_page=page,
+                                page_chapters=len(page_chapters),
+                                loaded=len(chapters),
+                            )
+                        if is_last_page:
                             break
                         page += 1
                         if page > 200:
+                            log_event("WARN", "目录分页扫描达到安全页数上限", max_pages=200)
                             break
                         
             elif platform in ['懒人听书', 'lrts']:
@@ -876,8 +969,6 @@ class EnhancedSearchManager:
                 chapters = self.qimao_manager.get_chapters(album_id)
             elif platform in ['蜻蜓FM', 'qtfm']:
                 # 蜻蜓FM章节获取 - 新API可能支持分页
-                print(f"🎧 蜻蜓FM获取章节: {album_id}")
-                
                 # 先尝试一次性获取所有章节（使用大page_size）
                 chapters = self.qtfm_manager.get_chapters(album_id, version=None, page=1, page_size=10000)
                 
@@ -887,7 +978,6 @@ class EnhancedSearchManager:
                 total_programs = 0
                 if book_detail:
                     total_programs = book_detail.get('total_programs', 0)
-                    print(f"📊 书籍详情显示总章节数: {total_programs}")
                 
                 # 如果获取的章节数少于总章节数，尝试分页获取
                 if total_programs > 0 and len(chapters) < total_programs:
@@ -897,17 +987,15 @@ class EnhancedSearchManager:
                     page_size = 100
                     
                     while len(all_chapters) < total_programs:
-                        print(f"📖 正在获取第 {page} 页章节...")
                         page_chapters = self.qtfm_manager.get_chapters(album_id, version=None, page=page, page_size=page_size)
                         if not page_chapters or len(page_chapters) == 0:
-                            print(f"✅ 已获取所有章节，共 {len(all_chapters)} 个")
                             break
                         all_chapters.extend(page_chapters)
-                        print(f"📊 当前已获取 {len(all_chapters)} 个章节")
+                        if platform_verbose_enabled() or page % 10 == 0:
+                            log_event("INFO", "目录分页扫描进度", current_page=page, loaded=len(all_chapters))
                         
                         # 如果获取的章节少于请求的数量，说明已经到最后一页
                         if len(page_chapters) < page_size:
-                            print(f"✅ 已获取所有章节，共 {len(all_chapters)} 个")
                             break
                         
                         page += 1
@@ -921,19 +1009,14 @@ class EnhancedSearchManager:
                         time.sleep(0.2)
                     
                     chapters = all_chapters
-                    print(f"✅ 蜻蜓FM分页获取完成，共 {len(chapters)} 个章节")
-                elif chapters:
-                    print(f"✅ 蜻蜓FM成功获取 {len(chapters)} 个章节")
-                else:
+                elif not chapters:
                     print(f"⚠️ 蜻蜓FM获取章节失败，尝试使用version参数")
                     # 如果失败，尝试获取version后再获取章节
                     if book_detail:
                         version = book_detail.get('version')
                         if version:
                             chapters = self.qtfm_manager.get_chapters(album_id, version=version, page=1, page_size=10000)
-                            if chapters:
-                                print(f"✅ 使用version参数成功获取 {len(chapters)} 个章节")
-                            else:
+                            if not chapters:
                                 print(f"❌ 使用version参数仍然失败")
                     else:
                         print(f"❌ 无法获取书籍详情，章节获取失败")
@@ -955,7 +1038,14 @@ class EnhancedSearchManager:
                             break
                         all_chapters.extend(page_chapters)
                         
-                        print(f"☁️ 第{page}页获取到 {len(page_chapters)} 个章节")
+                        if platform_verbose_enabled() or page % 10 == 0:
+                            log_event(
+                                "INFO",
+                                "目录分页扫描进度",
+                                current_page=page,
+                                page_chapters=len(page_chapters),
+                                loaded=len(all_chapters),
+                            )
                         
                         # 如果获取的章节少于请求的数量，说明已经到最后一页
                         if len(page_chapters) < page_size:
@@ -970,17 +1060,13 @@ class EnhancedSearchManager:
                     
                     if len(all_chapters) > len(chapters):
                         chapters = all_chapters
-                        print(f"☁️ 分页获取完成，总共 {len(chapters)} 个章节")
             elif platform in ['起点听书', 'qidian']:
                 # 起点听书章节加载
                 chapters = self.search_manager.get_album_chapters(album_id, platform)
             elif platform in ['酷我听书', 'kuwo']:
                 # 酷我听书获取全部章节
-                print(f"🎵 酷我听书获取章节: {album_id}")
                 chapters = self.kuwo_manager.get_chapters(album_id, page=1, page_size=10000)
-                print(f"✅ 酷我听书获取到 {len(chapters)} 个章节")
             elif platform in ['网易云听书', 'netease']:
-                print(f"🎧 网易云听书获取章节: {album_id}")
                 page = 1
                 page_size = 1000
                 while True:
@@ -993,15 +1079,11 @@ class EnhancedSearchManager:
                     page += 1
                     if page > 100:
                         break
-                print(f"✅ 网易云听书获取到 {len(chapters)} 个章节")
             elif platform in ['荔枝FM', 'lizhi']:
-                print(f"🍥 荔枝FM获取章节: {album_id}")
                 chapters = self.lizhi_manager.get_chapters(album_id, page=1, page_size=500, max_pages=20)
-                print(f"✅ 荔枝FM获取到 {len(chapters)} 个章节")
             else:
                 return []
             
-            print(f"📚 获取到 {len(chapters)} 个章节")
             return chapters
             
         except Exception as e:
@@ -1011,6 +1093,24 @@ class EnhancedSearchManager:
             return []
     
     def get_audio_urls(self, track_id: str, platform: str, book_id: Optional[str] = None, voice_name: Optional[str] = None) -> Dict[str, str]:
+        started = time.monotonic()
+        with log_context(
+            platform=platform,
+            operation="音频地址",
+            album_id=book_id,
+            track_id=track_id,
+        ):
+            urls = self._get_audio_urls(track_id, platform, book_id, voice_name)
+            available = bool(urls and any(urls.values()))
+            log_event(
+                "INFO" if available else "WARN",
+                "音频地址解析完成" if available else "未解析到音频地址",
+                variants=len(urls or {}),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            return urls
+
+    def _get_audio_urls(self, track_id: str, platform: str, book_id: Optional[str] = None, voice_name: Optional[str] = None) -> Dict[str, str]:
         """获取音频URL"""
         try:
             # 🔧 统一platform处理：支持英文代码和中文名称

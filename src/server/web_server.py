@@ -31,7 +31,13 @@ from core.lrts_manager import (
     normalize_lrts_credentials,
     parse_lrts_credentials,
 )
-from core.safe_logging import RedactingFilter, install_safe_print
+from core.safe_logging import (
+    ContextRedactingFilter,
+    configured_log_level,
+    install_safe_print,
+    log_context,
+    log_event,
+)
 from core.platform_config import (
     APP_NAME,
     APP_VERSION,
@@ -89,9 +95,19 @@ _log_handler = RotatingFileHandler(
     backupCount=LOG_BACKUP_COUNT,
     encoding="utf-8",
 )
-_log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-_log_handler.addFilter(RedactingFilter())
-logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
+_log_formatter = logging.Formatter(
+    "%(asctime)s %(levelname)s %(log_scope)s %(message)s%(log_fields)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+_log_handler.setFormatter(_log_formatter)
+_log_handler.addFilter(ContextRedactingFilter())
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+_console_handler.addFilter(ContextRedactingFilter())
+logging.basicConfig(
+    level=getattr(logging, configured_log_level(), logging.INFO),
+    handlers=[_log_handler, _console_handler],
+)
 # httpx 内部日志用 %d 格式化状态码字符串会触发 logging 错误，屏蔽其 INFO 日志
 logging.getLogger("httpx").setLevel(logging.WARNING)
 install_safe_print()
@@ -2001,6 +2017,36 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
 
 
 def run_download_task(task_id, album, chapters, options):
+    normalized_album = normalize_album(album)
+    platform = normalized_album.get("platform") or "未知平台"
+    album_id = (
+        normalized_album.get("id")
+        or normalized_album.get("album_id")
+        or normalized_album.get("book_id")
+        or ""
+    )
+    with log_context(
+        platform=platform,
+        operation="下载任务",
+        task_id=task_id,
+        album_id=album_id,
+        chapters=len(chapters or []),
+    ):
+        log_event("INFO", "下载任务开始")
+        try:
+            return _run_download_task(task_id, normalized_album, chapters, options)
+        finally:
+            current = task_snapshot(task_id) or {}
+            log_event(
+                "INFO" if current.get("status") == "completed" else "WARN",
+                "下载任务结束",
+                status=current.get("status") or "unknown",
+                success=current.get("success", 0),
+                failed=current.get("failed", 0),
+            )
+
+
+def _run_download_task(task_id, album, chapters, options):
     album = normalize_album(album)
     chapters = list(chapters or [])
     options = dict(options or {})
@@ -2721,20 +2767,28 @@ def api_chapters():
             search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
     active_voice = resolve_voice_for_album(album, voice)
     exact_total = 0
-    if load_all:
-        if platform == "番茄畅听" and active_voice:
-            raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
-        elif platform == "番茄听书" and active_voice:
-            raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
-        elif platform == "七猫听书" and active_voice:
-            raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
+    with log_context(
+        platform=platform,
+        operation="章节目录",
+        album_id=album_id,
+        page=page,
+        page_size=page_size,
+        load_all=load_all,
+    ):
+        if load_all:
+            if platform == "番茄畅听" and active_voice:
+                raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
+            elif platform == "番茄听书" and active_voice:
+                raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
+            elif platform == "七猫听书" and active_voice:
+                raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
+            else:
+                raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+            exact_total = len(raw_chapters)
         else:
-            raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
-        exact_total = len(raw_chapters)
-    else:
-        raw_chapters, exact_total = search_manager.get_album_chapters_page(
-            str(album_id), platform, page=page, page_size=page_size, voice=active_voice
-        )
+            raw_chapters, exact_total = search_manager.get_album_chapters_page(
+                str(album_id), platform, page=page, page_size=page_size, voice=active_voice
+            )
     warning = ""
     if platform == "懒人听书":
         warning = str(getattr(search_manager.lrts_manager, "last_chapter_warning", "") or "")
@@ -2800,7 +2854,18 @@ def api_album_voices():
     if not album.get("platform"):
         return json_error("缺少平台信息")
     try:
-        voices = get_album_voices(album)
+        album_id = album.get("id") or album.get("album_id") or album.get("book_id") or ""
+        with log_context(
+            platform=album.get("platform"),
+            operation="音色列表",
+            album_id=album_id,
+        ):
+            voices = get_album_voices(album)
+            log_event(
+                "INFO" if voices else "WARN",
+                "音色列表加载完成" if voices else "专辑没有可选音色",
+                voices=len(voices),
+            )
         return json_ok(album=album, voices=voices, count=len(voices))
     except Exception as exc:
         logging.exception("load voices failed")
@@ -2818,6 +2883,13 @@ def api_album_audio():
     track_id = chapter_identifier(chapter)
     if not platform or not album_id or not track_id:
         return json_error("缺少专辑、章节或平台信息，无法播放")
+    scope = log_context(
+        platform=platform,
+        operation="试听",
+        album_id=album_id,
+        track_id=track_id,
+    )
+    scope.__enter__()
     try:
         if platform == "番茄畅听":
             info = search_manager.fanqie_manager.get_audio_download_info(
@@ -2869,6 +2941,8 @@ def api_album_audio():
         return json_ok(url=proxy_url, source_url=url)
     except Exception as exc:
         return json_error(str(exc), status=500)
+    finally:
+        scope.__exit__(None, None, None)
 
 
 # ── 音频代理 ──────────────────────────────────

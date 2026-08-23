@@ -292,7 +292,8 @@ function formatCheckTime(value, fallback = '从未') {
 function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterList, chapterPagination, chapterSort, setChapterSort, downloadRange, setDownloadRange, subscribed, actions}) {
   const [showRange, setShowRange] = useState(false);
   const pg = chapterPagination || {page: 1, total_pages: 1, total: chapters.length, has_more: false};
-  const canNext = pg.has_more || pg.page < pg.total_pages;
+  const totalPages = Math.max(1, Number(pg.total_pages) || 1);
+  const canNext = pg.has_more || pg.page < totalPages;
   return (
     <div className="chapter-toolbar">
       {/* 主操作 */}
@@ -313,7 +314,16 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
       {(pg.total_pages > 1 || pg.has_more) && (
         <div className="chapter-pager">
           <button className="icon-btn" disabled={loading || pg.page <= 1} onClick={() => actions.loadChapterPage(pg.page - 1)} title="上一页" aria-label="上一页"><Icon id="i-arrow-left" /></button>
-          <span>{pg.page}/{pg.total_pages || '?'}</span>
+          {pg.total_pages ? (
+            <label className="chapter-page-picker" title="选择章节页码">
+              <select value={pg.page} disabled={loading} onChange={(event) => actions.loadChapterPage(Number(event.target.value))} aria-label="选择章节页码">
+                {Array.from({length: totalPages}, (_, index) => index + 1).map((page) => (
+                  <option key={page} value={page}>第 {page} 页</option>
+                ))}
+              </select>
+              <span className="chapter-page-total">/ {totalPages}</span>
+            </label>
+          ) : <span>{pg.page}/?</span>}
           <button className="icon-btn" disabled={loading || !canNext} onClick={() => actions.loadChapterPage(pg.page + 1)} title="下一页" aria-label="下一页"><Icon id="i-arrow-right" /></button>
         </div>
       )}
@@ -367,8 +377,8 @@ export function AlbumDetail({app, mobile = false}) {
         <div className={mobile ? 'detail-quality-bar' : 'quality-bar'}>
           <label htmlFor="xmlyDownloadInterface">下载接口</label>
           <select id="xmlyDownloadInterface" value={ximalayaInterface} onChange={(event) => setXimalayaInterface(event.target.value)}>
-            <option value={XMLY_MOBILE_INTERFACE}>移动端 V4</option>
-            <option value={XMLY_WEB_INTERFACE}>网页版接口（兼容模式）</option>
+            <option value={XMLY_WEB_INTERFACE}>网页版接口（稳定推荐）</option>
+            <option value={XMLY_MOBILE_INTERFACE}>移动端 V4（高音质）</option>
           </select>
           {ximalayaInterface !== XMLY_WEB_INTERFACE && (
             <>
@@ -381,7 +391,7 @@ export function AlbumDetail({app, mobile = false}) {
             </>
           )}
           <span>{ximalayaInterface === XMLY_WEB_INTERFACE
-            ? '使用原网页版下载链路，不提供音质选项，由网页接口决定可用格式；订阅下载仍默认使用此接口。'
+            ? '默认使用稳定的网页版下载链路，由接口自动提供可用音频；无需额外选择音质，适合连续批量下载。'
             : XMLY_MOBILE_QUALITY_HELP[downloadQuality] || XMLY_MOBILE_QUALITY_HELP[XMLY_MOBILE_INTERFACE]}</span>
         </div>
       )}
@@ -470,37 +480,75 @@ export function DownloadsPage({app, onNavigate}) {
 
 export function PersonalPage({app, mobile = false}) {
   const [platform, setPlatform] = useState('ximalaya');
-  const [feature, setFeature] = useState('');
+  const [feature, setFeature] = useState('subscriptions');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [personalCookies, setPersonalCookies] = useState({});
+  const personalRequestRef = useRef(0);
   const platformMeta = COOKIE_PLATFORMS.find((item) => item.key === (platform === 'ximalaya' ? 'xmly' : platform)) || {};
   const personalCookieInfo = personalCookies[platform] || {};
   const personalLoggedIn = !!personalCookieInfo.has_cookie;
   const loadPersonalCookies = async () => {
     try {
       const data = await api('/api/personal/cookies');
-      setPersonalCookies(data.cookies || {});
+      const nextCookies = data.cookies || {};
+      setPersonalCookies(nextCookies);
+      return nextCookies;
     } catch (error) {
       app.actions.showToast?.(`个人中心登录状态加载失败：${error.message}`, 'err');
+      return {};
+    }
+  };
+  const load = async (feat, targetPlatform = platform, {quiet = false} = {}) => {
+    const requestId = ++personalRequestRef.current;
+    setFeature(feat);
+    setItems([]);
+    setLoadError('');
+    setLoading(true);
+    try {
+      const data = await api(`/api/personal/${targetPlatform}/${feat}`);
+      if (requestId !== personalRequestRef.current) return;
+      setItems(data.items || []);
+    } catch (error) {
+      if (requestId !== personalRequestRef.current) return;
+      setLoadError(error.message || '加载失败');
+      if (!quiet) app.actions.showToast?.(`加载失败：${error.message}`, 'err');
+    } finally {
+      if (requestId === personalRequestRef.current) setLoading(false);
     }
   };
   useEffect(() => {
-    loadPersonalCookies();
+    let active = true;
+    const initialize = async () => {
+      const cookieData = await loadPersonalCookies();
+      if (active && cookieData.ximalaya?.has_cookie) {
+        await load('subscriptions', 'ximalaya', {quiet: true});
+      }
+    };
+    initialize();
+    return () => { active = false; };
   }, []);
-  const load = async (feat) => {
-    setFeature(feat);
-    setLoading(true);
-    try {
-      const data = await api(`/api/personal/${platform}/${feat}`);
-      setItems(data.items || []);
-    } catch (error) {
-      app.actions.showToast?.(`加载失败：${error.message}`, 'err');
-    } finally {
-      setLoading(false);
+  const features = PERSONAL_FEATURES[platform] || [];
+  const activeFeature = features.find((item) => item.key === feature);
+  const personalEmptyText = loadError || (!personalLoggedIn
+    ? `连接${platformMeta.name || platform}个人账号后即可查看${activeFeature?.name || '个人内容'}`
+    : feature === 'subscriptions'
+      ? '账号暂未订阅专辑'
+      : feature ? '暂无数据' : '选择上方功能加载');
+  const changePlatform = (key) => {
+    personalRequestRef.current += 1;
+    setPlatform(key);
+    setItems([]);
+    setLoadError('');
+    setLoading(false);
+    if (key === 'ximalaya') {
+      setFeature('subscriptions');
+      if (personalCookies.ximalaya?.has_cookie) load('subscriptions', key, {quiet: true});
+    } else {
+      setFeature('');
     }
   };
-  const features = PERSONAL_FEATURES[platform] || [];
   const openAlbum = (album) => {
     if (mobile) app.setMobileView?.('discover');
     else app.setPage?.('search');
@@ -510,22 +558,34 @@ export function PersonalPage({app, mobile = false}) {
     const trimmed = String(cookie || '').trim();
     if (!trimmed) return;
     await api('/api/personal/cookies', {method: 'POST', body: {platform, cookie: trimmed}});
-    await loadPersonalCookies();
+    const cookieData = await loadPersonalCookies();
+    if (platform === 'ximalaya' && cookieData.ximalaya?.has_cookie) {
+      await load('subscriptions', 'ximalaya', {quiet: true});
+    }
     app.actions.showToast?.(`${platformMeta.name || platform}个人中心 Cookie 已保存`, 'ok');
   };
   const deletePersonalCookie = async () => {
     await api(`/api/personal/cookies/${encodeURIComponent(platform)}`, {method: 'DELETE'});
+    personalRequestRef.current += 1;
     await loadPersonalCookies();
     setItems([]);
-    setFeature('');
+    setLoadError('');
+    setLoading(false);
+    setFeature(platform === 'ximalaya' ? 'subscriptions' : '');
     app.actions.showToast?.(`${platformMeta.name || platform}个人中心 Cookie 已删除`, 'ok');
+  };
+  const refreshPersonalAccount = async () => {
+    const cookieData = await loadPersonalCookies();
+    if (platform === 'ximalaya' && cookieData.ximalaya?.has_cookie) {
+      await load('subscriptions', 'ximalaya', {quiet: true});
+    }
   };
   const openPersonalLogin = () => {
     app.setModal?.({
       content: <QrLoginModal
         platform={platformMeta}
         scope="personal"
-        onDone={loadPersonalCookies}
+        onDone={refreshPersonalAccount}
         onClose={app.closeModal}
       />,
     });
@@ -582,7 +642,7 @@ export function PersonalPage({app, mobile = false}) {
             <button
               key={key}
               className={`mobile-platform-pill ${platform === key ? 'active' : ''}`}
-              onClick={() => { setPlatform(key); setFeature(''); setItems([]); }}
+              onClick={() => changePlatform(key)}
             >
               {platformNames[key] || key}
             </button>
@@ -591,7 +651,7 @@ export function PersonalPage({app, mobile = false}) {
         {authPanel}
         <div className="mobile-personal-card">
           {features.map((item) => (
-            <button key={item.key} className="mobile-personal-row" onClick={() => load(item.key)}>
+            <button key={item.key} className={`mobile-personal-row ${feature === item.key ? 'active' : ''}`} onClick={() => load(item.key)}>
               <Icon id={item.icon} />
               <span>{item.name}</span>
               <Icon id="i-arrow-right" className="icon icon-sm" />
@@ -600,10 +660,11 @@ export function PersonalPage({app, mobile = false}) {
         </div>
         {(loading || feature) && (
           <div className="mobile-personal-results">
+            {feature && <div className="personal-results-head"><strong>{platformMeta.name || platform} · {activeFeature?.name || '个人内容'}</strong><span>{loading ? '加载中' : `${items.length} 个专辑`}</span></div>}
             {loading
               ? <div className="empty"><span className="loading" /> 加载中...</div>
               : !items.length
-                ? <div className="empty"><Icon id="i-user" />暂无数据</div>
+                ? <div className="empty"><Icon id={feature === 'subscriptions' ? 'i-bookmark' : 'i-user'} />{personalEmptyText}</div>
                 : items.map((album, index) => <ResultCard key={`${album.platform}-${album.id || album.title}-${index}`} album={album} mobile onOpen={() => openAlbum(album)} />)}
           </div>
         )}
@@ -616,7 +677,7 @@ export function PersonalPage({app, mobile = false}) {
         {Object.entries(PERSONAL_FEATURES).map(([key]) => {
           const nameMap = {ximalaya: '喜马拉雅', lrts: '懒人听书', qidian: '起点听书', lizhi: '荔枝', xmly: '喜马拉雅', kuwo: '酷我', qtfm: '蜻蜓FM', netease: '网易云音乐', yuntu: '云听', fanqie: '番茄畅听'};
           return (
-            <button key={key} className={`tab ${platform === key ? 'active' : ''}`} onClick={() => { setPlatform(key); setFeature(''); setItems([]); }}>
+            <button key={key} className={`tab ${platform === key ? 'active' : ''}`} onClick={() => changePlatform(key)}>
               {nameMap[key] || key}
             </button>
           );
@@ -624,7 +685,8 @@ export function PersonalPage({app, mobile = false}) {
       </div>
       {authPanel}
       <div className="tabs feature-tabs">{features.map((item) => <button key={item.key} className={`tab ${feature === item.key ? 'active' : ''}`} onClick={() => load(item.key)}>{item.name}</button>)}</div>
-      <div className="sub-grid personal-grid">{loading ? <div className="empty"><span className="loading" /> 加载中...</div> : !items.length ? <div className="empty"><Icon id="i-user" />选择上方功能加载</div> : items.map((album, index) => <ResultCard key={`${album.platform}-${album.id || album.title}-${index}`} album={album} mobile={mobile} onOpen={() => openAlbum(album)} />)}</div>
+      {feature && <div className="personal-results-head"><strong>{platformMeta.name || platform} · {activeFeature?.name || '个人内容'}</strong><span>{loading ? '加载中' : `${items.length} 个专辑`}</span></div>}
+      <div className="sub-grid personal-grid">{loading ? <div className="empty"><span className="loading" /> 加载中...</div> : !items.length ? <div className="empty"><Icon id={feature === 'subscriptions' ? 'i-bookmark' : 'i-user'} />{personalEmptyText}</div> : items.map((album, index) => <ResultCard key={`${album.platform}-${album.id || album.title}-${index}`} album={album} mobile={mobile} onOpen={() => openAlbum(album)} />)}</div>
     </div>
   );
 }

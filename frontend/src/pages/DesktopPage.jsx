@@ -170,13 +170,13 @@ function SearchPage({app}) {
           </div>
         </div>
         <div className="glass glass-pad" style={{overflow: 'hidden', display: 'flex', flexDirection: 'column'}}>
-          <AlbumDetail app={app} />
+          <AlbumDetail key={`${selectedAlbum?.platform || ''}-${selectedAlbum?.id || selectedAlbum?.title || 'empty'}`} app={app} />
         </div>
         <div className="glass glass-pad detail-aside">
           {!selectedAlbum ? (
             <div className="empty"><Icon id="i-music" />选择专辑后<br />在此查看简介</div>
           ) : (
-            <AlbumInfoPanel album={selectedAlbum} />
+            <AlbumInfoPanel key={`${selectedAlbum.platform || ''}-${selectedAlbum.id || selectedAlbum.title || ''}`} album={selectedAlbum} />
           )}
         </div>
       </div>
