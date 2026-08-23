@@ -110,7 +110,28 @@ logging.basicConfig(
 )
 # httpx 内部日志用 %d 格式化状态码字符串会触发 logging 错误，屏蔽其 INFO 日志
 logging.getLogger("httpx").setLevel(logging.WARNING)
-install_safe_print()
+
+
+def mirror_console_line_to_server_log(line):
+    """Mirror normalized print output into the same rotating file as logging."""
+    text = str(line or "").rstrip("\r\n")
+    if not text:
+        return
+    encoded_size = len((text + "\n").encode("utf-8", errors="replace"))
+    _log_handler.acquire()
+    try:
+        if _log_handler.stream is None:
+            _log_handler.stream = _log_handler._open()
+        _log_handler.stream.seek(0, os.SEEK_END)
+        if _log_handler.maxBytes > 0 and _log_handler.stream.tell() + encoded_size >= _log_handler.maxBytes:
+            _log_handler.doRollover()
+        _log_handler.stream.write(text + _log_handler.terminator)
+        _log_handler.flush()
+    finally:
+        _log_handler.release()
+
+
+install_safe_print(mirror=mirror_console_line_to_server_log)
 
 cookie_manager = CookieManager()
 
@@ -155,6 +176,10 @@ BACKGROUND_EVENTS_MAX_BYTES = max(
     64 * 1024,
     int(os.getenv("AUDIOFLOW_EVENTS_MAX_BYTES", str(2 * 1024 * 1024)) or 2 * 1024 * 1024),
 )
+BACKGROUND_EVENTS_MAX_KEEP_DEFAULT = max(
+    10,
+    int(os.getenv("AUDIOFLOW_EVENTS_MAX_KEEP", "10") or "10"),
+)
 background_events_lock = threading.Lock()
 TASK_SAVE_INTERVAL = 1.0
 TASK_HISTORY_MAX_KEEP_DEFAULT = max(10, int(os.getenv("AUDIOFLOW_TASK_HISTORY_MAX_KEEP", "100") or "100"))
@@ -181,6 +206,15 @@ def task_history_settings():
         "task_failure_chapter_limit": task_history_setting("task_failure_chapter_limit", TASK_FAILURE_CHAPTER_LIMIT_DEFAULT, 1, 1000),
         "task_history_max_bytes": task_history_setting("task_history_max_bytes", TASK_HISTORY_MAX_BYTES_DEFAULT, 1024 * 1024, 1024 * 1024 * 1024),
     }
+
+
+def background_events_max_keep():
+    return task_history_setting(
+        "background_events_max_keep",
+        BACKGROUND_EVENTS_MAX_KEEP_DEFAULT,
+        10,
+        5000,
+    )
 auth_manager = AuthManager(config_dir())
 MAX_JSON_BODY_BYTES = int(os.getenv("MAX_JSON_BODY_BYTES", str(16 * 1024 * 1024)))
 AUTH_COOKIE_NAME = "audioflow_session"
@@ -397,6 +431,22 @@ def _replace_background_events(content):
             pass
 
 
+def _prune_background_events_locked(max_keep=None):
+    if not BACKGROUND_EVENTS_FILE.exists():
+        return 0
+    keep = background_events_max_keep() if max_keep is None else max(10, min(5000, int(max_keep)))
+    lines = BACKGROUND_EVENTS_FILE.read_bytes().splitlines(keepends=True)
+    if len(lines) > keep:
+        lines = lines[-keep:]
+        _replace_background_events(b"".join(lines))
+    return len(lines)
+
+
+def prune_background_events(max_keep=None):
+    with background_events_lock:
+        return _prune_background_events_locked(max_keep)
+
+
 def append_background_event(kind, title, detail="", payload=None):
     event = {
         "id": uuid.uuid4().hex[:12],
@@ -417,16 +467,18 @@ def append_background_event(kind, title, detail="", payload=None):
             else:
                 with BACKGROUND_EVENTS_FILE.open("ab") as handle:
                     handle.write(line)
+            _prune_background_events_locked()
     except Exception:
         logging.exception("append background event failed")
     return event
 
 
-def load_background_events(limit=120):
+def load_background_events(limit=None):
+    max_keep = background_events_max_keep()
     try:
-        limit = max(1, min(500, int(limit or 120)))
+        limit = max_keep if limit in (None, "") else max(1, min(max_keep, int(limit)))
     except (TypeError, ValueError):
-        limit = 120
+        limit = max_keep
     if not BACKGROUND_EVENTS_FILE.exists():
         return []
     try:
@@ -2143,6 +2195,7 @@ def api_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
+        background_events_max_keep=background_events_max_keep(),
         **task_history_settings(),
     )
 
@@ -2192,6 +2245,13 @@ def api_set_config():
             except (TypeError, ValueError):
                 pass
         prune_tasks()
+    if "background_events_max_keep" in payload:
+        try:
+            value = max(10, min(5000, int(payload["background_events_max_keep"])))
+            cookie_manager.set_cookie("background_events_max_keep", str(value))
+            prune_background_events(value)
+        except (TypeError, ValueError):
+            pass
     return json_ok(
         download_dir=str(active_download_dir()),
         download_threads=cookie_manager.get_download_threads(),
@@ -2200,6 +2260,7 @@ def api_set_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
+        background_events_max_keep=background_events_max_keep(),
         **task_history_settings(),
     )
 
@@ -2819,6 +2880,7 @@ def api_chapters():
         "page_size": page_size,
         "total": expected,
         "total_pages": total_pages,
+        "total_known": expected > 0,
         "has_more": has_more,
     }
     return json_ok(
@@ -3980,7 +4042,9 @@ def api_logs():
 
 @app.get("/api/events")
 def api_events():
-    return json_ok(events=load_background_events(request.args.get("limit", 120)))
+    prune_background_events()
+    events = load_background_events(request.args.get("limit"))
+    return json_ok(events=events, count=len(events), max_keep=background_events_max_keep())
 
 
 @app.delete("/api/events")

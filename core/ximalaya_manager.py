@@ -84,6 +84,32 @@ class XimalayaManager:
             "MP3 48K": ["MP3_32"]   # 网页端MP3，level=0
         }
 
+    @staticmethod
+    def _extract_chapter_total(payload: Dict) -> int:
+        """Extract the exact catalog size from known Ximalaya response shapes."""
+        if not isinstance(payload, dict):
+            return 0
+        total_keys = (
+            "trackTotalCount", "totalCount", "total_count", "trackCount",
+            "track_count", "tracksCount", "tracks_count", "total",
+        )
+        totals = []
+        for key in total_keys:
+            value = payload.get(key)
+            try:
+                numeric = int(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric > 0:
+                totals.append(numeric)
+        for key in ("data", "page", "pageInfo", "trackPageInfo", "tracksInfo"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                nested_total = XimalayaManager._extract_chapter_total(nested)
+                if nested_total > 0:
+                    totals.append(nested_total)
+        return max(totals, default=0)
+
     def _extract_cover_url(self, item: Dict) -> str:
         """兼容喜马拉雅不同接口返回的封面字段。"""
         if not isinstance(item, dict):
@@ -707,9 +733,10 @@ class XimalayaManager:
             print(f"❌ 获取专辑详情异常: {e}")
             return None
     
-    def _fetch_chapters_multi_api(self, album_id: str, page: int, page_size: int) -> Dict[str, List[Dict]]:
+    def _fetch_chapters_multi_api(self, album_id: str, page: int, page_size: int) -> Tuple[Dict[str, List[Dict]], int]:
         """顺序调用多个章节 API（避免在 QThread 内用线程池触发 interpreter shutdown）"""
         api_results = {}
+        api_totals = {}
         api_errors = {}
         # old_api 多数专辑更稳定，放前面以减少无效请求
         fetchers = [
@@ -720,13 +747,22 @@ class XimalayaManager:
         for api_name, fetcher in fetchers:
             try:
                 result = fetcher(album_id, page, page_size)
-                api_results[api_name] = list(result or [])
+                if isinstance(result, tuple):
+                    chapters, total = result
+                else:
+                    chapters, total = result, 0
+                api_results[api_name] = list(chapters or [])
+                api_totals[api_name] = max(0, int(total or 0))
             except Exception as e:
                 api_results[api_name] = []
+                api_totals[api_name] = 0
                 api_errors[api_name] = str(e)
         if api_errors and platform_verbose_enabled():
             log_event("WARN", "部分章节接口调用异常", api_errors=api_errors)
-        return api_results
+        exact_total = max(api_totals.values(), default=0)
+        if platform_verbose_enabled() and len({value for value in api_totals.values() if value}) > 1:
+            log_event("WARN", "章节接口返回的总数不一致，采用最大值", api_totals=api_totals, total=exact_total)
+        return api_results, exact_total
 
     def _pick_best_chapter_list(
         self,
@@ -801,8 +837,10 @@ class XimalayaManager:
                 if page_size > 1000:
                     return self._fetch_chapters_concurrent(album_id, page_size)
 
-                api_results = self._fetch_chapters_multi_api(album_id, page, page_size)
-                return self._pick_best_chapter_list(api_results, log_summary=log_summary)
+                chapters, _ = self.get_album_chapters_page(
+                    album_id, page=page, page_size=page_size, log_summary=log_summary
+                )
+                return chapters
 
             except RuntimeError as e:
                 if 'shutdown' in str(e).lower():
@@ -814,8 +852,20 @@ class XimalayaManager:
                 import traceback
                 traceback.print_exc()
                 return []
+
+    def get_album_chapters_page(
+        self,
+        album_id: str,
+        page: int = 1,
+        page_size: int = 200,
+        log_summary: bool = True,
+    ) -> Tuple[List[Dict], int]:
+        """Return one catalog page and the exact total reported by Ximalaya."""
+        api_results, exact_total = self._fetch_chapters_multi_api(album_id, page, page_size)
+        chapters = self._pick_best_chapter_list(api_results, log_summary=log_summary)
+        return chapters, exact_total
     
-    def _fetch_chapters_new_api(self, book_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
+    def _fetch_chapters_new_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
         """新API获取章节 (mobile/v1/album/track)"""
         try:
             current_time = get_timestamp_ms_str()
@@ -845,7 +895,9 @@ class XimalayaManager:
                 data = response.json()
                 
                 if data.get('ret') == 0:
-                    tracks = data.get('data', {}).get('list', [])
+                    page_data = data.get('data', {})
+                    tracks = page_data.get('list', [])
+                    exact_total = self._extract_chapter_total(page_data)
                     
                     if tracks:
                         chapter_list = []
@@ -869,15 +921,15 @@ class XimalayaManager:
                                 'is_finished': item.get('isFinished', False)
                             }
                             chapter_list.append(chapter)
-                        return chapter_list
+                        return chapter_list, exact_total
             
-            return []
+            return [], 0
             
         except Exception as e:
             print(f"⚠️ 新API异常: {e}")
-            return []
+            return [], 0
     
-    def _fetch_chapters_old_api(self, book_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
+    def _fetch_chapters_old_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
         """旧API获取章节 (fmobile-album/album/track)"""
         try:
             current_time = get_timestamp_ms_str()
@@ -902,12 +954,15 @@ class XimalayaManager:
                 data = response.json()
                 
                 data_list = []
+                exact_total = 0
                 if isinstance(data, dict) and 'data' in data:
                     data_obj = data['data']
-                    if isinstance(data_obj, dict) and 'list' in data_obj:
-                        list_items = data_obj['list']
-                        if isinstance(list_items, list):
-                            data_list = [item for item in list_items if isinstance(item, dict)]
+                    if isinstance(data_obj, dict):
+                        exact_total = self._extract_chapter_total(data_obj)
+                        if 'list' in data_obj:
+                            list_items = data_obj['list']
+                            if isinstance(list_items, list):
+                                data_list = [item for item in list_items if isinstance(item, dict)]
                 
                 if data_list:
                     chapter_list = []
@@ -927,15 +982,15 @@ class XimalayaManager:
                             'is_finished': item.get('is_finished', False)
                         }
                         chapter_list.append(chapter)
-                    return chapter_list
+                    return chapter_list, exact_total
             
-            return []
+            return [], 0
             
         except Exception as e:
             print(f"⚠️ 旧API异常: {e}")
-            return []
+            return [], 0
     
-    def _fetch_chapters_web_api(self, book_id: str, page: int = 1, page_size: int = 200) -> List[Dict]:
+    def _fetch_chapters_web_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
         """Web API获取章节 (revision/album/v1/getTracksList)"""
         try:
             url = f"{self.api_url}/revision/album/v1/getTracksList"
@@ -953,6 +1008,7 @@ class XimalayaManager:
                 if data.get('ret') == 0:
                     tracks_data = data.get('data', {})
                     tracks = tracks_data.get('tracks', [])
+                    exact_total = self._extract_chapter_total(tracks_data)
                     
                     if tracks:
                         chapters = []
@@ -972,13 +1028,13 @@ class XimalayaManager:
                                 'is_finished': track.get('is_finished', False)
                             }
                             chapters.append(chapter)
-                        return chapters
+                        return chapters, exact_total
             
-            return []
+            return [], 0
             
         except Exception as e:
             print(f"⚠️ Web API异常: {e}")
-            return []
+            return [], 0
     
     def _fetch_chapters_concurrent(self, album_id: str, page_size: int = 2000) -> List[Dict]:
         """并发获取大量章节 - 用于专辑章节数很多的情况"""

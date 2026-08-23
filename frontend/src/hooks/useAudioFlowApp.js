@@ -9,7 +9,7 @@ const MAX_SEARCH_HISTORY = 12;
 const DOWNLOADS_CACHE_KEY = 'audioflow_downloads_cache';
 const SUBSCRIPTIONS_CACHE_KEY = 'audioflow_subscriptions_cache';
 const VOICE_PLATFORMS = new Set(['番茄畅听', '番茄听书', '七猫听书']);
-const DEFAULT_CHAPTER_PAGINATION = {page: 1, page_size: 100, total: 0, total_pages: 1, has_more: false};
+const DEFAULT_CHAPTER_PAGINATION = {page: 1, page_size: 100, total: 0, total_pages: 1, total_known: false, has_more: false};
 function loadSearchHistory() {
   try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
 }
@@ -297,8 +297,8 @@ export function useAudioFlowApp() {
     setLogs(data.lines || []);
   }, []);
 
-  const loadEvents = useCallback(async (limit = 120) => {
-    const data = await api('/api/events?limit=' + limit);
+  const loadEvents = useCallback(async (limit) => {
+    const data = await api('/api/events' + (limit ? `?limit=${limit}` : ''));
     setEvents(data.events || []);
     return data.events || [];
   }, []);
@@ -487,7 +487,7 @@ export function useAudioFlowApp() {
   const loadChapterPage = useCallback(async (nextPage) => {
     if (!selectedAlbum) return;
     const targetPage = Math.max(1, Number(nextPage || 1));
-    if (chapterPagination.total_pages && targetPage > chapterPagination.total_pages) return;
+    if (chapterPagination.total_known !== false && chapterPagination.total_pages && targetPage > chapterPagination.total_pages) return;
     const requestId = ++albumRequestRef.current;
     await runBusy('album', async () => {
       const data = await api('/api/album/chapters', {
@@ -508,7 +508,7 @@ export function useAudioFlowApp() {
     }).catch((error) => {
       if (requestId === albumRequestRef.current) showToast('加载章节失败：' + error.message, 'err');
     });
-  }, [chapterPagination.page_size, chapterPagination.total_pages, runBusy, selectedAlbum, selectedVoice, showToast]);
+  }, [chapterPagination.page_size, chapterPagination.total_known, chapterPagination.total_pages, runBusy, selectedAlbum, selectedVoice, showToast]);
 
   const toggleChapter = useCallback((id) => {
     setSelectedChapters((prev) => {
@@ -886,6 +886,7 @@ export function useAudioFlowApp() {
     taskDetailRetentionDays,
     taskFailureChapterLimit,
     taskHistoryMaxMB,
+    backgroundEventsMaxKeep,
   }) => {
     await runBusy('settings', async () => {
       await api('/api/config', {
@@ -903,14 +904,15 @@ export function useAudioFlowApp() {
           task_detail_retention_days: taskDetailRetentionDays,
           task_failure_chapter_limit: taskFailureChapterLimit,
           task_history_max_bytes: taskHistoryMaxMB * 1024 * 1024,
+          background_events_max_keep: backgroundEventsMaxKeep,
         },
       });
       showToast('设置已保存', 'ok');
-      loadConfig();
+      await Promise.all([loadConfig(), loadEvents()]);
     }).catch((error) => {
       showToast('保存失败：' + error.message, 'err');
     });
-  }, [loadConfig, runBusy, showToast]);
+  }, [loadConfig, loadEvents, runBusy, showToast]);
 
   const clearLogs = useCallback(async () => {
     try {

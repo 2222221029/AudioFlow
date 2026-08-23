@@ -95,18 +95,33 @@ class SafeLoggingTests(unittest.TestCase):
     def test_custom_file_print_keeps_plain_format_and_redacts(self):
         original_print = builtins.print
         original_installed = safe_logging._PRINT_INSTALLED
+        original_mirror = safe_logging._PRINT_MIRROR
+        mirrored = []
         try:
             safe_logging._PRINT_INSTALLED = False
-            safe_logging.install_safe_print()
+            safe_logging.install_safe_print(mirror=mirrored.append)
             output = io.StringIO()
             builtins.print("cookie=abcdefghijklmnop", "ok", sep=";", file=output)
             self.assertEqual(output.getvalue(), "cookie=abcd***mnop;ok\n")
+            with redirect_stdout(io.StringIO()):
+                builtins.print("✅ 容器日志已同步")
+            self.assertEqual(len(mirrored), 1)
+            self.assertIn("容器日志已同步", mirrored[0])
         finally:
             builtins.print = original_print
             safe_logging._PRINT_INSTALLED = original_installed
+            safe_logging._PRINT_MIRROR = original_mirror
 
 
 class XimalayaCatalogLoggingTests(unittest.TestCase):
+    def test_catalog_total_is_extracted_from_all_known_response_shapes(self):
+        from core.ximalaya_manager import XimalayaManager
+
+        self.assertEqual(XimalayaManager._extract_chapter_total({"totalCount": 1986}), 1986)
+        self.assertEqual(XimalayaManager._extract_chapter_total({"data": {"trackTotalCount": "731"}}), 731)
+        self.assertEqual(XimalayaManager._extract_chapter_total({"tracksInfo": {"trackCount": 42}}), 42)
+        self.assertEqual(XimalayaManager._extract_chapter_total({"list": [{"trackId": 1}]}), 0)
+
     def test_api_selection_emits_one_summary(self):
         from core.ximalaya_manager import XimalayaManager
 

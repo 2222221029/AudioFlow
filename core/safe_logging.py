@@ -58,6 +58,7 @@ class RedactingFilter(logging.Filter):
 
 _ORIGINAL_PRINT = builtins.print
 _PRINT_INSTALLED = False
+_PRINT_MIRROR = None
 _LOG_CONTEXT = ContextVar("audioflow_log_context", default={})
 
 _LEVEL_PRIORITY = {
@@ -259,8 +260,10 @@ def log_event(level, message, **fields):
                 _ORIGINAL_PRINT(output)
 
 
-def install_safe_print():
-    global _PRINT_INSTALLED
+def install_safe_print(mirror=None):
+    global _PRINT_INSTALLED, _PRINT_MIRROR
+    if mirror is not None:
+        _PRINT_MIRROR = mirror
     if _PRINT_INSTALLED:
         return
 
@@ -288,7 +291,14 @@ def install_safe_print():
 
         output_kwargs = dict(kwargs)
         output_kwargs.pop("sep", None)
-        _ORIGINAL_PRINT("\n".join(formatted), **output_kwargs)
+        rendered = "\n".join(formatted)
+        _ORIGINAL_PRINT(rendered, **output_kwargs)
+        if callable(_PRINT_MIRROR):
+            for line in formatted:
+                try:
+                    _PRINT_MIRROR(line)
+                except Exception:
+                    pass
 
     builtins.print = safe_print
     _PRINT_INSTALLED = True

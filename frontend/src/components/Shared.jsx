@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {Icon} from './Icons.jsx';
 import {AppLogo} from './AppLogo.jsx';
 import PlatformLogo, {PlatformTag} from './PlatformLogo.jsx';
@@ -289,10 +289,81 @@ function formatCheckTime(value, fallback = '从未') {
   });
 }
 
+function ChapterPagePicker({page, totalPages, loading, onSelect}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const triggerRef = useRef(null);
+  const activeRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => {
+      if (!wrapRef.current?.contains(event.target)) setOpen(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', onKeyDown);
+    const frame = requestAnimationFrame(() => activeRef.current?.scrollIntoView({block: 'nearest'}));
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  useEffect(() => setOpen(false), [page, totalPages]);
+
+  return (
+    <div ref={wrapRef} className={`chapter-page-picker ${open ? 'open' : ''}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="chapter-page-trigger"
+        disabled={loading}
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`当前第 ${page} 页，选择页码`}
+      >
+        <span>第 {page} 页</span>
+        <Icon id="i-arrow-right" className="icon icon-sm" />
+      </button>
+      {open && (
+        <div className="chapter-page-menu" role="listbox" aria-label="章节页码">
+          <div className="chapter-page-menu-head">选择页码 <span>共 {totalPages} 页</span></div>
+          <div className="chapter-page-grid">
+            {Array.from({length: totalPages}, (_, index) => index + 1).map((pageNumber) => (
+              <button
+                key={pageNumber}
+                ref={pageNumber === page ? activeRef : null}
+                type="button"
+                role="option"
+                aria-selected={pageNumber === page}
+                className={pageNumber === page ? 'active' : ''}
+                onClick={() => {
+                  setOpen(false);
+                  if (pageNumber !== page) onSelect(pageNumber);
+                }}
+              >
+                {pageNumber}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterList, chapterPagination, chapterSort, setChapterSort, downloadRange, setDownloadRange, subscribed, actions}) {
   const [showRange, setShowRange] = useState(false);
   const pg = chapterPagination || {page: 1, total_pages: 1, total: chapters.length, has_more: false};
   const totalPages = Math.max(1, Number(pg.total_pages) || 1);
+  const totalKnown = pg.total_known !== false;
   const canNext = pg.has_more || pg.page < totalPages;
   return (
     <div className="chapter-toolbar">
@@ -314,16 +385,12 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
       {(pg.total_pages > 1 || pg.has_more) && (
         <div className="chapter-pager">
           <button className="icon-btn" disabled={loading || pg.page <= 1} onClick={() => actions.loadChapterPage(pg.page - 1)} title="上一页" aria-label="上一页"><Icon id="i-arrow-left" /></button>
-          {pg.total_pages ? (
-            <label className="chapter-page-picker" title="选择章节页码">
-              <select value={pg.page} disabled={loading} onChange={(event) => actions.loadChapterPage(Number(event.target.value))} aria-label="选择章节页码">
-                {Array.from({length: totalPages}, (_, index) => index + 1).map((page) => (
-                  <option key={page} value={page}>第 {page} 页</option>
-                ))}
-              </select>
+          {totalKnown ? (
+            <>
+              <ChapterPagePicker page={pg.page} totalPages={totalPages} loading={loading} onSelect={actions.loadChapterPage} />
               <span className="chapter-page-total">/ {totalPages}</span>
-            </label>
-          ) : <span>{pg.page}/?</span>}
+            </>
+          ) : <span className="chapter-page-unknown">第 {pg.page} 页 / 更多</span>}
           <button className="icon-btn" disabled={loading || !canNext} onClick={() => actions.loadChapterPage(pg.page + 1)} title="下一页" aria-label="下一页"><Icon id="i-arrow-right" /></button>
         </div>
       )}
@@ -853,6 +920,14 @@ export function SubscriptionsPage({app, onNavigate}) {
   const [personalSyncEnabled, setPersonalSyncEnabled] = useState(false);
   const [personalSyncUnit, setPersonalSyncUnit] = useState('hours');
   const [personalSyncInterval, setPersonalSyncInterval] = useState(1);
+  const sortedSubscriptions = useMemo(() => subscriptions
+    .map((item, index) => ({item, index}))
+    .sort((a, b) => {
+      const aTime = Date.parse(a.item.created_at || '') || 0;
+      const bTime = Date.parse(b.item.created_at || '') || 0;
+      return bTime - aTime || a.index - b.index;
+    })
+    .map(({item}) => item), [subscriptions]);
   useEffect(() => {
     setEnabled(subscriptionSettings.enabled !== false);
     setAutoDownload(subscriptionSettings.auto_download_missing !== false);
@@ -863,6 +938,10 @@ export function SubscriptionsPage({app, onNavigate}) {
     setPersonalSyncInterval(syncMinutes > 0 ? syncMinutes : Number(subscriptionSettings.personal_sync_interval_hours || 1));
   }, [subscriptionSettings]);
   const cancel = (id) => setModal({content: <ConfirmModal icon="i-trash" title="取消订阅" message="后续不会再自动检测新章节。" okText="取消订阅" danger onClose={closeModal} onOk={() => { closeModal(); actions.cancelSubscription(id); }} />});
+  const openSubscriptionAlbum = (album) => {
+    onNavigate?.();
+    actions.openAlbum(album);
+  };
   const cancelAll = () => setModal({content: <ConfirmModal icon="i-trash" title="批量取消订阅" message="会取消当前列表里的全部订阅，后续不会自动检测。" okText="批量取消" danger onClose={closeModal} onOk={() => { closeModal(); actions.batchSubscriptions('cancel', subscriptions.map((item) => item.id)); }} />});
   const schedulerRunning = Boolean(subscriptionScheduler.running);
   const schedulerStarted = Boolean(subscriptionScheduler.started);
@@ -924,8 +1003,19 @@ export function SubscriptionsPage({app, onNavigate}) {
         </div>
       </div>
       <div className="sub-grid">
-        {!subscriptions.length ? <div className="empty empty-action"><Icon id="i-star" /><span>暂无订阅，在专辑详情可添加追更</span><button className="btn btn-primary btn-sm" onClick={onNavigate}>前往搜索</button></div> : subscriptions.map((sub) => {
-          const album = sub.album || sub;
+        {!subscriptions.length ? <div className="empty empty-action"><Icon id="i-star" /><span>暂无订阅，在专辑详情可添加追更</span><button className="btn btn-primary btn-sm" onClick={onNavigate}>前往搜索</button></div> : sortedSubscriptions.map((sub) => {
+          const storedAlbum = sub.album || {};
+          const album = {
+            ...sub,
+            ...storedAlbum,
+            id: storedAlbum.id || storedAlbum.album_id || storedAlbum.book_id || sub.album_id || sub.book_id || '',
+            album_id: storedAlbum.album_id || storedAlbum.id || sub.album_id || '',
+            platform: storedAlbum.platform || sub.platform,
+            title: storedAlbum.title || sub.title,
+            author: storedAlbum.author || storedAlbum.anchor || sub.author || sub.anchor,
+            cover: coverOf(storedAlbum) || coverOf(sub),
+            episodes: storedAlbum.episodes || storedAlbum.chapter_count || sub.total || 0,
+          };
           const stats = sub.stats || {};
           const activeJob = Object.values(subscriptionJobs).find((job) => job.sid === sub.id && ['queued', 'running'].includes(job.status));
           const jobBusy = Boolean(activeJob);
@@ -946,7 +1036,17 @@ export function SubscriptionsPage({app, onNavigate}) {
           return (
             <div className="sub-card" key={sub.id}>
               <div className="sub-cover-wrap">
-                <div className="sub-cover" style={cover ? {backgroundImage: `url("${cover}")`} : undefined}>{cover ? '' : <Icon id="i-music" />}</div>
+                <button
+                  type="button"
+                  className="sub-cover sub-cover-button"
+                  style={cover ? {backgroundImage: `url("${cover}")`} : undefined}
+                  onClick={() => openSubscriptionAlbum(album)}
+                  title={`查看《${title}》专辑详情`}
+                  aria-label={`查看《${title}》专辑详情`}
+                >
+                  {cover ? '' : <Icon id="i-music" />}
+                  <span className="sub-cover-open"><Icon id="i-arrow-right" className="icon icon-sm" /></span>
+                </button>
                 {jobBusy && <span className="sub-live"><span className="loading" />{jobMessage}</span>}
               </div>
               <div className="sub-info">
@@ -1920,6 +2020,7 @@ export function SettingsPage({app}) {
   const [taskDetailRetentionDays, setTaskDetailRetentionDays] = useState(7);
   const [taskFailureChapterLimit, setTaskFailureChapterLimit] = useState(20);
   const [taskHistoryMaxMB, setTaskHistoryMaxMB] = useState(10);
+  const [backgroundEventsMaxKeep, setBackgroundEventsMaxKeep] = useState(10);
   useEffect(() => {
     setDownloadDir(config.download_dir || '');
     setQuality(config.quality || 'M4A 96K');
@@ -1933,7 +2034,14 @@ export function SettingsPage({app}) {
     setTaskDetailRetentionDays(config.task_detail_retention_days ?? 7);
     setTaskFailureChapterLimit(config.task_failure_chapter_limit || 20);
     setTaskHistoryMaxMB(Math.max(1, Math.round((config.task_history_max_bytes || 10 * 1024 * 1024) / 1024 / 1024)));
+    setBackgroundEventsMaxKeep(config.background_events_max_keep || 10);
   }, [config]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') actions.loadLogs().catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [actions.loadLogs]);
   const openPassword = () => setModal({content: <PasswordModal onSubmit={actions.changePassword} onClose={closeModal} />});
   const confirmClear = () => setModal({content: <ConfirmModal icon="i-trash" title="清空服务端日志" message="会清空 logs 目录下的 .log 文件。服务端已启用日志轮转。" okText="清空日志" danger onClose={closeModal} onOk={() => { closeModal(); actions.clearLogs(); }} />});
   const doExportBackup = async () => {
@@ -1983,6 +2091,7 @@ export function SettingsPage({app}) {
           </div>
         </div>
         <div className="field-row"><label className="field-label">记录文件上限</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="1024" value={taskHistoryMaxMB} onChange={(e) => setTaskHistoryMaxMB(Math.max(1, Math.min(1024, parseInt(e.target.value) || 1)))} /><span className="field-suffix">MB（超出时优先压缩旧记录）</span></div></div>
+        <div className="field-row"><label className="field-label">后台任务记录保留</label><div className="field-row-inline"><input className="field-input" type="number" min="10" max="5000" value={backgroundEventsMaxKeep} onChange={(e) => setBackgroundEventsMaxKeep(Math.max(10, Math.min(5000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span></div></div>
         <div className="field-row">
           <label className="field-label">下载文件名前缀</label>
           <select className="field-select" value={filenamePrefixFormat} onChange={(e) => setFilenamePrefixFormat(e.target.value)}>
@@ -1998,7 +2107,7 @@ export function SettingsPage({app}) {
           </select>
         </div>
         <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
-        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
+        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
       </div>
       <div className="glass glass-pad settings-card">
         <div className="panel-head"><h4>备份与恢复</h4></div>
@@ -2010,11 +2119,11 @@ export function SettingsPage({app}) {
       </div>
       <DiagnosticsPanel config={config} diagnostics={diagnostics} loading={busy.diagnostics} onLoad={actions.loadDiagnostics} />
       <div className="glass glass-pad settings-log-card">
-        <div className="panel-head"><h4>后台任务记录</h4><div className="panel-actions"><button className="btn btn-ghost btn-tiny" onClick={() => actions.loadEvents()}><Icon id="i-refresh" className="icon icon-sm" />刷新</button><button className="btn btn-danger btn-tiny" onClick={actions.clearEvents}><Icon id="i-trash" className="icon icon-sm" />清空</button></div></div>
+        <div className="panel-head"><h4>后台任务记录 <span className="panel-count">{events.length}/{backgroundEventsMaxKeep}</span></h4><div className="panel-actions"><button className="btn btn-ghost btn-tiny" onClick={() => actions.loadEvents()}><Icon id="i-refresh" className="icon icon-sm" />刷新</button><button className="btn btn-danger btn-tiny" onClick={actions.clearEvents}><Icon id="i-trash" className="icon icon-sm" />清空</button></div></div>
         <div className="event-list">{events.length ? events.map((event) => <div className="event-row" key={event.id}><strong>{event.title || event.kind}</strong><span>{event.detail || ''}</span></div>) : <div className="empty small"><Icon id="i-list" />暂无后台记录</div>}</div>
       </div>
       <div className="glass glass-pad settings-log-card">
-        <div className="panel-head"><h4>最近日志</h4><div className="panel-actions"><button className="btn btn-ghost btn-tiny" onClick={() => actions.loadLogs()}><Icon id="i-refresh" className="icon icon-sm" />刷新</button><button className="btn btn-danger btn-tiny" onClick={confirmClear}><Icon id="i-trash" className="icon icon-sm" />清空</button></div></div>
+        <div className="panel-head"><h4>最近日志 <span className="panel-count">{logs.length} 行</span></h4><div className="panel-actions"><button className="btn btn-ghost btn-tiny" onClick={() => actions.loadLogs()}><Icon id="i-refresh" className="icon icon-sm" />刷新</button><button className="btn btn-danger btn-tiny" onClick={confirmClear}><Icon id="i-trash" className="icon icon-sm" />清空</button></div></div>
         <pre className="code log-code">{logs.length ? logs.join('\n') : '切换到系统设置后自动加载。'}</pre>
       </div>
     </>

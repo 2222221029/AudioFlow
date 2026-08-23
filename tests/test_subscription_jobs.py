@@ -248,6 +248,22 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertEqual(payload["pagination"]["total"], 2)
         get_page.assert_called_once_with("album-1", "喜马拉雅", page=1, page_size=100, voice=None)
 
+    def test_album_chapters_marks_a_provisional_page_count_as_unknown(self):
+        album = {"id": "album-1", "title": "Example", "platform": "喜马拉雅"}
+        chapters = [{"id": str(index), "title": f"Chapter {index}"} for index in range(100)]
+        with (
+            web_server.app.test_request_context("/api/album/chapters", method="POST", json={"album": album}),
+            mock.patch.object(web_server.search_manager, "get_album_chapters_page", return_value=(chapters, 0)),
+            mock.patch.object(web_server, "album_chapter_download_states", return_value={}),
+            mock.patch.object(web_server, "annotate_album_library", side_effect=lambda item: item),
+        ):
+            response = web_server.api_chapters()
+
+        pagination = response.get_json()["pagination"]
+        self.assertFalse(pagination["total_known"])
+        self.assertEqual(pagination["total_pages"], 2)
+        self.assertTrue(pagination["has_more"])
+
     def test_whole_album_download_returns_while_directory_prepares(self):
         album = {"id": "album-1", "title": "Example", "platform": "喜马拉雅", "episodes": 500}
         with (

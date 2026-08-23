@@ -620,11 +620,23 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .chapter-toolbar .ch-summary{margin-left:auto;color:var(--text-mute);font-size:11.5px;font-variant-numeric:tabular-nums}
 .chapter-pager{display:inline-flex;align-items:center;gap:6px;color:var(--text-mute);font-size:11.5px;font-variant-numeric:tabular-nums}
 .chapter-pager .icon-btn{width:34px;height:34px;min-height:34px;flex:0 0 34px}
-.chapter-page-picker{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-.chapter-page-picker select{height:34px;min-width:76px;padding:0 22px 0 8px;border:1px solid var(--border);border-radius:9px;background:var(--panel-hi);color:var(--text);font:inherit;font-weight:650;outline:none;cursor:pointer}
-.chapter-page-picker select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
-.chapter-page-picker select:disabled{cursor:wait;opacity:.65}
+.chapter-page-picker{position:relative;display:inline-flex;white-space:nowrap;z-index:20}
+.chapter-page-picker.open{z-index:90}
+.chapter-page-trigger{height:36px;min-width:94px;padding:0 9px 0 12px;border:1px solid var(--border);border-radius:10px;background:var(--panel-hi);color:var(--text);font:inherit;font-size:12px;font-weight:750;cursor:pointer;display:inline-flex;align-items:center;justify-content:space-between;gap:9px;transition:background var(--dur-fast) var(--ease-standard),border-color var(--dur-fast) var(--ease-standard),box-shadow var(--dur-fast) var(--ease-standard)}
+.chapter-page-trigger:active,.chapter-page-trigger:focus-visible,.chapter-page-picker.open .chapter-page-trigger{background:var(--panel-2);border-color:var(--border-hi);box-shadow:0 8px 20px -16px rgba(0,0,0,.5)}
+.chapter-page-trigger .icon{width:14px;height:14px;color:var(--text-mute);transform:rotate(90deg);transition:transform var(--dur-normal) var(--ease-out),color var(--dur-fast) ease}
+.chapter-page-picker.open .chapter-page-trigger .icon{transform:rotate(-90deg);color:var(--primary)}
+.chapter-page-trigger:disabled{cursor:wait;opacity:.6}
+.chapter-page-menu{position:absolute;top:calc(100% + 8px);left:50%;width:244px;max-width:calc(100vw - 28px);transform:translateX(-50%);padding:8px;border:1px solid var(--border-hi);border-radius:13px;background:var(--panel-2);box-shadow:0 18px 44px -18px rgba(0,0,0,.62);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);animation:fadeIn var(--dur-fast) var(--ease-out)}
+.chapter-page-menu-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 5px 9px;color:var(--text);font-size:12px;font-weight:800}
+.chapter-page-menu-head span{color:var(--text-faint);font-size:11px;font-weight:600}
+.chapter-page-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;max-height:min(264px,40vh);overflow-y:auto;overscroll-behavior:contain;padding:1px;scrollbar-width:thin}
+.chapter-page-grid button{height:39px;min-width:0;padding:0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--text-mute);font:inherit;font-size:13px;font-weight:750;cursor:pointer}
+.chapter-page-grid button:active,.chapter-page-grid button:focus-visible{background:var(--panel-hi);color:var(--text);border-color:var(--border)}
+.chapter-page-grid button.active{background:var(--primary-soft);color:var(--primary);border-color:var(--border-hi);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 12%,transparent)}
 .chapter-page-total{color:var(--text-mute)}
+.chapter-page-unknown{min-width:90px;text-align:center;color:var(--text-mute);font-weight:650}
+html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-shadow:0 18px 38px -18px rgba(60,30,70,.26)}
 .seg-control{height:34px;padding:3px;display:inline-flex;align-items:center;gap:2px;border-radius:var(--radius-pill);background:var(--panel-hi);border:1px solid var(--border);box-sizing:border-box}
 .seg-control button{height:26px;padding:0 11px;border:0;border-radius:var(--radius-pill);background:transparent;color:var(--text-mute);font-size:12px;font-weight:700;white-space:nowrap}
 .seg-control button.active{background:linear-gradient(135deg,var(--aurora-a),var(--aurora-b));color:#fff;box-shadow:0 6px 16px -10px var(--aurora-a)}
@@ -663,6 +675,9 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .sub-card{align-items:flex-start}
 .sub-cover-wrap{position:relative;flex:0 0 78px}
 .sub-cover{width:78px;height:78px;border-radius:14px}
+.sub-cover-button{position:relative;padding:0;border:0;overflow:hidden;cursor:pointer;color:var(--primary);display:flex;align-items:center;justify-content:center}
+.sub-cover-open{position:absolute;right:5px;bottom:5px;width:25px;height:25px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--panel-2);border:1px solid var(--border-hi);color:var(--primary);box-shadow:var(--shadow-sm)}
+.sub-cover-open .icon{width:13px;height:13px;opacity:1}
 .sub-live{position:absolute;left:5px;right:5px;bottom:5px;height:22px;border-radius:999px;background:rgba(0,0,0,.62);color:#fff;
   display:flex;align-items:center;justify-content:center;gap:5px;font-size:10.5px;font-weight:700;backdrop-filter:blur(8px)}
 .sub-live .loading{width:10px;height:10px;border-width:2px}
@@ -748,10 +763,11 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .settings-card{margin-top:0}
 .settings-account-actions{display:flex;gap:8px;flex-wrap:wrap}
 .settings-account-actions .btn{flex:1;min-width:120px}
-.event-list{display:flex;flex-direction:column;gap:8px}
+.event-list{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow-y:auto;overscroll-behavior:contain;padding-right:2px;scrollbar-width:thin}
 .event-row{display:flex;flex-direction:column;gap:3px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi)}
 .event-row strong{font-size:13px;color:var(--text)}
 .event-row span{font-size:12px;color:var(--text-mute);line-height:1.45}
+.panel-count{font-size:10.5px;font-weight:650;color:var(--text-faint);font-variant-numeric:tabular-nums}
 .notification-page-layout{display:flex;flex-direction:column;gap:10px}
 .notification-overview{display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-card);box-shadow:var(--shadow-card)}
 .notification-master{display:flex;align-items:center;gap:10px;min-width:0;cursor:pointer}

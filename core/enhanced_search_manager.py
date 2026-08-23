@@ -875,7 +875,8 @@ class EnhancedSearchManager:
             return all_chapters[offset:offset + page_size], len(all_chapters)
 
         if platform in ['喜马拉雅', 'ximalaya']:
-            chapters = self.ximalaya_manager.get_album_chapters(album_id, page, page_size)
+            chapters, exact_total = self.ximalaya_manager.get_album_chapters_page(album_id, page, page_size)
+            return list(chapters or [])[:page_size], max(0, int(exact_total or 0))
         elif platform in ['懒人听书', 'lrts']:
             return sliced(lambda: self.lrts_manager.get_chapters(album_id))
         elif platform in ['番茄畅听', 'fanqie']:
