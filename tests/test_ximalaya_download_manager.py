@@ -1178,6 +1178,15 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertIn("文件格式无法识别", manager.last_error)
 
     def test_web_v3_downloads_authorized_vip_track_without_leaking_cookie_to_cdn(self):
+        legacy_restricted = FakeResponse(
+            headers={"content-type": "application/json", "content-length": "32"},
+            body=b'{"ret":130,"msg":"VIP required"}',
+        )
+        protected_info = FakeResponse(json_data={
+            "ret": 0,
+            "isPublic": True,
+            "isPaid": True,
+        })
         audio_url = "https://aod.cos.tx.xmcdn.com/group1/M00/00/00/vip-track.m4a"
         audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
         track_info = FakeResponse(json_data={
@@ -1211,7 +1220,13 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 with mock.patch.object(
                     manager.session,
                     "get",
-                    side_effect=[FakeResponse(), track_info, audio],
+                    side_effect=[
+                        legacy_restricted,
+                        protected_info,
+                        FakeResponse(),
+                        track_info,
+                        audio,
+                    ],
                 ) as get:
                     ok = manager.download_audio_by_quality(
                         "265392006", manager.WEB_AUTO_QUALITY, str(save_path)
@@ -1222,14 +1237,18 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertTrue(ok)
         self.assertEqual(manager.last_download_source, "web_v3")
         self.assertEqual(manager.last_download_path, str(save_path))
-        api_query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)
+        self.assertEqual(
+            get.call_args_list[0].args[0],
+            "http://mobile.ximalaya.com/mobile/redirect/free/play/265392006/96",
+        )
+        api_query = parse_qs(urlparse(get.call_args_list[3].args[0]).query)
         self.assertEqual(api_query["device"], ["web"])
         self.assertEqual(api_query["trackId"], ["265392006"])
         self.assertEqual(api_query["trackQualityLevel"], ["2"])
-        api_cookie = get.call_args_list[1].kwargs["headers"]["Cookie"]
+        api_cookie = get.call_args_list[3].kwargs["headers"]["Cookie"]
         self.assertIn("_token=123456&member", api_cookie)
         self.assertIn("HWWAFSESID=waf-session", api_cookie)
-        self.assertNotIn("Cookie", get.call_args_list[2].kwargs["headers"])
+        self.assertNotIn("Cookie", get.call_args_list[4].kwargs["headers"])
 
     def test_web_v3_reports_expired_login_for_paid_track_without_fallback(self):
         track_info = FakeResponse(json_data={
@@ -1251,9 +1270,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                     "get",
                     side_effect=[FakeResponse(), track_info],
                 ) as get:
-                    ok = manager.download_audio_by_quality(
+                    ok = manager._download_web_authorized(
                         "265392006",
-                        manager.WEB_AUTO_QUALITY,
                         str(Path(tmp) / "track.m4a"),
                     )
 
@@ -1299,9 +1317,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                     "get",
                     side_effect=[FakeResponse(), invalid_wfp, FakeResponse(), track_info, audio],
                 ) as get:
-                    ok = manager.download_audio_by_quality(
+                    ok = manager._download_web_authorized(
                         "265392006",
-                        manager.WEB_AUTO_QUALITY,
                         str(Path(tmp) / "track.m4a"),
                     )
 
@@ -1393,9 +1410,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 "get",
                 side_effect=[FakeResponse(), busy, busy],
             ) as get:
-                ok = manager.download_audio_by_quality(
+                ok = manager._download_web_authorized(
                     "265392006",
-                    manager.WEB_AUTO_QUALITY,
                     str(Path(tmp) / "track.m4a"),
                 )
 
@@ -1455,9 +1471,8 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
             ) as get, mock.patch(
                 "core.ximalaya_download_manager.time.sleep"
             ):
-                ok = manager.download_audio_by_quality(
+                ok = manager._download_web_authorized(
                     "265392006",
-                    manager.WEB_AUTO_QUALITY,
                     str(Path(tmp) / "track.m4a"),
                 )
 
@@ -1466,9 +1481,9 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_error_type, "rate_limited")
         self.assertIn("连续 2 次失败", manager.last_error)
 
-    def test_web_v3_technical_failure_falls_back_to_public_free_redirect(self):
+    def test_web_auto_uses_legacy_redirect_without_calling_authorized_api(self):
         audio_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1000)
-        public_audio = FakeResponse(
+        legacy_audio = FakeResponse(
             headers={
                 "content-type": "audio/mp4",
                 "content-length": str(len(audio_body)),
@@ -1481,35 +1496,53 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
             with tempfile.TemporaryDirectory() as tmp:
                 save_path = Path(tmp) / "track.m4a"
                 with mock.patch.object(
-                    XimalayaDownloadManager,
-                    "_WEB_V3_MAX_ATTEMPTS",
-                    2,
-                ), mock.patch.object(
                     manager.session,
                     "get",
-                    side_effect=[
-                        FakeResponse(),
-                        FakeResponse(status_code=503),
-                        FakeResponse(status_code=503),
-                        public_audio,
-                    ],
-                ) as get, mock.patch(
-                    "core.ximalaya_download_manager.time.sleep"
-                ):
+                    return_value=legacy_audio,
+                ) as get, mock.patch.object(
+                    manager,
+                    "_download_web_authorized",
+                ) as authorized:
                     ok = manager.download_audio_by_quality(
                         "261300454", manager.WEB_AUTO_QUALITY, str(save_path)
                     )
                 self.assertTrue(save_path.exists())
 
         self.assertTrue(ok)
-        self.assertEqual(get.call_count, 4)
+        self.assertEqual(get.call_count, 1)
+        authorized.assert_not_called()
         self.assertEqual(manager.last_error, "")
         self.assertEqual(manager.last_error_type, "")
-        self.assertEqual(manager.last_download_source, "public_free_redirect")
+        self.assertEqual(manager.last_download_source, "legacy_web_redirect")
+        self.assertEqual(manager.last_download_quality_label, "96K")
+        self.assertEqual(manager.last_download_path, str(save_path))
         self.assertEqual(
-            get.call_args_list[3].args[0],
+            get.call_args.args[0],
             "http://mobile.ximalaya.com/mobile/redirect/free/play/261300454/96",
         )
+
+    def test_web_auto_technical_failure_does_not_call_authorized_api(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                manager.session,
+                "get",
+                return_value=FakeResponse(status_code=503),
+            ) as get, mock.patch.object(
+                manager,
+                "_download_web_authorized",
+            ) as authorized:
+                ok = manager.download_audio_by_quality(
+                    "261300454",
+                    manager.WEB_AUTO_QUALITY,
+                    str(Path(tmp) / "track.m4a"),
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(get.call_count, 1)
+        authorized.assert_not_called()
+        self.assertEqual(manager.last_error_type, "download_failed")
+        self.assertIn("HTTP 503", manager.last_error)
 
     def test_m4a_permission_response_is_exposed_as_restricted(self):
         with contextlib.redirect_stdout(io.StringIO()):

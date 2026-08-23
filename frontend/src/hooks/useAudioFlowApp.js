@@ -552,7 +552,7 @@ export function useAudioFlowApp() {
     }
     const slimChapters = downloadAll ? [] : items.map((chapter, index) => slimChapterForDownload(chapter, index));
     await runBusy('download', async () => {
-      await api('/api/downloads', {
+      const data = await api('/api/downloads', {
         method: 'POST',
         body: {
           album: selectedAlbum,
@@ -569,10 +569,25 @@ export function useAudioFlowApp() {
           },
         },
       });
-      showToast(downloadAll ? '整本下载正在加载目录' : '已加入下载 ' + items.length + ' 章', 'ok');
+
+      if (data.task) {
+        setDownloads((current) => [
+          data.task,
+          ...current.filter((task) => task.id !== data.task.id),
+        ].slice(0, 20));
+      }
+      setDownloadStatusFilter('all');
+      showToast(
+        data.message || (
+          downloadAll
+            ? '下载任务已创建，正在后台加载完整目录'
+            : (data.deduplicated ? '所选章节已在下载任务中' : '已加入下载 ' + items.length + ' 章')
+        ),
+        'ok',
+      );
       setPage('downloads');
       setMobileView('downloads');
-      setTimeout(loadDownloads, 500);
+      loadDownloads(1, 'all').catch(() => null);
     }).catch((error) => {
       showToast(error.message, 'err');
     });

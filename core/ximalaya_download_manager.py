@@ -1991,23 +1991,7 @@ class XimalayaDownloadManager:
             )
 
         if str(quality or "").strip() == self.WEB_AUTO_QUALITY:
-            if self._download_web_authorized(
-                track_id,
-                save_path,
-                chapter_title,
-                progress_callback=progress_callback,
-            ):
-                return True
-
-            # Do not hide a definitive login/entitlement result behind the
-            # anonymous free endpoint. Only technical failures use it as a
-            # compatibility fallback for public chapters.
-            if self.last_error_type in {"restricted", "rate_limited"}:
-                return False
-
-            web_error = self.last_error or "喜马拉雅网页 V3 接口下载失败"
-            web_error_type = self.last_error_type or "download_failed"
-            print("   WARN: 网页 V3 接口暂时不可用，尝试公开免费音频接口")
+            print("🌐 网页模式默认使用旧版 V3 直连接口")
             if self._download_m4a_direct_api(
                 track_id,
                 "96K",
@@ -2018,16 +2002,25 @@ class XimalayaDownloadManager:
                 self.last_error = ""
                 self.last_error_type = ""
                 if not self.last_download_source:
-                    self.last_download_source = "public_free_redirect"
+                    self.last_download_source = "legacy_web_redirect"
                 self.last_download_path = self.last_download_path or save_path
+                self.last_download_quality_label = self.last_download_quality_label or "96K"
                 return True
 
-            fallback_error = self.last_error or "公开免费音频接口下载失败"
-            self._record_error(
-                f"{web_error}；公开免费接口回退失败: {fallback_error}",
-                error_type=web_error_type,
+            # The authorized endpoint is intentionally reserved for tracks the
+            # legacy redirect identifies as protected. Ordinary transport and
+            # server failures stay on the legacy route to avoid multiplying a
+            # single failure into several throttled Web V3 requests.
+            if self.last_error_type != "restricted":
+                return False
+
+            print("   INFO: 旧版 V3 接口确认章节受限，切换网页授权接口")
+            return self._download_web_authorized(
+                track_id,
+                save_path,
+                chapter_title,
+                progress_callback=progress_callback,
             )
-            return False
 
         mobile_profile = self._mobile_quality_profile(quality)
         if mobile_profile:
@@ -2153,6 +2146,7 @@ class XimalayaDownloadManager:
                 # 流式下载
                 content_length = int(response.headers.get('content-length') or 0)
                 total_size = len(first_chunk)
+                Path(save_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(save_path, 'wb') as f:
                     if first_chunk:
                         f.write(first_chunk)
@@ -2168,7 +2162,14 @@ class XimalayaDownloadManager:
                 # 验证文件大小
                 size_mb = total_size / (1024 * 1024)
                 print(f"✅ 下载成功: {save_path} ({size_mb:.2f}MB)")
-                
+
+                self.last_error = ''
+                self.last_error_type = ''
+                self.last_download_source = 'legacy_web_redirect'
+                self.last_download_size = total_size
+                self.last_download_expected_size = content_length
+                self.last_download_quality_label = audio_quality
+                self.last_download_path = save_path
                 return True
             else:
                 print(f"❌ 下载失败: HTTP {response.status_code}")

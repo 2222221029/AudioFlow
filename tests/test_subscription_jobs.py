@@ -279,7 +279,12 @@ class SubscriptionJobsTest(unittest.TestCase):
 
         payload = response.get_json()
         self.assertTrue(payload["preparing"])
+        self.assertEqual(payload["message"], "下载任务已创建，正在后台加载完整目录")
         self.assertEqual(payload["task"]["status"], "queued")
+        self.assertEqual(
+            payload["task"]["task_info"]["message"],
+            "下载任务已创建，正在后台加载完整目录",
+        )
         self.assertEqual(payload["task"]["total"], 500)
         self.assertEqual(payload["task"]["chapters"], [])
         thread.assert_called_once()

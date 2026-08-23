@@ -3285,7 +3285,7 @@ def api_download():
             failed=0,
             error="",
             failure_reason="",
-            task_info={"message": "正在加载完整目录"},
+            task_info={"message": "下载任务已创建，正在后台加载完整目录"},
             chapter_states={},
             created_at=time.time(),
             preparing=True,
@@ -3325,7 +3325,12 @@ def api_download():
             name=f"prepare-download-{task_id}",
             daemon=True,
         ).start()
-        return json_ok(task_id=task_id, task=task, preparing=True)
+        return json_ok(
+            task_id=task_id,
+            task=task,
+            preparing=True,
+            message="下载任务已创建，正在后台加载完整目录",
+        )
 
     chapters = hydrate_download_chapters(album, payload.get("chapters") or [], payload.get("chapter_ids") or payload.get("chapterIds") or [])
     if not album or not chapters:
@@ -3334,7 +3339,13 @@ def api_download():
         sync_platform_cookie("懒人听书")
     task_id = f"web-{uuid.uuid4().hex[:12]}"
     task = start_download_task(task_id, album, chapters, options, source="web")
-    return json_ok(task_id=task.get("id") or task_id, task=task, deduplicated=bool(task.get("deduplicated")))
+    deduplicated = bool(task.get("deduplicated"))
+    return json_ok(
+        task_id=task.get("id") or task_id,
+        task=task,
+        deduplicated=deduplicated,
+        message=("所选章节已在下载任务中" if deduplicated else f"已加入下载 {len(chapters)} 章"),
+    )
 
 
 @app.get("/api/downloads")
