@@ -25,4 +25,5 @@ PyYAML>=6.0
 python-dateutil>=2.8.0
 Flask>=3.0.0
 waitress>=3.0.0
+lark-oapi>=1.4.18  # 飞书 Agent 长连接与交互卡片（交互设计参考 PGZXB/dsh-feishu）
 chardet<6

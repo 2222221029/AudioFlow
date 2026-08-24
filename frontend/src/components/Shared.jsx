@@ -1746,6 +1746,7 @@ function CookieScriptModal({platform, onSave, onClose}) {
 const NOTIFICATION_SCENES = [
   ['download_completed', '下载完成', '任务完成后推送结果摘要', 'i-check'],
   ['download_failed', '下载异常', '失败或部分完成时及时提醒', 'i-alert'],
+  ['rename_confirmation', '重命名确认', '下载完成后发送文件改名计划', 'i-edit'],
   ['subscription_queued', '自动追更', '发现新章节并加入下载队列', 'i-download'],
   ['subscription_checked', '订阅检查', '检测到缺失章节时发送通知', 'i-search'],
 ];
@@ -1757,6 +1758,7 @@ const NOTIFICATION_CHANNELS = [
   ['pushplus', 'PushPlus'],
   ['wecom_app', '企业微信应用'],
   ['wecom_robot', '企业微信机器人'],
+  ['feishu', '飞书 Agent'],
   ['webhook', '通用 Webhook'],
 ];
 
@@ -1972,6 +1974,9 @@ function NotificationChannelFields({type, config, onConfig}) {
   const input = (key, label, placeholder = '') => (
     <div className="field-row"><label className="field-label">{label}</label><input className="field-input" value={config[key] || ''} onChange={(e) => onConfig(key, e.target.value)} placeholder={placeholder || config[`${key}_masked`] || ''} /></div>
   );
+  const textarea = (key, label, placeholder = '') => (
+    <div className="field-row"><label className="field-label">{label}</label><textarea className="field-input" rows="2" value={Array.isArray(config[key]) ? config[key].join('\n') : (config[key] || '')} onChange={(e) => onConfig(key, e.target.value)} placeholder={placeholder} /></div>
+  );
   if (type === 'telegram') return <>{input('bot_token', 'Bot Token')}{input('chat_id', 'Chat ID')}</>;
   if (type === 'bark') return <>{input('key', 'Bark Key')}{input('server', '服务器', 'https://api.day.app')}</>;
   if (type === 'serverchan') return <>{input('send_key', 'SendKey')}</>;
@@ -1988,6 +1993,17 @@ function NotificationChannelFields({type, config, onConfig}) {
     </>
   );
   if (type === 'wecom_robot') return <>{input('key', '机器人 Key / Webhook URL')}</>;
+  if (type === 'feishu') return (
+    <>
+      {input('app_id', 'App ID')}
+      {input('app_secret', 'App Secret')}
+      <div className="field-row"><label className="field-label">接收目标类型</label><select className="field-select" value={config.receive_id_type || 'open_id'} onChange={(e) => onConfig('receive_id_type', e.target.value)}><option value="open_id">用户 Open ID</option><option value="chat_id">群聊 Chat ID</option><option value="user_id">用户 User ID</option><option value="union_id">用户 Union ID</option><option value="email">用户邮箱</option></select></div>
+      {input('receive_id', '默认接收目标')}
+      {textarea('allowed_users', '允许的用户 Open ID', '每行一个；用户和群聊均留空时拒绝所有入站消息')}
+      {textarea('allowed_chats', '允许的群聊 Chat ID', '每行一个；同时填写时需同时匹配')}
+      {input('api_base', 'API 地址', 'https://open.feishu.cn')}
+    </>
+  );
   return (
     <>
       {input('url', 'Webhook URL')}
@@ -2036,6 +2052,127 @@ function BackupImportModal({actions, onClose}) {
         <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入恢复</button>
       </div>
     </>
+  );
+}
+
+const AGENT_TOOL_LABELS = {
+  list_downloads: '读取下载任务',
+  list_rename_plans: '读取重命名计划',
+  get_rename_plan: '查看计划详情',
+  create_rename_plan: '生成待确认计划',
+};
+
+export function AgentPage({app, mobile = false}) {
+  const {agentStatus, agentSessions, agentSession, busy, actions} = app;
+  const remote = agentStatus.config || {};
+  const [draft, setDraft] = useState(remote);
+  const [message, setMessage] = useState('');
+  const messagesRef = useRef(null);
+
+  useEffect(() => setDraft(remote), [remote]);
+  useEffect(() => {
+    messagesRef.current?.scrollTo({top: messagesRef.current.scrollHeight, behavior: 'smooth'});
+  }, [agentSession?.messages?.length]);
+
+  const providerId = draft.provider || 'deepseek';
+  const providers = draft.providers || {};
+  const provider = providers[providerId] || {};
+  const developer = draft.developer_agent || {};
+  const updateProvider = (field, value) => setDraft((prev) => ({
+    ...prev,
+    providers: {...(prev.providers || {}), [providerId]: {...((prev.providers || {})[providerId] || {}), [field]: value}},
+  }));
+  const updateDeveloper = (field, value) => setDraft((prev) => ({
+    ...prev,
+    developer_agent: {...(prev.developer_agent || {}), [field]: value},
+  }));
+  const submit = async (event) => {
+    event.preventDefault();
+    const value = message.trim();
+    if (!value || busy.agentChat) return;
+    setMessage('');
+    await actions.sendAgentMessage(value).catch(() => setMessage(value));
+  };
+  const save = () => actions.saveAgentConfig(draft);
+  const configured = Boolean(provider.configured || provider.api_key);
+
+  return (
+    <div className={`agent-workspace ${mobile ? 'agent-mobile' : ''}`}>
+      <aside className="agent-rail">
+        <button className="btn btn-primary agent-new" onClick={() => actions.loadAgentSession(null)}><Icon id="i-plus" className="icon icon-sm" />新会话</button>
+        <div className="agent-session-list">
+          {agentSessions.map((session) => (
+            <div className={`agent-session-row ${agentSession?.id === session.id ? 'active' : ''}`} key={session.id}>
+              <button onClick={() => actions.loadAgentSession(session.id)}>
+                <strong>{session.title || '新会话'}</strong><span>{session.preview || '暂无回复'}</span>
+              </button>
+              <button className="agent-session-delete" title="删除会话" aria-label="删除会话" onClick={() => actions.deleteAgentSession(session.id)}><Icon id="i-trash" /></button>
+            </div>
+          ))}
+          {!agentSessions.length && <div className="agent-session-empty">暂无会话</div>}
+        </div>
+      </aside>
+
+      <section className="agent-chat-panel">
+        <div className="agent-chat-head">
+          <div className="agent-avatar"><AppLogo title="AudioFlow Agent" /></div>
+          <div><strong>AudioFlow Agent</strong><span>{remote.enabled && configured ? `${provider.name || providerId} · ${provider.model || '未选择模型'}` : '等待模型配置'}</span></div>
+          <details className="agent-config">
+            <summary className="btn btn-ghost btn-sm"><Icon id="i-settings" className="icon icon-sm" />模型设置</summary>
+            <div className="agent-config-popover">
+              <label className="field"><span>启用 Agent</span><input type="checkbox" checked={Boolean(draft.enabled)} onChange={(event) => setDraft((prev) => ({...prev, enabled: event.target.checked}))} /></label>
+              <label className="field"><span>AI 平台</span><select value={providerId} onChange={(event) => setDraft((prev) => ({...prev, provider: event.target.value}))}>{Object.entries(providers).map(([id, item]) => <option value={id} key={id}>{item.name || id}</option>)}</select></label>
+              <label className="field"><span>Agent 运行时</span><select value={draft.runner || 'native'} onChange={(event) => setDraft((prev) => ({...prev, runner: event.target.value}))}><option value="native">AudioFlow 原生</option><option value="deepseek-harness" disabled={!agentStatus.harness?.available}>deepseek-harness{agentStatus.harness?.available ? '' : '（未安装）'}</option></select></label>
+              <label className="field"><span>模型</span><input value={provider.model || ''} onChange={(event) => updateProvider('model', event.target.value)} placeholder="模型或 Endpoint ID" /></label>
+              <label className="field"><span>API 地址</span><input value={provider.base_url || ''} onChange={(event) => updateProvider('base_url', event.target.value)} placeholder="https://.../v1" /></label>
+              <label className="field"><span>API Key</span><input type="password" value={provider.api_key || ''} onChange={(event) => updateProvider('api_key', event.target.value)} placeholder={provider.api_key_masked || (provider.api_key_optional ? '可留空' : '输入新密钥')} autoComplete="new-password" /></label>
+              <div className="agent-runtime-status"><span className={agentStatus.harness?.available ? 'ok' : ''}>deepseek-harness</span><em>{agentStatus.harness?.message || '检测中'}</em></div>
+              <div className="agent-runtime-status"><span className="ok">模型密钥</span><em>{agentStatus.security?.message || '本地自动加密管理'}</em></div>
+              <div className="agent-config-divider">飞书完整代码 Agent</div>
+              <label className="field"><span>启用高权限模式</span><input type="checkbox" checked={Boolean(developer.enabled)} onChange={(event) => updateDeveloper('enabled', event.target.checked)} /></label>
+              {developer.enabled && <>
+                <label className="field"><span>专用飞书 App ID</span><input value={developer.feishu_app_id || ''} onChange={(event) => updateDeveloper('feishu_app_id', event.target.value)} placeholder="必须与通知机器人不同" /></label>
+                <label className="field"><span>专用 App Secret</span><input type="password" value={developer.feishu_app_secret || ''} onChange={(event) => updateDeveloper('feishu_app_secret', event.target.value)} placeholder={developer.feishu_app_secret_masked || '输入新密钥'} autoComplete="new-password" /></label>
+                <label className="field"><span>默认工作目录</span><input value={developer.default_cwd || '/workspace'} onChange={(event) => updateDeveloper('default_cwd', event.target.value)} placeholder="/workspace" /></label>
+                <label className="field"><span>允许的项目根目录</span><textarea rows="2" value={Array.isArray(developer.repo_roots) ? developer.repo_roots.join('\n') : (developer.repo_roots || '/workspace')} onChange={(event) => updateDeveloper('repo_roots', event.target.value)} placeholder="每行一个绝对路径" /></label>
+                <label className="field"><span>允许的用户 Open ID</span><textarea rows="2" value={developer.allowed_users || ''} onChange={(event) => updateDeveloper('allowed_users', event.target.value)} placeholder="每行一个，不能与群聊白名单同时留空" /></label>
+                <label className="field"><span>允许的群聊 Chat ID</span><textarea rows="2" value={developer.allowed_chats || ''} onChange={(event) => updateDeveloper('allowed_chats', event.target.value)} placeholder="每行一个" /></label>
+                <label className="field"><span>进入工作目录后运行</span><input type="checkbox" checked={developer.require_working_dir !== false} onChange={(event) => updateDeveloper('require_working_dir', event.target.checked)} /></label>
+              </>}
+              <div className="agent-runtime-status"><span className={agentStatus.developer?.running ? 'ok' : ''}>{agentStatus.developer?.running ? '运行中' : '已停止'}</span><em>{agentStatus.developer?.last_error || (agentStatus.developer?.available ? '原生 dsh-feishu 运行时已安装' : '需要重新构建 Docker 镜像')}</em></div>
+              <div className="agent-config-actions">{agentStatus.developer?.running ? <button className="btn btn-danger btn-sm" disabled={busy.developerAgent} onClick={actions.stopDeveloperAgent}><Icon id="i-stop" className="icon icon-sm" />停止代码 Agent</button> : <button className="btn btn-ghost btn-sm" disabled={busy.agentConfig || !developer.enabled} onClick={save}><Icon id="i-bolt" className="icon icon-sm" />保存并启动</button>}</div>
+              <div className="agent-config-actions"><button className="btn btn-ghost btn-sm" disabled={busy.agentTest || !remote.enabled} onClick={actions.testAgent}>{busy.agentTest ? <span className="loading" /> : <Icon id="i-bolt" className="icon icon-sm" />}测试</button><button className="btn btn-primary btn-sm" disabled={busy.agentConfig} onClick={save}><Icon id="i-check" className="icon icon-sm" />保存</button></div>
+            </div>
+          </details>
+        </div>
+
+        <div className="agent-messages" ref={messagesRef}>
+          {!agentSession?.messages?.length && (
+            <div className="agent-welcome">
+              <div className="agent-welcome-mark"><AppLogo title="AudioFlow Agent" /></div>
+              <strong>今天要整理哪本有声书？</strong>
+              <div className="agent-prompts">
+                {['查看最近完成的下载', '列出等待确认的重命名计划', '为最近完成的任务生成重命名计划'].map((text) => <button key={text} onClick={() => setMessage(text)}>{text}</button>)}
+              </div>
+            </div>
+          )}
+          {(agentSession?.messages || []).map((item, index) => (
+            <article className={`agent-message ${item.role}`} key={`${item.created_at}-${index}`}>
+              {item.role === 'assistant' && <div className="agent-message-avatar"><AppLogo title="Agent" /></div>}
+              <div className="agent-message-body">
+                <p>{item.content}</p>
+                {(item.tool_events || []).map((event, eventIndex) => <div className={`agent-tool-event ${event.status}`} key={eventIndex}><Icon id={event.status === 'success' ? 'i-check' : 'i-alert'} className="icon icon-sm" /><span>{AGENT_TOOL_LABELS[event.name] || event.name}</span><em>{event.status === 'success' ? '完成' : event.error}</em></div>)}
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <form className="agent-composer" onSubmit={submit}>
+          <textarea rows="2" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(event); } }} placeholder="给 Agent 发消息" disabled={!remote.enabled || busy.agentChat} />
+          <button type="submit" className="btn btn-primary" disabled={!message.trim() || !remote.enabled || busy.agentChat} title="发送" aria-label="发送消息">{busy.agentChat ? <span className="loading" /> : <Icon id="i-send" />}</button>
+        </form>
+      </section>
+    </div>
   );
 }
 

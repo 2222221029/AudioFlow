@@ -104,6 +104,7 @@ function initialMobileView() {
       accounts: 'cookies',
       personal: 'personal',
       notifications: 'notifications',
+      agent: 'agent',
       themes: 'themes',
       settings: 'settings',
       more: 'more',
@@ -178,6 +179,9 @@ export function useAudioFlowApp() {
   const [subscriptionScheduler, setSubscriptionScheduler] = useState({});
   const [subscriptionJobs, setSubscriptionJobs] = useState({});
   const [notificationConfig, setNotificationConfig] = useState({enabled: false, scenes: {}, services: [], available_channels: []});
+  const [agentStatus, setAgentStatus] = useState({config: {enabled: false, provider: 'deepseek', runner: 'native', providers: {}, developer_agent: {}}, harness: {}, developer: {}, tools: []});
+  const [agentSessions, setAgentSessions] = useState([]);
+  const [agentSession, setAgentSession] = useState(null);
   const [cookies, setCookies] = useState({});
   const [config, setConfig] = useState({});
   const [logs, setLogs] = useState([]);
@@ -1034,6 +1038,90 @@ export function useAudioFlowApp() {
     return data.config || {};
   }, []);
 
+  const loadAgent = useCallback(async () => {
+    const [statusData, sessionsData] = await Promise.all([
+      api('/api/agent/status'),
+      api('/api/agent/sessions'),
+    ]);
+    setAgentStatus(statusData || {});
+    setAgentSessions(sessionsData.sessions || []);
+    return statusData;
+  }, []);
+
+  const loadAgentSession = useCallback(async (sessionId) => {
+    if (!sessionId) {
+      setAgentSession(null);
+      return null;
+    }
+    const data = await api('/api/agent/sessions/' + encodeURIComponent(sessionId));
+    setAgentSession(data.session || null);
+    return data.session || null;
+  }, []);
+
+  const saveAgentConfig = useCallback(async (nextConfig) => {
+    return runBusy('agentConfig', async () => {
+      const data = await api('/api/agent/config', {method: 'POST', body: nextConfig});
+      setAgentStatus((prev) => ({...prev, config: data.config || {}, developer: data.developer || prev.developer || {}}));
+      showToast(data.developer?.last_error ? `配置已保存，代码 Agent 启动失败：${data.developer.last_error}` : 'Agent 配置已保存', data.developer?.last_error ? 'err' : 'ok');
+      return data.config;
+    }).catch((error) => {
+      showToast('保存失败：' + error.message, 'err');
+      throw error;
+    });
+  }, [runBusy, showToast]);
+
+  const startDeveloperAgent = useCallback(async () => {
+    return runBusy('developerAgent', async () => {
+      const data = await api('/api/agent/developer/start', {method: 'POST', body: {}});
+      setAgentStatus((prev) => ({...prev, developer: data.status || {}}));
+      showToast('飞书完整代码 Agent 已启动', 'ok');
+      return data.status;
+    }).catch((error) => {
+      showToast('启动失败：' + error.message, 'err');
+      throw error;
+    });
+  }, [runBusy, showToast]);
+
+  const stopDeveloperAgent = useCallback(async () => {
+    return runBusy('developerAgent', async () => {
+      const data = await api('/api/agent/developer/stop', {method: 'POST', body: {}});
+      setAgentStatus((prev) => ({...prev, developer: data.status || {}}));
+      showToast('飞书完整代码 Agent 已停止', 'ok');
+      return data.status;
+    });
+  }, [runBusy, showToast]);
+
+  const testAgent = useCallback(async () => {
+    return runBusy('agentTest', async () => {
+      const data = await api('/api/agent/test', {method: 'POST', body: {}});
+      showToast(data.result?.reply || '模型连接成功', 'ok');
+      return data.result;
+    }).catch((error) => {
+      showToast('连接失败：' + error.message, 'err');
+      throw error;
+    });
+  }, [runBusy, showToast]);
+
+  const sendAgentMessage = useCallback(async (message) => {
+    return runBusy('agentChat', async () => {
+      const data = await api('/api/agent/chat', {method: 'POST', body: {message, session_id: agentSession?.id}});
+      setAgentSession(data.session || null);
+      const sessionsData = await api('/api/agent/sessions');
+      setAgentSessions(sessionsData.sessions || []);
+      return data.message;
+    }).catch((error) => {
+      showToast('Agent 请求失败：' + error.message, 'err');
+      throw error;
+    });
+  }, [agentSession?.id, runBusy, showToast]);
+
+  const deleteAgentSession = useCallback(async (sessionId) => {
+    await api('/api/agent/sessions/' + encodeURIComponent(sessionId), {method: 'DELETE'});
+    if (agentSession?.id === sessionId) setAgentSession(null);
+    const data = await api('/api/agent/sessions');
+    setAgentSessions(data.sessions || []);
+  }, [agentSession?.id]);
+
   const checkServiceConnection = useCallback(async ({reload = false} = {}) => {
     setServiceState('checking');
     try {
@@ -1239,6 +1327,9 @@ export function useAudioFlowApp() {
     subscriptionScheduler,
     subscriptionJobs,
     notificationConfig,
+    agentStatus,
+    agentSessions,
+    agentSession,
     cookies,
     config,
     logs,
@@ -1328,6 +1419,14 @@ export function useAudioFlowApp() {
       clearEvents,
       loadDiagnostics,
       loadNotifications,
+      loadAgent,
+      loadAgentSession,
+      saveAgentConfig,
+      startDeveloperAgent,
+      stopDeveloperAgent,
+      testAgent,
+      sendAgentMessage,
+      deleteAgentSession,
       checkServiceConnection,
       saveNotifications,
       testNotifications,

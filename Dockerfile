@@ -8,6 +8,12 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY frontend/ ./
 RUN npm run build
 
+FROM node:22-bookworm-slim AS developer-agent-runtime
+
+WORKDIR /opt/audioflow-developer-agent
+COPY developer-agent/package*.json ./
+RUN npm ci --omit=dev --legacy-peer-deps --no-audit --no-fund
+
 FROM python:3.12-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -51,11 +57,21 @@ RUN pip install \
     --trusted-host mirrors.aliyun.com \
     -r requirements.txt
 
+# The image is Linux-based, which is supported by the Harness runtime wheel.
+# AudioFlow still defaults to its native runtime and selects Harness in the UI.
+RUN pip install --timeout 600 --retries 20 deepseek-harness-sdk
+
+COPY --from=developer-agent-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=developer-agent-runtime /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=developer-agent-runtime /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=developer-agent-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=developer-agent-runtime /opt/audioflow-developer-agent /app/developer-agent
+
 COPY --chown=audioflow:audioflow . /app
 COPY --chown=audioflow:audioflow --from=frontend-build /app/dist /app/frontend/dist
 
-RUN mkdir -p /app/data /app/config /app/downloads /app/logs \
-    && chown -R audioflow:audioflow /app/data /app/config /app/downloads /app/logs
+RUN mkdir -p /app/data /app/config /app/downloads /app/logs /workspace \
+    && chown -R audioflow:audioflow /app/data /app/config /app/downloads /app/logs /workspace
 
 USER audioflow
 

@@ -6,6 +6,7 @@ import {MiniPlayer} from '../components/Player.jsx';
 import {useAudioFlowApp} from '../hooks/useAudioFlowApp.js';
 import {
   AlbumDetail,
+  AgentPage,
   CookiesPage,
   DownloadsPage,
   LoginModal,
@@ -25,6 +26,7 @@ const NAV = [
   ['search', 'i-search', '聚合搜索'],
   ['downloads', 'i-download', '下载管理'],
   ['subscriptions', 'i-star', '订阅管理'],
+  ['agent', 'i-agent', 'AI Agent'],
   ['personal', 'i-user', '个人中心'],
   ['cookies', 'i-cookie', '账号管理'],
   ['notifications', 'i-bell', '通知系统'],
@@ -46,6 +48,7 @@ export default function DesktopPage() {
     if (id === 'subscriptions') actions.loadSubscriptions().catch(() => {});
     if (id === 'cookies') actions.loadCookies().catch(() => {});
     if (id === 'notifications') actions.loadNotifications().catch(() => {});
+    if (id === 'agent') actions.loadAgent().catch(() => {});
     if (id === 'settings') {
       actions.loadConfig().catch(() => {});
       actions.loadLogs().catch(() => {});
@@ -105,6 +108,7 @@ export default function DesktopPage() {
           {page === 'search' && <SearchPage app={app} />}
           {page === 'downloads' && <PageShell title="下载管理" subtitle="实时下载进度、失败重试、并发与目录" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadDownloads}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><DownloadsPage app={app} onNavigate={() => switchPage('search')} /></PageShell>}
           {page === 'subscriptions' && <PageShell title="订阅管理" subtitle="追更喜欢的专辑，新章节自动加入下载队列" action={<button className="btn btn-ghost btn-sm" onClick={() => actions.loadSubscriptions({refreshLocal: true})}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><SubscriptionsPage app={app} onNavigate={() => switchPage('search')} /></PageShell>}
+          {page === 'agent' && <PageShell title="AudioFlow Agent" subtitle="对话管理下载任务与有声书重命名" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadAgent}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><AgentPage app={app} /></PageShell>}
           {page === 'personal' && <PageShell title="个人中心" subtitle="查看各平台的收听历史、收藏、订阅、已购"><PersonalPage app={app} /></PageShell>}
           {page === 'cookies' && <PageShell title="账号管理" subtitle="为各平台提供登录态，支持扫码、浏览器抓取与手动粘贴" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadCookies}><Icon id="i-refresh" className="icon icon-sm" />刷新状态</button>}><CookiesPage app={app} /></PageShell>}
           {page === 'notifications' && <PageShell title="通知系统" subtitle="配置下载、订阅等事件的外部推送渠道" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadNotifications}><Icon id="i-refresh" className="icon icon-sm" />刷新配置</button>}><NotificationsPage app={app} /></PageShell>}

@@ -10,7 +10,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 
+from .feishu_bridge import FeishuActionStore
 from .platform_config import config_dir
 
 
@@ -45,6 +47,7 @@ def wecom_album_url(platform, album_id, fallback=""):
 DEFAULT_SCENES = {
     "download_completed": True,
     "download_failed": True,
+    "rename_confirmation": True,
     "subscription_queued": True,
     "subscription_checked": False,
 }
@@ -56,6 +59,7 @@ CHANNEL_LABELS = {
     "pushplus": "PushPlus",
     "wecom_app": "企业微信应用",
     "wecom_robot": "企业微信机器人",
+    "feishu": "飞书 Agent",
     "webhook": "通用 Webhook",
 }
 
@@ -82,6 +86,8 @@ DEFAULT_WECOM_TEMPLATES = {
     "notify_download_completed_desc": "平台：{platform}\n成功：{success} 章 · 失败：{failed} 章\n任务：{task_id}",
     "notify_download_failed_title": "❌ 下载失败：{title}",
     "notify_download_failed_desc": "错误：{error}\n任务：{task_id}",
+    "notify_rename_confirmation_title": "待确认重命名：{title}",
+    "notify_rename_confirmation_desc": "计划：{plan_id}\n待重命名：{planned} 个 · 问题：{issues} 个\n回复「确认重命名 {plan_id}」或「取消重命名 {plan_id}」",
 }
 
 
@@ -116,6 +122,41 @@ class NotificationManager:
     def __init__(self, path=None):
         self.path = Path(path or config_dir() / "notifications.json")
         self._config = None
+        self._fernet = self._make_fernet()
+        self._feishu_actions = FeishuActionStore(self.path.with_name("feishu_actions.json"))
+
+    def _make_fernet(self):
+        key_path = self.path.with_name("agent.key")
+        if key_path.exists():
+            return Fernet(key_path.read_bytes().strip())
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key = Fernet.generate_key()
+        key_path.write_bytes(key)
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        return Fernet(key)
+
+    def _decode_service_secrets(self, service):
+        service = deepcopy(service)
+        config = service.setdefault("config", {})
+        encrypted = str(config.pop("app_secret_encrypted", "") or "")
+        if encrypted and not config.get("app_secret"):
+            try:
+                config["app_secret"] = self._fernet.decrypt(encrypted.encode("ascii")).decode("utf-8")
+            except (InvalidToken, ValueError, TypeError):
+                logging.error("failed to decrypt Feishu app secret for service %s", service.get("id"))
+        return service
+
+    def _encode_service_secrets(self, service):
+        service = deepcopy(service)
+        config = service.setdefault("config", {})
+        config.pop("_tenant_token", None)
+        secret = str(config.pop("app_secret", "") or "")
+        if service.get("type") == "feishu" and secret:
+            config["app_secret_encrypted"] = self._fernet.encrypt(secret.encode("utf-8")).decode("ascii")
+        return service
 
     def default_config(self):
         return {
@@ -162,7 +203,7 @@ class NotificationManager:
         scenes.update(data.get("scenes") or {})
         base["scenes"] = scenes
         base["wecom_templates"] = self._merge_templates(data.get("wecom_templates"))
-        base["services"] = [self._normalize_service(item) for item in (data.get("services") or []) if isinstance(item, dict)]
+        base["services"] = [self._normalize_service(self._decode_service_secrets(item)) for item in (data.get("services") or []) if isinstance(item, dict)]
         self._config = base
         return self._config
 
@@ -177,7 +218,9 @@ class NotificationManager:
         data["updated_at"] = _now()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        persisted = deepcopy(data)
+        persisted["services"] = [self._encode_service_secrets(item) for item in data.get("services") or []]
+        tmp.write_text(json.dumps(persisted, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
         self._config = data
         return data
@@ -187,10 +230,10 @@ class NotificationManager:
         for service in data.get("services") or []:
             config = service.get("config") or {}
             service["configured"] = self._is_service_configured(service)
-            for key in ("token", "bot_token", "send_key", "key", "secret", "encoding_aes_key", "chat_id", "url"):
+            for key in ("token", "bot_token", "send_key", "key", "secret", "app_secret", "encoding_aes_key", "chat_id", "url"):
                 if config.get(key):
                     config[f"{key}_masked"] = _mask(config.get(key), keep=5 if key == "url" else 4)
-            for key in ("token", "bot_token", "send_key", "key", "secret", "encoding_aes_key", "_access_token"):
+            for key in ("token", "bot_token", "send_key", "key", "secret", "app_secret", "encoding_aes_key", "_access_token", "_tenant_token"):
                 config.pop(key, None)
             if service.get("type") == "webhook":
                 config.pop("url", None)
@@ -225,6 +268,8 @@ class NotificationManager:
             return bool(config.get("corp_id") and config.get("agent_id") and config.get("secret"))
         if service_type == "wecom_robot":
             return bool(config.get("key"))
+        if service_type == "feishu":
+            return bool(config.get("app_id") and config.get("app_secret") and config.get("receive_id"))
         if service_type == "webhook":
             return bool(config.get("url"))
         return False
@@ -317,6 +362,8 @@ class NotificationManager:
             return self._send_wecom_app(config, message)
         if service_type == "wecom_robot":
             return self._send_wecom_robot(config, message)
+        if service_type == "feishu":
+            return self._send_feishu(service, config, message)
         if service_type == "webhook":
             return self._send_webhook(config, message)
         raise ValueError(f"不支持的通知渠道：{service_type}")
@@ -329,6 +376,7 @@ class NotificationManager:
             "pushplus": ("token",),
             "wecom_app": ("corp_id", "agent_id", "secret"),
             "wecom_robot": ("key",),
+            "feishu": ("app_id", "app_secret", "receive_id"),
             "webhook": ("url",),
         }.get(service_type)
         if required is None:
@@ -469,13 +517,16 @@ class NotificationManager:
         desc_tpl = templates.get(f"notify_{tpl_scene}_desc")
         if title_tpl and desc_tpl:
             fields = {
-                "title": album.get("title") or task.get("title") or message.get("title") or "",
+                "title": album.get("title") or task.get("title") or payload.get("title") or message.get("title") or "",
                 "platform": album.get("platform") or "",
                 "missing_count": payload.get("missing_count", ""),
                 "task_id": payload.get("task_id") or task.get("id") or task.get("task_id") or "",
                 "success": payload.get("success", ""),
                 "failed": payload.get("failed", ""),
                 "error": payload.get("error", ""),
+                "plan_id": payload.get("plan_id", ""),
+                "planned": payload.get("planned", ""),
+                "issues": payload.get("issues", ""),
             }
             article = {
                 "title": render_template(title_tpl, fields),
@@ -499,6 +550,82 @@ class NotificationManager:
         payload = {"msgtype": "text", "text": {"content": f"{message['title']}\n{message['text']}".strip()}}
         response = self._post_json(url, payload)
         return self._assert_provider_ok(response, "企业微信机器人", ok_codes=(0,), ok_field="errcode", message_fields=("errmsg", "message", "msg"))
+
+    def _feishu_api_base(self, config):
+        return str(config.get("api_base") or "https://open.feishu.cn").rstrip("/")
+
+    def _feishu_access_token(self, config):
+        cached = config.get("_tenant_token") or {}
+        if cached.get("token") and cached.get("expires_at", 0) > time.time() + 60:
+            return cached["token"]
+        response = self._post_json(
+            f"{self._feishu_api_base(config)}/open-apis/auth/v3/tenant_access_token/internal",
+            {"app_id": config["app_id"], "app_secret": config["app_secret"]},
+        )
+        data = self._response_json(response)
+        if data.get("code") not in (0, "0") or not data.get("tenant_access_token"):
+            raise ValueError(f"飞书获取 tenant_access_token 失败：{_compact_error(data.get('msg') or data)}")
+        token = data["tenant_access_token"]
+        config["_tenant_token"] = {"token": token, "expires_at": time.time() + int(data.get("expire") or 7200)}
+        return token
+
+    def send_feishu_message(self, config, content, msg_type="text", receive_id=None, receive_id_type=None):
+        target = str(receive_id or config.get("receive_id") or "").strip()
+        target_type = str(receive_id_type or config.get("receive_id_type") or "open_id").strip()
+        if target_type not in {"open_id", "user_id", "union_id", "email", "chat_id"}:
+            raise ValueError("飞书接收目标类型无效")
+        token = self._feishu_access_token(config)
+        response = requests.post(
+            f"{self._feishu_api_base(config)}/open-apis/im/v1/messages",
+            params={"receive_id_type": target_type},
+            headers={"Authorization": f"Bearer {token}"},
+            json={"receive_id": target, "msg_type": msg_type, "content": json.dumps(content, ensure_ascii=False)},
+            timeout=12,
+        )
+        return self._assert_provider_ok(response, "飞书", ok_codes=(0,), message_fields=("msg", "message"))
+
+    def send_feishu_text(self, config, content, receive_id=None, receive_id_type=None):
+        return self.send_feishu_message(
+            config,
+            {"text": _clean_text(content)},
+            "text",
+            receive_id,
+            receive_id_type,
+        )
+
+    def _send_feishu(self, service, config, message):
+        payload = message.get("payload") or {}
+        plan_id = str(payload.get("plan_id") or "")
+        plan_status = str(payload.get("plan_status") or "pending_confirmation")
+        if message.get("scene") != "rename_confirmation" or not plan_id or plan_status != "pending_confirmation":
+            return self.send_feishu_text(config, f"{message['title']}\n\n{message['text']}".strip())
+        receive_type = str(config.get("receive_id_type") or "open_id")
+        receive_id = str(config.get("receive_id") or "")
+        nonce = self._feishu_actions.create(
+            plan_id,
+            service.get("id"),
+            user_id=receive_id if receive_type == "open_id" else "",
+            chat_id=receive_id if receive_type == "chat_id" else "",
+        )
+        summary = (
+            f"**计划 ID：** `{plan_id}`\n"
+            f"**待重命名：** {payload.get('planned', 0)} 个\n"
+            f"**需要复核：** {payload.get('issues', 0)} 个\n\n"
+            "确认后将由 AudioFlow 服务端执行确定性重命名；Agent 无权直接操作文件。"
+        )
+        common = {"plan_id": plan_id, "nonce": nonce}
+        card = {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"template": "orange", "title": {"tag": "plain_text", "content": message["title"]}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
+                {"tag": "action", "actions": [
+                    {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "确认重命名"}, "value": {**common, "action": "confirm_rename"}, "confirm": {"title": {"tag": "plain_text", "content": "确认执行"}, "text": {"tag": "plain_text", "content": "将按计划重命名文件，此操作需要你明确确认。"}}},
+                    {"tag": "button", "type": "danger", "text": {"tag": "plain_text", "content": "取消计划"}, "value": {**common, "action": "cancel_rename"}},
+                ]},
+            ],
+        }
+        return self.send_feishu_message(config, card, "interactive")
 
     def _wecom_robot_url(self, value):
         value = str(value or "").strip()

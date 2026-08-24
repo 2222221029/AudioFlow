@@ -87,6 +87,40 @@ AUDIOFLOW_COOKIE_SECRET=请换成一段足够长的随机字符串
 - 系统设置：下载目录、默认音质、登录密码、主题、服务诊断、日志查看与清空。
 - 移动端完整包含搜索、详情、下载、订阅、个人中心、账号管理、系统设置、主题和日志操作。
 
+## 下载后自动重命名
+
+设置 `AUDIOFLOW_AUTO_RENAME=true` 后，完整下载成功的任务会在后台生成重命名计划。系统只分析文件并发送通知，确认前不会修改文件；部分失败的任务不会自动生成计划。
+
+默认建议格式为 `0001-《书名》第001集 标题.ext`。特殊文件和未匹配文件保持不动，标题歧义、目标冲突等问题会阻止执行。请在通知设置中启用“重命名确认”场景；企业微信应用渠道可回复 `确认重命名 计划ID` 或 `取消重命名 计划ID`，其他渠道可使用登录后的 `/api/rename-plans` 接口查看和确认。执行采用持久化计划和两阶段临时文件名，不删除任何文件。
+
+## AudioFlow Agent
+
+桌面端侧栏与移动端“更多”中提供 Agent 工作台。支持 DeepSeek、OpenAI、Anthropic Claude、Google Gemini、OpenRouter、Ollama、通义千问、Kimi、智谱 GLM、豆包、SiliconFlow，以及自定义 OpenAI 兼容地址。API Key 加密保存在 `config/agent.json`，Web API 只返回掩码。
+
+Agent 只拥有 AudioFlow 注册的应用工具：查看下载、查看重命名计划、为已完成任务生成待确认计划。它没有 Shell、文件系统、删除或直接重命名权限，任何重命名仍必须通过现有通知命令或登录后的确认 API 执行。
+
+Docker 镜像默认安装开发预览版 `deepseek-harness-sdk`，无需增加 Compose 环境变量；Agent 仍默认使用稳定的 AudioFlow 原生运行时，可在模型设置中为 DeepSeek 切换到 Harness。模型 API Key 使用持久化目录中的 `config/agent.key` 自动加密，该文件会随现有配置卷保存，也无需在 Compose 中设置根密钥。迁移实例时应一起迁移整个配置目录。
+
+AudioFlow 内置的有声书 Harness 组合不加载 Bash、终端、编辑器、文件系统或子 Agent 插件，因此 Harness 不可用不会影响下载服务和原生 Agent。需要代码开发能力时，可另行启用下述隔离的完整代码 Agent。
+
+### 飞书 Agent
+
+通知设置中可添加“飞书 Agent”渠道。填写飞书自建应用的 App ID、App Secret、默认接收目标，并至少填写一个允许的用户 Open ID 或群聊 Chat ID；两个白名单都为空时，AudioFlow 会拒绝全部入站消息。服务使用飞书长连接接收消息，不需要公网回调 URL，也不需要新增 Compose 环境变量。
+
+飞书中发送的文字会进入独立的 AudioFlow Agent 会话。下载、订阅等通知直接推送到飞书；重命名确认会使用带“确认重命名”和“取消计划”按钮的交互卡片。卡片动作绑定渠道、计划、用户/群聊和一次性随机标识，重复、过期或越权操作均会被拒绝。App Secret 使用 `config/agent.key` 加密落盘，迁移时仍需备份整个 `config` 目录。
+
+此处的 AudioFlow 通知机器人只调用应用自身的受控 Agent 与重命名确认接口，不加载工作目录选择、Shell、编辑器或文件系统能力。需要这些通用代码能力时，启用下述基于 [`PGZXB/dsh-feishu`](https://github.com/PGZXB/dsh-feishu) 的独立完整代码 Agent。
+
+### 飞书完整代码 Agent
+
+Agent 的模型设置中可以另行启用“飞书完整代码 Agent”。该模式直接运行固定版本的 `@deepseek-ai/dsh` 与 [`@dsh-feishu/dsh-feishu`](https://github.com/PGZXB/dsh-feishu)，包含工作目录选择、Bash/PowerShell、文件读写与搜索、字符串编辑器、后台任务、技能、子 Agent、工作流、会话恢复、流式卡片、提问卡和审批卡。
+
+完整代码 Agent 必须使用独立的飞书应用 App ID，不能与 AudioFlow 通知机器人共用同一个长连接。它复用当前选择的 AI 平台、模型和加密 API Key；飞书 App Secret 同样加密保存在 `config/agent.json`。用户和群聊白名单不能同时留空。
+
+Docker Compose 会持久化 `./workspace` 到容器的 `/workspace`；NAS 镜像配置使用 `/vol1/1000/docker/audioflow/workspace`。默认权限为 `workspace-write`，Agent 可直接修改工作区内容；超出工作区或需要提权的操作通过飞书审批卡确认。`/panel` 打开控制面板，`/repo` 选择项目，`/permission` 调整权限，`/sessions` 管理会话。
+
+飞书开发应用需要同时把“事件”和“卡片回调”设置为长连接，并开通 `im.message.receive_v1`、`card.action.trigger` 以及 `im:message`、`im:message:send_as_bot`、`im:chat`、`im:chat.members:read`、`im:resource` 等 `dsh-feishu` 文档列出的权限。完整代码 Agent 是独立子进程；它退出或配置错误不会停止 AudioFlow 下载服务，运行日志位于 `config/dsh/developer-agent.log`。
+
 ## PWA 与移动端
 
 AudioFlow支持安装为 PWA。Android Chrome 会在满足条件后显示安装入口；iOS Safari 需要手动打开分享菜单，选择“添加到主屏幕”。

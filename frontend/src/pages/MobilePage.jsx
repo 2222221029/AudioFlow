@@ -7,6 +7,7 @@ import {useAudioFlowApp} from '../hooks/useAudioFlowApp.js';
 import {isStandalonePwa, promptInstall, setupInstallPrompt} from '../utils/pwa.js';
 import {
   AlbumDetail,
+  AgentPage,
   CookiesPage,
   DownloadsPage,
   LoginModal,
@@ -33,6 +34,7 @@ const VIEW_META = {
   discover: {title: '发现', subtitle: '跨平台搜索有声书', icon: 'i-search'},
   downloads: {title: '下载', subtitle: '任务队列与进度', icon: 'i-download'},
   subscriptions: {title: '订阅', subtitle: '追更与自动补全', icon: 'i-bookmark'},
+  agent: {title: 'Agent', subtitle: '有声书智能助手', icon: 'i-agent', parent: 'more'},
   cookies: {title: '账号管理', subtitle: '平台凭证与登录状态', icon: 'i-cookie', parent: 'more'},
   personal: {title: '个人中心', subtitle: '历史、收藏与书架', icon: 'i-user'},
   notifications: {title: '通知', subtitle: '下载、订阅与系统推送', icon: 'i-bell', parent: 'more'},
@@ -161,6 +163,7 @@ function MoreView({app, installable, switchView}) {
   const cards = [
     {id: 'cookies', icon: 'i-cookie', title: '账号管理', sub: '平台凭证、扫码登录与手动录入'},
     {id: 'notifications', icon: 'i-bell', title: '通知系统', sub: '下载、订阅与外部推送'},
+    {id: 'agent', icon: 'i-agent', title: 'AudioFlow Agent', sub: '管理下载与重命名计划'},
     {id: 'themes', icon: 'i-palette', title: '主题外观', sub: '界面主题与配色'},
     {id: 'settings', icon: 'i-settings', title: '系统设置', sub: '目录、音质、日志'},
     {id: 'downloads', icon: 'i-download', title: '下载管理', sub: `${metrics.activeDownloads} 个活跃任务`},
@@ -213,6 +216,7 @@ function RoutedContent({app, installable, switchView, searchAndShowResults}) {
   if (mobileView === 'cookies') return <section className="view native-view active"><CookiesPage app={app} /></section>;
   if (mobileView === 'personal') return <section className="view native-view active"><PersonalPage app={app} mobile /></section>;
   if (mobileView === 'notifications') return <section className="view native-view active"><NotificationsPage app={app} /></section>;
+  if (mobileView === 'agent') return <section className="view native-view active"><AgentPage app={app} mobile /></section>;
   if (mobileView === 'themes') return <section className="view native-view active"><ThemesPage /></section>;
   if (mobileView === 'settings') return <section className="view native-view active"><SettingsPage app={app} /></section>;
   return <MoreView app={app} installable={installable} switchView={switchView} />;
@@ -240,6 +244,7 @@ export default function MobilePage() {
     if (next === 'subscriptions') actions.loadSubscriptions().catch(() => {});
     if (next === 'cookies') actions.loadCookies().catch(() => {});
     if (next === 'notifications') actions.loadNotifications().catch(() => {});
+    if (next === 'agent') actions.loadAgent().catch(() => {});
     if (next === 'settings') {
       actions.loadConfig().catch(() => {});
       actions.loadLogs(100).catch(() => {});

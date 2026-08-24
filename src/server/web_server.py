@@ -20,9 +20,13 @@ import requests
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 
 from core.auth_manager import AuthManager
+from core.agent_manager import AgentManager
+from core.audiobook_renamer import RenamePlanManager
 from core.cookie_manager import CookieManager
 from core.download_worker import DownloadWorker
+from core.developer_agent_manager import DeveloperAgentManager
 from core.enhanced_search_manager import EnhancedSearchManager
+from core.feishu_bridge import FeishuBridge
 from core.notification_manager import NotificationManager
 from core.wecom_crypto import WeComCrypto, parse_wecom_message
 from core.lrts_manager import (
@@ -380,6 +384,99 @@ migrate_runtime_file(data_dir() / "tasks.json", TASKS_FILE)
 subscription_manager = SubscriptionManager(config_dir=config_dir())
 
 notification_manager = NotificationManager(config_dir() / "notifications.json")
+rename_plan_manager = RenamePlanManager(config_dir() / "rename_plans.json")
+agent_manager = AgentManager(
+    config_dir() / "agent.json",
+    config_dir() / "agent_sessions.json",
+)
+
+
+def auto_rename_enabled():
+    return str(os.getenv("AUDIOFLOW_AUTO_RENAME", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _rename_safe_name(value):
+    text = str(value or "").strip() or "未知"
+    for char in '<>:"/\\|?*':
+        text = text.replace(char, "_")
+    return text[:200]
+
+
+def _task_album_dir(task):
+    album = task.get("album") or {}
+    root = Path(resolve_download_dir((task.get("options") or {}).get("download_dir")))
+    if cookie_manager.get_cookie("organize_by_platform_enabled") == "true":
+        root /= _rename_safe_name(album.get("platform") or "未知平台")
+    return root / _rename_safe_name(album.get("title") or task.get("title") or "未知专辑")
+
+
+def create_rename_plan_for_task(task_id, *, notify=True):
+    task = task_snapshot(task_id)
+    if not task:
+        raise KeyError("下载任务不存在")
+    if task.get("status") != "completed":
+        raise ValueError("只有完整下载成功的任务才能生成重命名计划")
+    existing = next((item for item in rename_plan_manager.list() if item.get("task_id") == task_id), None)
+    if existing:
+        return existing
+    album = task.get("album") or {}
+    chapters = task.get("success_chapters") or task.get("chapters") or []
+    plan = rename_plan_manager.create_plan(
+        task_id=task_id,
+        album=album,
+        chapters=chapters,
+        album_dir=_task_album_dir(task),
+    )
+    if notify and plan.get("status") in {"pending_confirmation", "needs_review"}:
+        summary = plan.get("summary") or {}
+        samples = [
+            f"{item.get('source_name')} -> {item.get('target_name')}"
+            for item in (plan.get("items") or [])[:3]
+        ]
+        lines = [
+            f"专辑：{(plan.get('album') or {}).get('title') or '-'}",
+            f"计划 ID：{plan.get('id')}",
+            f"格式：{plan.get('suggested_format')}",
+            f"待重命名：{summary.get('planned', 0)} 个",
+            f"需复核问题：{summary.get('issues', 0)} 个",
+            f"未匹配文件（保持不动）：{summary.get('unmatched', 0)} 个",
+        ]
+        if samples:
+            lines.extend(["示例：", *samples])
+        if plan.get("status") == "pending_confirmation":
+            lines.append(f"企业微信回复：确认重命名 {plan.get('id')} / 取消重命名 {plan.get('id')}")
+        else:
+            lines.append("计划存在歧义，已阻止执行；请先通过 Web API 查看问题并重新分析。")
+        base_url = str(os.getenv("PUBLIC_BASE_URL", "")).strip().rstrip("/")
+        if base_url:
+            lines.append(f"详情：{base_url}/api/rename-plans/{plan.get('id')}")
+        notification_manager.notify(
+            "rename_confirmation",
+            f"待确认重命名：{(plan.get('album') or {}).get('title') or task_id}",
+            "\n".join(lines),
+            {
+                "title": (plan.get("album") or {}).get("title") or "",
+                "plan_id": plan.get("id"),
+                "plan_status": plan.get("status"),
+                "planned": summary.get("planned", 0),
+                "issues": summary.get("issues", 0),
+                "task_id": task_id,
+            },
+        )
+    return plan
+
+
+def schedule_rename_plan(task_id):
+    if not auto_rename_enabled():
+        return
+
+    def worker():
+        try:
+            create_rename_plan_for_task(task_id)
+        except Exception:
+            logging.exception("automatic audiobook rename analysis failed: %s", task_id)
+
+    threading.Thread(target=worker, name=f"rename-plan-{task_id}", daemon=True).start()
 
 
 def ximalaya_subscription_quality(album, value=None, *, default_web=False):
@@ -2146,6 +2243,8 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
             f"平台：{album.get('platform') or '-'}\n成功：{success} 章\n失败：{failed} 章\n任务：{task_id}",
             {"task": task, "album": album, "success": success, "failed": failed},
         )
+    if status == "completed":
+        schedule_rename_plan(task_id)
     prune_tasks()  # 任务进入终态后清理超量历史记录，防止无限堆积
     return task
 
@@ -2354,6 +2453,7 @@ _NOTIFICATION_SECRET_KEYS = {
     "key",
     "url",
     "secret",
+    "app_secret",
     "encoding_aes_key",
 }
 
@@ -2403,6 +2503,7 @@ def api_notifications():
 def api_save_notifications():
     payload = request.get_json(silent=True) or {}
     config = notification_manager.save(_merge_notification_secrets(payload))
+    feishu_bridge.start()
     return json_ok(config=notification_manager.public_config(), saved_at=config.get("updated_at"))
 
 
@@ -2417,6 +2518,209 @@ def api_test_notifications():
             result = notification_manager.test(payload.get("service_id") or payload.get("serviceId"))
         return json_ok(result=result)
     except Exception as exc:
+        return json_error(str(exc), 400)
+
+
+@app.get("/api/rename-plans")
+def api_rename_plans():
+    return json_ok(plans=rename_plan_manager.list(request.args.get("status") or None))
+
+
+@app.get("/api/rename-plans/<plan_id>")
+def api_rename_plan(plan_id):
+    plan = rename_plan_manager.get(plan_id)
+    if not plan:
+        return json_error("重命名计划不存在", 404)
+    return json_ok(plan=plan)
+
+
+@app.post("/api/rename-plans/analyze")
+def api_analyze_rename_plan():
+    payload = request.get_json(silent=True) or {}
+    try:
+        plan = create_rename_plan_for_task(str(payload.get("task_id") or payload.get("taskId") or ""), notify=False)
+        return json_ok(plan=plan)
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/confirm")
+def api_confirm_rename_plan(plan_id):
+    try:
+        return json_ok(plan=rename_plan_manager.confirm(plan_id))
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/cancel")
+def api_cancel_rename_plan(plan_id):
+    try:
+        return json_ok(plan=rename_plan_manager.cancel(plan_id))
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+
+def _agent_list_downloads(status="all", limit=20):
+    status = str(status or "all")
+    limit = max(1, min(50, int(limit or 20)))
+    with task_lock:
+        snapshot = [dict(item) for item in tasks.values()]
+    snapshot.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+    if status == "active":
+        snapshot = [item for item in snapshot if item.get("status") in {"queued", "preparing", "downloading", "paused"}]
+    elif status != "all":
+        snapshot = [item for item in snapshot if item.get("status") == status]
+    return {
+        "tasks": [
+            {
+                "id": item.get("id"),
+                "title": item.get("title"),
+                "platform": (item.get("album") or {}).get("platform"),
+                "status": item.get("status"),
+                "success": item.get("success", 0),
+                "failed": item.get("failed", 0),
+                "total": item.get("total", 0),
+                "finished_at": item.get("finished_at"),
+            }
+            for item in snapshot[:limit]
+        ]
+    }
+
+
+def _agent_list_rename_plans(status=""):
+    plans = rename_plan_manager.list(str(status or "") or None)
+    return {
+        "plans": [
+            {
+                "id": item.get("id"),
+                "task_id": item.get("task_id"),
+                "title": (item.get("album") or {}).get("title"),
+                "status": item.get("status"),
+                "summary": item.get("summary") or {},
+            }
+            for item in plans[:50]
+        ]
+    }
+
+
+def _agent_get_rename_plan(plan_id):
+    plan = rename_plan_manager.get(str(plan_id or ""))
+    if not plan:
+        raise KeyError("重命名计划不存在")
+    return plan
+
+
+def _agent_create_rename_plan(task_id):
+    plan = create_rename_plan_for_task(str(task_id or ""), notify=True)
+    return {
+        "id": plan.get("id"),
+        "task_id": plan.get("task_id"),
+        "status": plan.get("status"),
+        "summary": plan.get("summary") or {},
+        "confirmation_required": True,
+        "confirmation_command": f"确认重命名 {plan.get('id')}",
+        "message": "计划已保存并发送通知；必须由用户明确确认后才会执行。",
+    }
+
+
+agent_manager.set_tools({
+    "list_downloads": _agent_list_downloads,
+    "list_rename_plans": _agent_list_rename_plans,
+    "get_rename_plan": _agent_get_rename_plan,
+    "create_rename_plan": _agent_create_rename_plan,
+})
+
+feishu_bridge = FeishuBridge(
+    notification_manager,
+    agent_manager,
+    rename_plan_manager,
+    config_dir() / "feishu_actions.json",
+)
+developer_agent_manager = DeveloperAgentManager(
+    agent_manager,
+    notification_manager,
+    config_dir(),
+    project_root() / "developer-agent",
+)
+
+
+@app.get("/api/agent/status")
+def api_agent_status():
+    return json_ok(**agent_manager.status(), developer=developer_agent_manager.status())
+
+
+@app.post("/api/agent/config")
+def api_agent_config():
+    try:
+        config = agent_manager.store.save_config(request.get_json(silent=True) or {})
+        developer = developer_agent_manager.reconcile()
+        return json_ok(config=config, developer=developer)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+
+@app.get("/api/agent/developer/status")
+def api_developer_agent_status():
+    return json_ok(status=developer_agent_manager.status())
+
+
+@app.post("/api/agent/developer/start")
+def api_developer_agent_start():
+    try:
+        return json_ok(status=developer_agent_manager.start())
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/agent/developer/stop")
+def api_developer_agent_stop():
+    return json_ok(status=developer_agent_manager.stop())
+
+
+@app.post("/api/agent/test")
+def api_agent_test():
+    payload = request.get_json(silent=True) or {}
+    try:
+        return json_ok(result=agent_manager.test_provider(payload.get("provider")))
+    except (ValueError, requests.RequestException) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.get("/api/agent/sessions")
+def api_agent_sessions():
+    return json_ok(sessions=agent_manager.store.list_sessions())
+
+
+@app.get("/api/agent/sessions/<session_id>")
+def api_agent_session(session_id):
+    session = agent_manager.store.get_session(session_id)
+    if not session:
+        return json_error("Agent 会话不存在", 404)
+    return json_ok(session=session)
+
+
+@app.delete("/api/agent/sessions/<session_id>")
+def api_delete_agent_session(session_id):
+    if not agent_manager.store.delete_session(session_id):
+        return json_error("Agent 会话不存在", 404)
+    return json_ok(deleted=True)
+
+
+@app.post("/api/agent/chat")
+def api_agent_chat():
+    payload = request.get_json(silent=True) or {}
+    try:
+        return json_ok(**agent_manager.chat(
+            payload.get("message") or payload.get("content"),
+            payload.get("session_id") or payload.get("sessionId"),
+        ))
+    except (ValueError, requests.RequestException) as exc:
         return json_error(str(exc), 400)
 
 
@@ -2479,6 +2783,8 @@ WECOM_TEMPLATE_FIELDS = [
     {"key": "notify_download_completed_desc", "label": "通知·下载完成·描述", "vars": ["title", "platform", "success", "failed", "task_id"]},
     {"key": "notify_download_failed_title", "label": "通知·下载失败·标题", "vars": ["title", "task_id", "error"]},
     {"key": "notify_download_failed_desc", "label": "通知·下载失败·描述", "vars": ["title", "task_id", "error"]},
+    {"key": "notify_rename_confirmation_title", "label": "通知·重命名确认·标题", "vars": ["title", "plan_id", "planned", "issues", "task_id"]},
+    {"key": "notify_rename_confirmation_desc", "label": "通知·重命名确认·描述", "vars": ["title", "plan_id", "planned", "issues", "task_id"]},
 ]
 
 
@@ -2493,6 +2799,7 @@ def _wecom_help_text():
         "订阅 序号：按网页版接口订阅最近一次搜索结果\n"
         "订阅 序号 杜比 / 无损：为该喜马拉雅专辑单独使用移动端 V4\n"
         "下载 序号：下载最近一次搜索结果全部章节\n"
+        "确认重命名 计划ID / 取消重命名 计划ID：处理下载后的重命名计划\n"
         "示例：搜索 三体 / 搜索 喜马拉雅 三体"
     )
 
@@ -2764,6 +3071,18 @@ def _wecom_handle_text_command(service_id, user_id, text):
         tasks_now = task_snapshot()
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
         return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
+    rename_match = re.match(r"^(确认重命名|取消重命名)\s+([a-f0-9]{10})$", text, re.I)
+    if rename_match:
+        plan_id = rename_match.group(2).lower()
+        try:
+            if rename_match.group(1) == "确认重命名":
+                plan = rename_plan_manager.confirm(plan_id)
+                renamed = sum(1 for item in (plan.get("items") or []) if item.get("status") == "renamed")
+                return f"重命名已完成：{(plan.get('album') or {}).get('title') or plan_id}\n成功：{renamed} 个文件"
+            rename_plan_manager.cancel(plan_id)
+            return f"重命名计划已取消：{plan_id}"
+        except (KeyError, ValueError, OSError) as exc:
+            return f"重命名操作失败：{exc}"
     # 慢指令（搜索/翻页/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
     tpl = notification_manager.get_wecom_templates()
     if re.match(r"^(搜索|search|/search)\s+.+$", text, re.I):
@@ -5422,6 +5741,8 @@ def main():
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true")
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         ensure_subscription_scheduler()
+        feishu_bridge.start()
+        developer_agent_manager.reconcile()
     print(f"🚀 启动服务器: http://{host}:{port}  debug={debug}")
     try:
         from waitress import serve

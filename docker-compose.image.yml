@@ -8,6 +8,7 @@ services:
       AUDIOFLOW_DEFAULT_PASSWORD: ${AUDIOFLOW_DEFAULT_PASSWORD:-admin}
       AUDIOFLOW_COOKIE_SECRET: ${AUDIOFLOW_COOKIE_SECRET:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      AUDIOFLOW_AUTO_RENAME: ${AUDIOFLOW_AUTO_RENAME:-false}
       AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY: ${AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY:-false}
       XIMALAYA_WEB_V3_ATTEMPTS: ${XIMALAYA_WEB_V3_ATTEMPTS:-5}
       XIMALAYA_WEB_V3_RETRY_BASE: ${XIMALAYA_WEB_V3_RETRY_BASE:-1}
@@ -22,5 +23,6 @@ services:
       - ${AUDIOFLOW_CONFIG_DIR:-/vol1/1000/docker/audioflow/config}:/app/config
       - ${AUDIOFLOW_LOG_DIR:-/vol1/1000/docker/audioflow/logs}:/app/logs
       - ${AUDIOFLOW_DOWNLOAD_DIR:-/vol1/1000/downloads/有声书}:/app/downloads
+      - /vol1/1000/docker/audioflow/workspace:/workspace
     ports:
       - "${WEB_PORT:-8082}:8082"
