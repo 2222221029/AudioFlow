@@ -2268,7 +2268,7 @@ export function SettingsPage({app}) {
   const [splitChaptersEnabled, setSplitChaptersEnabled] = useState(false);
   const [chaptersPerFolder, setChaptersPerFolder] = useState(200);
   const [filenamePrefixFormat, setFilenamePrefixFormat] = useState('0001-');
-  const [manualOrganizeMode, setManualOrganizeMode] = useState('off');
+  const [manualOrganizeMode, setManualOrganizeMode] = useState('review');
   const [taskHistoryMaxKeep, setTaskHistoryMaxKeep] = useState(100);
   const [taskHistoryMaxAgeDays, setTaskHistoryMaxAgeDays] = useState(30);
   const [taskDetailRetentionDays, setTaskDetailRetentionDays] = useState(7);
@@ -2283,7 +2283,7 @@ export function SettingsPage({app}) {
     setSplitChaptersEnabled(!!config.split_chapters_enabled);
     setChaptersPerFolder(config.chapters_per_folder || 200);
     setFilenamePrefixFormat(config.filename_prefix_format || '0001-');
-    setManualOrganizeMode(config.manual_organize_mode || 'off');
+    setManualOrganizeMode(config.manual_organize_mode || 'review');
     setTaskHistoryMaxKeep(config.task_history_max_keep || 100);
     setTaskHistoryMaxAgeDays(config.task_history_max_age_days || 30);
     setTaskDetailRetentionDays(config.task_detail_retention_days ?? 7);
@@ -2322,6 +2322,15 @@ export function SettingsPage({app}) {
       <div className="glass glass-pad settings-card">
         <div className="field-row"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
         <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option></select></div>
+        <div className="field-row">
+          <label className="field-label">自动重命名（仅手动下载）</label>
+          <select className="field-select" value={manualOrganizeMode} onChange={(e) => setManualOrganizeMode(e.target.value)}>
+            <option value="off">关闭</option>
+            <option value="review">下载完成后生成计划并通知确认（推荐）</option>
+            <option value="auto_safe">已确认过的同一专辑无风险时自动执行</option>
+          </select>
+          <div className="cookie-desc">默认开启安全确认模式。只处理网页或企业微信手动下载；订阅检查、自动订阅及其重试不会进入整理流程。新专辑始终先确认书名、格式和特殊文件。</div>
+        </div>
         <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64，默认16" style={{maxWidth:'120px'}} /></div>
         <div className="field-row"><label className="check-row"><input type="checkbox" checked={organizeByPlatformEnabled} onChange={(e) => setOrganizeByPlatformEnabled(e.target.checked)} /><span>按专辑平台创建文件夹</span></label><div className="cookie-desc">开启后下载路径为“下载目录/平台/专辑”；关闭后为“下载目录/专辑”。</div></div>
         <div className="field-row">
@@ -2360,15 +2369,6 @@ export function SettingsPage({app}) {
             <option value="1.">1.章节名</option>
             <option value="none">不添加序号前缀</option>
           </select>
-        </div>
-        <div className="field-row">
-          <label className="field-label">手动下载后整理</label>
-          <select className="field-select" value={manualOrganizeMode} onChange={(e) => setManualOrganizeMode(e.target.value)}>
-            <option value="off">关闭</option>
-            <option value="review">自动生成完整计划并通知确认</option>
-            <option value="auto_safe">已确认过的同一专辑无风险时自动执行</option>
-          </select>
-          <div className="cookie-desc">只处理网页或企业微信手动下载；订阅检查、自动订阅及其重试不会进入整理流程。新专辑始终先确认书名、格式和特殊文件。</div>
         </div>
         <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
         <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, manualOrganizeMode, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>

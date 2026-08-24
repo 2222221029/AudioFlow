@@ -223,6 +223,28 @@ class AudiobookRenamerTests(unittest.TestCase):
         ))
         self.assertEqual(plan["status"], "needs_review")
 
+    def test_multi_volume_uses_most_common_prelude_and_keeps_outlier_for_review(self):
+        album_dir = self.tmp_path / "系列"
+        _audio(album_dir, "0001-第一部旧称 第1集 开始.mp3")
+        _audio(album_dir, "0002-第一部 第2集 继续.mp3")
+        _audio(album_dir, "0003-第一部 第3集 转折.mp3")
+        _audio(album_dir, "0004-第二部 第1集 重逢.mp3")
+        _audio(album_dir, "0005-第二部 第2集 终章.mp3")
+
+        plan = _manager(self.tmp_path).create_plan(
+            task_id="task-volume-majority", album={"title": "系列"}, chapters=[], album_dir=album_dir,
+        )
+
+        self.assertEqual(plan["configuration"]["volumes"], {
+            "1": "系列·第一部", "2": "系列·第二部",
+        })
+        unresolved_cross_book = [
+            issue for issue in plan["issues"]
+            if issue["type"] == "cross_book_suspected" and not issue.get("resolved")
+        ]
+        self.assertEqual(len(unresolved_cross_book), 1)
+        self.assertEqual(unresolved_cross_book[0]["file"], "0001-第一部旧称 第1集 开始.mp3")
+
     def test_cross_book_file_blocks_execution(self):
         album_dir = self.tmp_path / "九鼎记"
         _audio(album_dir, "1345-妙手大仙医 第1345集 订阅专辑，兄弟们.mp3")

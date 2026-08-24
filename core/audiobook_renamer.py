@@ -597,12 +597,14 @@ class RenamePlanManager:
         if volume_count > 1:
             suggested_volumes = {}
             for index in range(1, volume_count + 1):
-                prelude = next((
-                    str(item.get("prelude") or "").strip("《》丨| -_：:")
-                    for item in items
-                    if item.get("kind") == "chapter" and item.get("volume_index") == index
-                    and str(item.get("prelude") or "").strip("《》丨| -_：:")
-                ), "")
+                prelude_counts = {}
+                for item in items:
+                    if item.get("kind") != "chapter" or item.get("volume_index") != index:
+                        continue
+                    item_prelude = str(item.get("prelude") or "").strip("《》丨| -_：:")
+                    if item_prelude:
+                        prelude_counts[item_prelude] = prelude_counts.get(item_prelude, 0) + 1
+                prelude = max(prelude_counts, key=prelude_counts.get) if prelude_counts else ""
                 if prelude and prelude not in title and title not in prelude:
                     suggested = f"{title}·{prelude}"
                 elif prelude:

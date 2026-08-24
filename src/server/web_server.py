@@ -404,8 +404,11 @@ def manual_organize_mode():
     saved = str(cookie_manager.get_cookie("manual_organize_mode") or "").strip()
     if saved in MANUAL_ORGANIZE_MODES:
         return saved
-    legacy_enabled = str(os.getenv("AUDIOFLOW_AUTO_RENAME", "false")).strip().lower()
-    return "review" if legacy_enabled in {"1", "true", "yes", "on"} else "off"
+    legacy_value = os.getenv("AUDIOFLOW_AUTO_RENAME")
+    if legacy_value is not None:
+        legacy_enabled = str(legacy_value).strip().lower()
+        return "review" if legacy_enabled in {"1", "true", "yes", "on"} else "off"
+    return "review"
 
 
 def manual_download_origin(source):
