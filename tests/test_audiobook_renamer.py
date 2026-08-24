@@ -26,7 +26,28 @@ class AudiobookRenamerTests(unittest.TestCase):
 
     def test_chapter_number_supports_chinese_and_explicit_order(self):
         self.assertEqual(chapter_number({"title": "第十二集 风雪"}, 1), 12)
+        self.assertEqual(chapter_number({"title": "第十五回 护法祖师"}, 1), 15)
         self.assertEqual(chapter_number({"title": "无序号", "ui_display_index": 25}, 1), 25)
+
+    def test_marketing_album_title_and_hui_unit_are_normalized(self):
+        album_dir = self.tmp_path / "《桃花源没事儿》马伯庸新书｜《长安的荔枝》同系列"
+        _audio(album_dir, "0001-第1回 义务救援.m4a")
+        _audio(album_dir, "0015-第15回 护法祖师（周末加更）.m4a")
+
+        plan = _manager(self.tmp_path).create_plan(
+            task_id="task-hui",
+            album={"title": album_dir.name, "platform": "测试"},
+            chapters=[],
+            album_dir=album_dir,
+        )
+
+        self.assertEqual(plan["album"]["title"], album_dir.name)
+        self.assertEqual(plan["album"]["book_title"], "桃花源没事儿")
+        self.assertEqual(plan["configuration"]["album_title"], "桃花源没事儿")
+        self.assertEqual(plan["configuration"]["chapter_unit"], "回")
+        self.assertEqual(plan["items"][0]["target_name"], "0001-《桃花源没事儿》第001回 义务救援.m4a")
+        self.assertEqual(plan["items"][1]["target_name"], "0015-《桃花源没事儿》第015回 护法祖师（周末加更）.m4a")
+        self.assertEqual(plan["items"][1]["clean_title"], "护法祖师（周末加更）")
 
     def test_plan_requires_special_file_review_and_keeps_it_untouched_by_default(self):
         album_dir = self.tmp_path / "测试书"

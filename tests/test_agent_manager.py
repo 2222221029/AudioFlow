@@ -198,6 +198,35 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result["message"]["tool_events"][0]["status"], "error")
         self.assertEqual(result["message"]["tool_events"][0]["error"], "工具不可用")
 
+    def test_common_list_command_uses_local_fast_path_without_model_call(self):
+        manager = FakeAgentManager(self.root, [], {
+            "list_rename_plans": lambda status="": {
+                "plans": [{"id": "abc1234567", "title": "测试书", "status": "pending_confirmation"}],
+            },
+        })
+
+        result = manager.chat("列出等待确认的整理计划")
+
+        self.assertEqual(result["mode"], "local-fast-path")
+        self.assertIn("abc1234567", result["message"]["content"])
+        self.assertEqual(manager.responses, [])
+
+    def test_ai_plan_analysis_requires_structured_result(self):
+        manager = FakeAgentManager(self.root, [{
+            "content": '{"summary":"已复核","suggestions":[{"relative_source":"0001.mp3","action":"keep","clean_title":"","reason":"信息不足","confidence":0.4}]}',
+            "tool_calls": [],
+        }], {})
+        plan = {
+            "album": {"title": "测试书"},
+            "items": [{"source_name": "0001.mp3", "relative_source": "0001.mp3", "kind": "chapter", "clean_title": "无题"}],
+            "issues": [{"relative_source": "0001.mp3", "message": "标题无法确定", "blocking": True, "resolved": False}],
+        }
+
+        result = manager.analyze_rename_plan(plan)
+
+        self.assertEqual(result["suggestions"][0]["action"], "keep")
+        self.assertEqual(result["model"], "deepseek-chat")
+
     def test_openai_request_does_not_log_or_return_key(self):
         manager = AgentManager(self.root / "agent.json", self.root / "sessions.json")
         response = {"choices": [{"message": {"content": "ok"}}]}

@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -46,6 +47,7 @@ SYSTEM_PROMPT = """你是 AudioFlow 的有声书管理助手。你可以帮助�
 4. needs_review 计划不能直接执行。用户同意保留全部风险文件、只整理安全文件时，先调用 resolve_rename_plan_safe，再调用 confirm_rename_plan。
 5. 不得声称已经执行尚未确认的整理；遇到歧义时要求用户复核。
 6. 回答简洁，清楚说明实际查询或工具执行结果。
+7. AI 对风险文件只能提出结构化建议；建议必须经过 AudioFlow 校验和用户确认。
 """
 
 TOOL_SCHEMAS = [
@@ -53,6 +55,9 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "list_rename_plans", "description": "列出有声书重命名计划", "parameters": {"type": "object", "properties": {"status": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "get_rename_plan", "description": "读取一个重命名计划的详情", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
     {"type": "function", "function": {"name": "create_rename_plan", "description": "为已完成的下载任务分析文件并生成待确认的重命名计划；不会执行重命名", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}},
+    {"type": "function", "function": {"name": "analyze_rename_plan_with_ai", "description": "使用当前 AI 模型分析计划中的风险文件并保存建议；不会执行重命名", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
+    {"type": "function", "function": {"name": "apply_ai_rename_suggestions", "description": "应用用户明确接受的 AI 建议到计划；仍需最终确认才会执行", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}, "suggestion_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["plan_id", "suggestion_ids"]}}},
+    {"type": "function", "function": {"name": "create_rename_rule_draft", "description": "根据计划和已接受的修正生成重命名规则草稿；草稿不会自动启用", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
     {"type": "function", "function": {"name": "resolve_rename_plan_safe", "description": "复核计划时保留所有风险/特殊文件不动，只让安全章节进入待确认状态；仍不会执行", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
     {"type": "function", "function": {"name": "confirm_rename_plan", "description": "在用户明确确认后执行一个 pending_confirmation 整理计划", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
     {"type": "function", "function": {"name": "cancel_rename_plan", "description": "取消一个尚未执行的整理计划", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
@@ -122,6 +127,8 @@ class AgentStore:
         data.setdefault("enabled", False)
         data.setdefault("provider", "deepseek")
         data.setdefault("runner", "native")
+        data.setdefault("fast_mode", True)
+        data.setdefault("history_messages", 10)
         data.setdefault("providers", {})
         data.setdefault("developer_agent", {})
         for key, value in provider_secrets.items():
@@ -138,6 +145,8 @@ class AgentStore:
                 "enabled": bool(payload.get("enabled", current.get("enabled", False))),
                 "provider": str(payload.get("provider") or current.get("provider") or "deepseek"),
                 "runner": str(payload.get("runner") or current.get("runner") or "native"),
+                "fast_mode": bool(payload.get("fast_mode", current.get("fast_mode", True))),
+                "history_messages": max(4, min(20, int(payload.get("history_messages", current.get("history_messages", 10)) or 10))),
                 "providers": {},
                 "developer_agent": {},
                 "updated_at": int(time.time()),
@@ -308,19 +317,221 @@ class AgentManager:
         finally:
             self.store.config["provider"] = current
 
+    @staticmethod
+    def _json_object(value):
+        candidate = str(value or "").strip()
+        if candidate.startswith("```"):
+            candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        try:
+            data = json.loads(candidate)
+        except (TypeError, ValueError):
+            match = re.search(r"\{.*\}", candidate, re.S)
+            if not match:
+                raise ValueError("AI 未返回可解析的结构化结果")
+            try:
+                data = json.loads(match.group(0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("AI 返回的结构化结果格式错误") from exc
+        if not isinstance(data, dict):
+            raise ValueError("AI 返回结果必须是 JSON 对象")
+        return data
+
+    def analyze_rename_plan(self, plan, max_items=80):
+        """Ask the configured model to review only unresolved plan items."""
+        _provider_id, spec, config = self._validate_ready()
+        unresolved = [
+            issue for issue in (plan.get("issues") or [])
+            if issue.get("blocking", True) and not issue.get("resolved")
+        ]
+        issue_map = {}
+        for issue in unresolved:
+            key = issue.get("relative_source") or issue.get("file")
+            if key:
+                issue_map.setdefault(key, []).append(issue.get("message") or issue.get("type"))
+        candidates = []
+        items = plan.get("items") or []
+        for index, item in enumerate(items):
+            key = item.get("relative_source") or item.get("source_name")
+            if key not in issue_map:
+                continue
+            neighbors = []
+            for neighbor in items[max(0, index - 1):index + 2]:
+                if neighbor is not item:
+                    neighbors.append(neighbor.get("source_name"))
+            candidates.append({
+                "relative_source": key,
+                "kind": item.get("kind"),
+                "source_name": item.get("source_name"),
+                "current_title": item.get("clean_title") or item.get("special_label") or "",
+                "suggested_target": item.get("target_name"),
+                "special_type": item.get("special_type"),
+                "issues": issue_map[key],
+                "neighbors": neighbors,
+            })
+            if len(candidates) >= max(1, min(120, int(max_items or 80))):
+                break
+        if not candidates:
+            return {"summary": "当前计划没有需要 AI 分析的风险文件。", "suggestions": [], "model": config["model"]}
+        contract = {
+            "album": plan.get("album") or {},
+            "rules": (plan.get("rule_snapshot") or {}).get("rules") or {},
+            "candidates": candidates,
+            "response_schema": {
+                "summary": "简短中文总结",
+                "suggestions": [{
+                    "relative_source": "必须完全复制输入值",
+                    "action": "keep|accept|rename|quarantine",
+                    "clean_title": "仅 action=rename 时给出清洗后的纯标题，否则为空",
+                    "reason": "中文理由",
+                    "confidence": "0 到 1",
+                }],
+            },
+        }
+        prompt = (
+            "你是中文有声书文件名复核器。只分析提供的风险项，不得编造文件，不得输出路径，"
+            "不得决定最终执行。广告或跨书籍不确定时选择 keep；只有能从文件名和相邻章节明确判断时才 rename。"
+            "保留全书完、大结局、全书终、完结等正文标识。只输出 JSON，不要 Markdown。\n"
+            + json.dumps(contract, ensure_ascii=False)
+        )
+        result = self._complete(spec, config, [
+            {"role": "system", "content": "严格输出符合约定的 JSON 对象。"},
+            {"role": "user", "content": prompt},
+        ], tools=[])
+        data = self._json_object(result.get("content"))
+        data["model"] = config["model"]
+        return data
+
+    def propose_rename_rule_draft(self, plan):
+        """Generate a constrained partial rule pack from reviewed plan evidence."""
+        _provider_id, spec, config = self._validate_ready()
+        analysis = plan.get("ai_analysis") or {}
+        if not analysis.get("suggestions"):
+            raise ValueError("请先让 AI 分析该计划，再生成规则草稿")
+        current = (plan.get("rule_snapshot") or {}).get("rules") or {}
+        evidence = {
+            "album": plan.get("album") or {},
+            "current_rules": current,
+            "suggestions": analysis.get("suggestions") or [],
+            "applied_ids": analysis.get("applied_ids") or [],
+            "allowed_changes": {
+                "cleanup": ["ad_keywords", "ad_patterns", "preserve_keywords", "title_exceptions", "split_ad_after_first_space"],
+                "special_files": ["content_labels", "operational_labels", "content_default", "operational_default", "unknown_default"],
+                "format": ["chapter_template", "special_template", "prefix_width", "chapter_width", "chapter_unit", "prefix_strategy", "prefix_start", "smart_title_separator"],
+            },
+        }
+        prompt = (
+            "根据已经复核的有声书计划提出最小规则修改。不要修改文件安全、碰撞、回滚或确认机制。"
+            "只输出 JSON：{\"name\":\"...\",\"description\":\"...\",\"scope\":\"global|platform|album\","
+            "\"selector\":\"...\",\"rules\":{...}}。只包含确有证据需要变化的字段；正则必须有明确边界。\n"
+            + json.dumps(evidence, ensure_ascii=False)
+        )
+        result = self._complete(spec, config, [
+            {"role": "system", "content": "严格输出重命名规则草稿 JSON。"},
+            {"role": "user", "content": prompt},
+        ], tools=[])
+        return self._json_object(result.get("content"))
+
+    def _call_tool(self, name, args):
+        if name not in self.tools:
+            raise ValueError("工具不可用")
+        return self.tools[name](**(args or {}))
+
+    @staticmethod
+    def _render_tool_result(name, output):
+        if name == "list_downloads":
+            tasks = output.get("tasks") or []
+            if not tasks:
+                return "没有找到符合条件的下载任务。"
+            lines = [f"{item.get('title') or item.get('id')} · {item.get('status')} · {item.get('success', 0)}/{item.get('total', 0)} · {item.get('id')}" for item in tasks[:20]]
+            return "最近下载任务：\n" + "\n".join(lines)
+        if name == "list_rename_plans":
+            plans = output.get("plans") or []
+            if not plans:
+                return "当前没有符合条件的整理计划。"
+            lines = [f"{item.get('title') or item.get('id')} · {item.get('status')} · {item.get('id')}" for item in plans[:20]]
+            return "整理计划：\n" + "\n".join(lines)
+        if name == "get_rename_plan":
+            summary = output.get("summary") or {}
+            unresolved = [item for item in output.get("issues") or [] if item.get("blocking", True) and not item.get("resolved")]
+            return (
+                f"计划 {output.get('id')} 当前为 {output.get('status')}。章节 {summary.get('chapters', 0)}，"
+                f"待处理 {summary.get('planned', 0)}，待确认问题 {len(unresolved)}。"
+            )
+        if name == "create_rename_plan":
+            return f"计划 {output.get('id') or ''} 已生成，正在等待你确认。"
+        message = output.get("message") if isinstance(output, dict) else ""
+        if message:
+            return str(message)
+        if name == "analyze_rename_plan_with_ai":
+            return f"AI 风险分析已完成，共生成 {output.get('suggestions', 0)} 条建议；建议尚未应用。"
+        if name == "apply_ai_rename_suggestions":
+            return f"已把选中的 AI 建议写入计划 {output.get('id')}，仍需最终确认后才会执行。"
+        if name == "create_rename_rule_draft":
+            return f"规则草稿 {output.get('name') or output.get('id')} 已生成，需在规则中心测试并启用。"
+        return "操作已完成。"
+
+    def _fast_route(self, content):
+        if not self.store.config.get("fast_mode", True):
+            return None
+        text = str(content or "").strip()
+        plan_match = re.search(r"\b([a-f0-9]{10}|[a-z][a-z0-9-]{7,39})\b", text, re.I)
+        plan_id = plan_match.group(1) if plan_match else ""
+        route = None
+        args = {}
+        if plan_id and re.search(r"(?:确认|执行).*(?:计划|重命名)|(?:计划|重命名).*(?:确认|执行)", text):
+            route, args = "confirm_rename_plan", {"plan_id": plan_id}
+        elif plan_id and re.search(r"取消.*(?:计划|重命名)|(?:计划|重命名).*取消", text):
+            route, args = "cancel_rename_plan", {"plan_id": plan_id}
+        elif plan_id and "AI" in text.upper() and any(word in text for word in ("分析", "复核")):
+            route, args = "analyze_rename_plan_with_ai", {"plan_id": plan_id}
+        elif plan_id and "AI" in text.upper() and "应用" in text:
+            route, args = "apply_ai_rename_suggestions", {"plan_id": plan_id, "suggestion_ids": []}
+        elif plan_id and "规则草稿" in text:
+            route, args = "create_rename_rule_draft", {"plan_id": plan_id}
+        elif any(word in text for word in ("列出", "查看")) and "整理计划" in text:
+            route, args = "list_rename_plans", {"status": ""}
+        elif any(word in text for word in ("最近下载", "下载任务", "完成的下载")) and "生成" not in text:
+            route, args = "list_downloads", {"status": "all", "limit": 20}
+        elif text == "为最近完成的手动下载生成整理计划":
+            downloads = self._call_tool("list_downloads", {"status": "completed", "limit": 10})
+            tasks = downloads.get("tasks") or []
+            if not tasks:
+                return "没有找到已完成的下载任务。", []
+            route, args = "create_rename_plan", {"task_id": tasks[0]["id"]}
+        if not route or route not in self.tools:
+            return None
+        try:
+            output = self._call_tool(route, args)
+            event = {"name": route, "arguments": args, "status": "success", "result": output}
+        except Exception as exc:
+            output = {"error": str(exc)}
+            event = {"name": route, "arguments": args, "status": "error", "error": str(exc)}
+        answer = str(output.get("error") or self._render_tool_result(route, output))
+        return answer, [event]
+
     def chat(self, content, session_id=None):
         content = str(content or "").strip()
         if not content:
             raise ValueError("消息不能为空")
         _provider_id, spec, config = self._validate_ready()
+        started = time.monotonic()
+        fast = self._fast_route(content)
+        if fast:
+            answer, tool_events = fast
+            saved = self.store.add_exchange(session_id, content, answer, tool_events)
+            return {
+                "session": saved, "message": saved["messages"][-1],
+                "latency_ms": int((time.monotonic() - started) * 1000), "mode": "local-fast-path",
+            }
         session = self.store.get_session(session_id) if session_id else None
-        history = list((session or {}).get("messages") or [])[-20:]
+        history_limit = max(4, min(20, int(self.store.config.get("history_messages") or 10)))
+        history = list((session or {}).get("messages") or [])[-history_limit:]
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend({"role": item.get("role"), "content": item.get("content") or ""} for item in history)
         messages.append({"role": "user", "content": content})
         tool_events = []
         answer = ""
-        for _ in range(5):
+        for _ in range(3):
             result = self._complete(spec, config, messages, tools=TOOL_SCHEMAS)
             calls = result.get("tool_calls") or []
             if not calls:
@@ -340,10 +551,20 @@ class AgentManager:
                     event = {"name": name, "arguments": args, "status": "error", "error": str(exc)}
                 tool_events.append(event)
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "name": name, "content": json.dumps(output, ensure_ascii=False, default=str)})
+            if (self.store.config.get("fast_mode", True) and calls
+                    and all(event.get("status") == "success" for event in tool_events[-len(calls):])):
+                answer = "\n".join(
+                    self._render_tool_result(event["name"], event.get("result") or {})
+                    for event in tool_events[-len(calls):]
+                )
+                break
         if not answer:
             answer = "工具调用次数过多，已停止。请缩小请求范围后重试。"
         saved = self.store.add_exchange(session_id, content, answer, tool_events)
-        return {"session": saved, "message": saved["messages"][-1]}
+        return {
+            "session": saved, "message": saved["messages"][-1],
+            "latency_ms": int((time.monotonic() - started) * 1000), "mode": "model",
+        }
 
     def _complete(self, spec, config, messages, tools):
         if self.store.config.get("runner") == "deepseek-harness":
@@ -388,7 +609,7 @@ class AgentManager:
                 with DeepSeekHarness(
                     provider="deepseek-official",
                     model=config["model"],
-                    max_tokens=4096,
+                    max_tokens=1536,
                     cwd=str(workspace),
                     session_root=str(runtime_root),
                     cordis=str(cordis),
@@ -420,7 +641,7 @@ class AgentManager:
 
     @staticmethod
     def _request(method, url, **kwargs):
-        response = requests.request(method, url, timeout=60, **kwargs)
+        response = requests.request(method, url, timeout=(10, 45), **kwargs)
         try:
             data = response.json()
         except ValueError:
@@ -456,7 +677,7 @@ class AgentManager:
                 })
             else:
                 converted.append(item)
-        payload = {"model": config["model"], "messages": converted, "temperature": 0.2}
+        payload = {"model": config["model"], "messages": converted, "temperature": 0.2, "max_tokens": 1024}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -488,7 +709,7 @@ class AgentManager:
             else:
                 converted.append({"role": role, "content": item.get("content") or ""})
         anthropic_tools = [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in tools]
-        payload = {"model": config["model"], "system": system, "messages": converted, "max_tokens": 2048, "temperature": 0.2}
+        payload = {"model": config["model"], "system": system, "messages": converted, "max_tokens": 1024, "temperature": 0.2}
         if anthropic_tools:
             payload["tools"] = anthropic_tools
         data = self._request("POST", config["base_url"] + "/messages", headers={"x-api-key": config["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}, json=payload)
@@ -513,7 +734,7 @@ class AgentManager:
             else:
                 contents.append({"role": "model" if role == "assistant" else "user", "parts": [{"text": item.get("content") or ""}]})
         declarations = [{"name": t["function"]["name"], "description": t["function"]["description"], "parameters": t["function"]["parameters"]} for t in tools]
-        payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": {"temperature": 0.2}}
+        payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}}
         if declarations:
             payload["tools"] = [{"functionDeclarations": declarations}]
         url = f"{config['base_url']}/models/{config['model']}:generateContent?key={config['api_key']}"

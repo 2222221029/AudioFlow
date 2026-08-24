@@ -2060,6 +2060,9 @@ const AGENT_TOOL_LABELS = {
   list_rename_plans: '读取重命名计划',
   get_rename_plan: '查看计划详情',
   create_rename_plan: '生成待确认计划',
+  analyze_rename_plan_with_ai: 'AI 复核风险文件',
+  apply_ai_rename_suggestions: '应用 AI 建议',
+  create_rename_rule_draft: '生成规则草稿',
   resolve_rename_plan_safe: '保留风险文件',
   confirm_rename_plan: '确认并执行整理',
   cancel_rename_plan: '取消整理计划',
@@ -2075,30 +2078,154 @@ const RENAME_STATUS_TEXT = {
   expired: '已过期',
 };
 
+const splitRuleLines = (value) => String(value || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+const joinRuleLines = (value) => Array.isArray(value) ? value.join('\n') : '';
+const cloneRuleData = (value) => value == null ? value : JSON.parse(JSON.stringify(value));
+const mergeRuleData = (base, override) => {
+  const result = cloneRuleData(base || {});
+  Object.entries(override || {}).forEach(([key, value]) => {
+    result[key] = value && typeof value === 'object' && !Array.isArray(value)
+      ? mergeRuleData(result[key] || {}, value)
+      : cloneRuleData(value);
+  });
+  return result;
+};
+
+function RenameRulesModal({rulesState, actions, busy, onClose}) {
+  const initialPacks = rulesState?.packs || [];
+  const effectiveRules = rulesState?.effective?.rules || initialPacks[0]?.rules || {};
+  const [packs, setPacks] = useState(initialPacks);
+  const [selectedId, setSelectedId] = useState(initialPacks.find((item) => item.status === 'draft')?.id || initialPacks.find((item) => item.status === 'active' && !item.readonly)?.id || initialPacks[0]?.id || '');
+  const selected = selectedId === '__new__' ? null : (packs.find((item) => item.id === selectedId) || packs[0]);
+  const makeDraft = (pack) => ({
+    ...(pack?.status === 'draft' ? {id: pack.id} : {}),
+    name: pack?.readonly ? '我的全局重命名规则' : (pack?.name || '我的重命名规则'),
+    description: pack?.description || '',
+    scope: pack?.readonly ? 'global' : (pack?.scope || 'global'),
+    selector: pack?.readonly ? '' : (pack?.selector || ''),
+    rules: mergeRuleData(effectiveRules, pack?.rules || {}),
+  });
+  const [draft, setDraft] = useState(makeDraft(selected));
+  const [samples, setSamples] = useState('0001-第1集 正文（求订阅）.m4a\n0002-第2回 义务救援.m4a\n片花---每天更新.mp3');
+  const [sampleAlbum, setSampleAlbum] = useState('示例书名');
+  const [testResults, setTestResults] = useState([]);
+  const [error, setError] = useState('');
+  useEffect(() => { setDraft(makeDraft(selected)); setError(''); setTestResults([]); }, [selected?.id]);
+  const updateRule = (section, field, value) => setDraft((prev) => ({
+    ...prev,
+    rules: {...(prev.rules || {}), [section]: {...((prev.rules || {})[section] || {}), [field]: value}},
+  }));
+  const format = draft.rules?.format || {};
+  const cleanup = draft.rules?.cleanup || {};
+  const special = draft.rules?.special_files || {};
+  const save = async () => {
+    setError('');
+    try {
+      const saved = await actions.saveRenameRuleDraft(draft);
+      setPacks((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)]);
+      setSelectedId(saved.id);
+      setDraft(makeDraft(saved));
+    } catch (err) { setError(err.message); }
+  };
+  const activate = async () => {
+    setError('');
+    try {
+      const active = await actions.activateRenameRule(selected.id);
+      setPacks((prev) => prev.map((item) => {
+        if (item.id === active.id) return active;
+        if (item.scope === active.scope && item.selector === active.selector && item.status === 'active') return {...item, status: 'archived'};
+        return item;
+      }));
+    } catch (err) { setError(err.message); }
+  };
+  const remove = async () => {
+    setError('');
+    try {
+      await actions.deleteRenameRuleDraft(selected.id);
+      const next = packs.filter((item) => item.id !== selected.id);
+      setPacks(next);
+      setSelectedId(next[0]?.id || '');
+    } catch (err) { setError(err.message); }
+  };
+  const test = async () => {
+    setError('');
+    try { setTestResults(await actions.testRenameRules(draft.rules, sampleAlbum, splitRuleLines(samples))); }
+    catch (err) { setError(err.message); }
+  };
+  return <div className="rename-rules-modal">
+    <div className="rename-plans-head">
+      <div className="modal-title"><Icon id="i-settings" />重命名规则中心</div>
+      <div className="modal-sub">规则更新只影响之后生成的新计划；已有计划继续使用创建时的规则快照。</div>
+      <div className="field-row-inline rule-pack-picker">
+        <select className="field-select" value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>{selectedId === '__new__' && <option value="__new__">新规则草稿</option>}{packs.map((pack) => <option value={pack.id} key={pack.id}>{pack.name} · {pack.status === 'active' ? '已启用' : pack.status === 'draft' ? '草稿' : pack.status === 'archived' ? '历史版本' : '内置'}</option>)}</select>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setSelectedId('__new__'); setDraft(makeDraft({rules: effectiveRules})); }}>新建</button>
+      </div>
+    </div>
+    <div className="rename-rules-content">
+      <section className="rule-section">
+        <h3>规则范围</h3>
+        <div className="rule-grid"><label className="field"><span>名称</span><input value={draft.name || ''} onChange={(event) => setDraft((prev) => ({...prev, name: event.target.value}))} /></label><label className="field"><span>生效范围</span><select value={draft.scope || 'global'} onChange={(event) => setDraft((prev) => ({...prev, scope: event.target.value, selector: event.target.value === 'global' ? '' : prev.selector}))}><option value="global">全部平台</option><option value="platform">指定平台</option><option value="album">指定专辑</option></select></label>{draft.scope !== 'global' && <label className="field"><span>{draft.scope === 'platform' ? '平台名称' : '专辑 ID 或名称'}</span><input value={draft.selector || ''} onChange={(event) => setDraft((prev) => ({...prev, selector: event.target.value}))} /></label>}</div>
+      </section>
+      <section className="rule-section">
+        <h3>文件名格式</h3>
+        <div className="rule-grid"><label className="field rule-span"><span>章节模板</span><input value={format.chapter_template || ''} onChange={(event) => updateRule('format', 'chapter_template', event.target.value)} /></label><label className="field rule-span"><span>特殊文件模板</span><input value={format.special_template || ''} onChange={(event) => updateRule('format', 'special_template', event.target.value)} /></label><label className="field"><span>章节单位</span><select value={format.chapter_unit || 'auto'} onChange={(event) => updateRule('format', 'chapter_unit', event.target.value)}><option value="auto">跟随专辑</option><option value="集">集</option><option value="章">章</option><option value="回">回</option></select></label><label className="field"><span>序号策略</span><select value={format.prefix_strategy || 'chapter'} onChange={(event) => updateRule('format', 'prefix_strategy', event.target.value)}><option value="chapter">按章节号并保留缺号</option><option value="continuous">按文件连续编号</option><option value="original">保留原序号</option></select></label><label className="field"><span>序号位数</span><input type="number" min="1" max="8" value={format.prefix_width || 4} onChange={(event) => updateRule('format', 'prefix_width', Number(event.target.value))} /></label><label className="field"><span>章节号位数</span><input type="number" min="1" max="8" value={format.chapter_width || 3} onChange={(event) => updateRule('format', 'chapter_width', Number(event.target.value))} /></label><label className="field"><span>起始序号</span><input type="number" min="1" value={format.prefix_start || 1} onChange={(event) => updateRule('format', 'prefix_start', Number(event.target.value))} /></label><label className="check-row"><input type="checkbox" checked={format.smart_title_separator !== false} onChange={(event) => updateRule('format', 'smart_title_separator', event.target.checked)} /><span>标题前智能空格</span></label></div>
+        <div className="cookie-desc">可用字段：{'{prefix} {book} {chapter} {unit} {title_sep} {title} {quality_sep} {quality} {label} {ext}'}，扩展名必须位于末尾。</div>
+      </section>
+      <section className="rule-section">
+        <h3>标题清理</h3>
+        <div className="rule-grid"><label className="field"><span>广告关键词，每行一个</span><textarea rows="7" value={joinRuleLines(cleanup.ad_keywords)} onChange={(event) => updateRule('cleanup', 'ad_keywords', splitRuleLines(event.target.value))} /></label><label className="field"><span>安全正则，按顺序执行</span><textarea rows="7" value={joinRuleLines(cleanup.ad_patterns)} onChange={(event) => updateRule('cleanup', 'ad_patterns', splitRuleLines(event.target.value))} placeholder="每行一个，只填写有明确边界的模式" /></label><label className="field"><span>必须保留的结尾标识</span><textarea rows="4" value={joinRuleLines(cleanup.preserve_keywords)} onChange={(event) => updateRule('cleanup', 'preserve_keywords', splitRuleLines(event.target.value))} /></label><label className="field"><span>多段真实标题例外</span><textarea rows="4" value={joinRuleLines(cleanup.title_exceptions)} onChange={(event) => updateRule('cleanup', 'title_exceptions', splitRuleLines(event.target.value))} /></label></div>
+      </section>
+      <section className="rule-section">
+        <h3>特殊文件</h3>
+        <div className="rule-grid"><label className="field"><span>内容文件标签</span><textarea rows="4" value={joinRuleLines(special.content_labels)} onChange={(event) => updateRule('special_files', 'content_labels', splitRuleLines(event.target.value))} /></label><label className="field"><span>运营文件标签</span><textarea rows="4" value={joinRuleLines(special.operational_labels)} onChange={(event) => updateRule('special_files', 'operational_labels', splitRuleLines(event.target.value))} /></label><label className="field"><span>内容文件建议</span><select value={special.content_default || 'organize'} onChange={(event) => updateRule('special_files', 'content_default', event.target.value)}><option value="organize">按书名整理</option><option value="keep">保持原名</option><option value="quarantine">隔离</option></select></label><label className="field"><span>运营文件建议</span><select value={special.operational_default || 'quarantine'} onChange={(event) => updateRule('special_files', 'operational_default', event.target.value)}><option value="organize">按书名整理</option><option value="keep">保持原名</option><option value="quarantine">隔离</option></select></label></div>
+      </section>
+      <section className="rule-section rule-test">
+        <h3>样例测试</h3>
+        <div className="rule-grid"><label className="field"><span>示例书名</span><input value={sampleAlbum} onChange={(event) => setSampleAlbum(event.target.value)} /></label><label className="field rule-span"><span>原文件名，每行一个</span><textarea rows="5" value={samples} onChange={(event) => setSamples(event.target.value)} /></label></div>
+        <button className="btn btn-ghost btn-sm" onClick={test}>运行测试</button>
+        {!!testResults.length && <div className="rule-test-results">{testResults.map((item) => <div key={item.source_name}><strong>{item.source_name}</strong><span>{item.target_name}</span>{!!item.issues?.length && <em>{item.issues.join('；')}</em>}</div>)}</div>}
+      </section>
+      {!!error && <div className="login-error" role="alert">{error}</div>}
+    </div>
+    <div className="modal-actions rename-plans-actions"><button className="btn btn-ghost btn-sm" onClick={onClose}>关闭</button>{selected?.status === 'draft' && <button className="btn btn-danger btn-sm" disabled={busy.renameRules} onClick={remove}><Icon id="i-trash" className="icon icon-sm" />删除草稿</button>}<button className="btn btn-ghost btn-sm" disabled={busy.renameRules} onClick={save}><Icon id="i-check" className="icon icon-sm" />保存为草稿</button>{selected?.status === 'draft' && <button className="btn btn-primary btn-sm" disabled={busy.renameRules} onClick={activate}><Icon id="i-bolt" className="icon icon-sm" />启用此版本</button>}</div>
+  </div>;
+}
+
 function RenamePlansModal({plans, actions, busy, onClose}) {
-  const visiblePlans = (plans || []).slice(0, 30);
+  const [planList, setPlanList] = useState(plans || []);
+  const visiblePlans = planList;
   const [selectedId, setSelectedId] = useState(visiblePlans[0]?.id || '');
   const selected = visiblePlans.find((item) => item.id === selectedId) || visiblePlans[0];
   const [configuration, setConfiguration] = useState(selected?.configuration || {});
   const [specialActions, setSpecialActions] = useState({});
   const [itemActions, setItemActions] = useState({});
+  const [itemOverrides, setItemOverrides] = useState({});
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState([]);
   const [operation, setOperation] = useState('');
   const [operationError, setOperationError] = useState('');
   const operationRef = useRef(false);
+  const contentRef = useRef(null);
   useEffect(() => {
     setConfiguration(selected?.configuration || {});
-    setSpecialActions(Object.fromEntries((selected?.items || []).filter((item) => item.kind === 'special').map((item) => [item.relative_source || item.source_name, item.action === 'undecided' ? (item.special_type === 'content' ? 'organize' : 'keep') : item.action])));
+    setSpecialActions(Object.fromEntries((selected?.items || []).filter((item) => item.kind === 'special').map((item) => {
+      const issue = (selected?.issues || []).find((entry) => entry.type === 'special_file' && (entry.relative_source || entry.file) === (item.relative_source || item.source_name));
+      return [item.relative_source || item.source_name, item.action === 'undecided' ? (issue?.suggested_action || 'keep') : item.action];
+    })));
     setItemActions({});
+    setItemOverrides({});
+    setSelectedSuggestionIds([]);
     setOperationError('');
+    contentRef.current?.scrollTo({top: 0});
   }, [selected?.id]);
-  const run = async (name, fn) => {
+  const run = async (name, fn, closeAfter = true) => {
     if (operationRef.current) return;
     operationRef.current = true;
     setOperation(name);
     setOperationError('');
     try {
-      await fn();
-      onClose();
+      const result = await fn();
+      if (result?.id) setPlanList((prev) => prev.map((item) => item.id === result.id ? result : item));
+      if (closeAfter) onClose();
     } catch (error) {
       setOperationError(error?.message || '操作失败，请刷新计划后重试');
     } finally {
@@ -2110,42 +2237,60 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
   const summary = selected.summary || {};
   const unresolved = (selected.issues || []).filter((issue) => issue.blocking !== false && !issue.resolved);
   const riskyItems = (selected.items || []).filter((item) => item.kind === 'chapter' && unresolved.some((issue) => (issue.relative_source || issue.file) === (item.relative_source || item.source_name) || issue.file === item.source_name));
+  const aiSuggestions = selected.ai_analysis?.suggestions || [];
   return (
-    <>
-      <div className="modal-title"><Icon id="i-edit" />有声书整理计划</div>
-      <div className="field-row"><label className="field-label">计划</label><select className="field-select" value={selected.id} onChange={(event) => setSelectedId(event.target.value)}>{visiblePlans.map((plan) => <option value={plan.id} key={plan.id}>{(plan.album || {}).title || plan.id} · {RENAME_STATUS_TEXT[plan.status] || plan.status}</option>)}</select></div>
-      <div className="modal-sub">{selected.id} · 章节 {summary.chapters || 0} · 特殊文件 {summary.special_files || 0} · 缺集空号 {summary.missing_chapters || 0} · 待处理 {summary.planned || 0}</div>
-      {['needs_review', 'pending_confirmation'].includes(selected.status) && <>
-        <div className="field-row"><label className="field-label">书名</label><input className="field-input" value={configuration.album_title || ''} onChange={(event) => setConfiguration((prev) => ({...prev, album_title: event.target.value}))} /></div>
-        <div className="field-row"><label className="field-label">章节单位</label><select className="field-select" value={configuration.chapter_unit || '集'} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_unit: event.target.value}))}><option value="集">集</option><option value="章">章</option></select></div>
-        <div className="field-row"><label className="field-label">补零位数</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="8" value={configuration.prefix_width || 4} onChange={(event) => setConfiguration((prev) => ({...prev, prefix_width: Number(event.target.value) || 4}))} /><span className="field-suffix">序号</span><input className="field-input" type="number" min="1" max="8" value={configuration.chapter_width || 3} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_width: Number(event.target.value) || 3}))} /><span className="field-suffix">集号</span></div></div>
-        {selected.volume_count > 1 && Object.entries(configuration.volumes || {}).map(([index, name]) => <div className="field-row" key={index}><label className="field-label">第 {index} 册书名</label><input className="field-input" value={name} onChange={(event) => setConfiguration((prev) => ({...prev, volumes: {...(prev.volumes || {}), [index]: event.target.value}}))} placeholder="总书名·分册名" /></div>)}
-      </>}
-      {!!unresolved.length && <div className="field-row"><label className="field-label">待确认问题</label><div className="event-list">{unresolved.slice(0, 30).map((issue) => <div className="event-row" key={issue.id}><strong>{issue.file || issue.type}</strong><span>{issue.message}</span></div>)}</div></div>}
-      {(selected.items || []).filter((item) => item.kind === 'special').map((item) => {
-        const key = item.relative_source || item.source_name;
-        return <div className="field-row" key={key}><label className="field-label">{item.source_name}</label><select className="field-select" value={specialActions[key] || 'keep'} onChange={(event) => setSpecialActions((prev) => ({...prev, [key]: event.target.value}))}><option value="organize">保留并按书名整理</option><option value="keep">保持原名不动</option><option value="quarantine">移入可恢复隔离目录</option></select></div>;
-      })}
-      {riskyItems.map((item) => {
-        const key = item.relative_source || item.source_name;
-        return <div className="field-row" key={key}><label className="field-label">{item.source_name}</label><select className="field-select" value={itemActions[key] || 'keep'} onChange={(event) => setItemActions((prev) => ({...prev, [key]: event.target.value}))}><option value="keep">保持原名不动</option><option value="accept">接受计划建议</option></select></div>;
-      })}
-      <details><summary>查看映射样例</summary><pre className="code log-code">{(selected.items || []).slice(0, 20).map((item) => `${item.source_name} -> ${item.target_name}`).join('\n') || '无变更'}</pre></details>
-      {operation === 'confirm' && <div className="cookie-desc" role="status">正在校验并执行 {summary.planned || 0} 个文件...</div>}
-      {!!operationError && <div className="login-error" role="alert">{operationError}</div>}
-      <div className="modal-actions">
+    <div className="rename-plans-modal">
+      <div className="rename-plans-head">
+        <div className="modal-title"><Icon id="i-edit" />有声书整理计划</div>
+        <div className="field-row"><label className="field-label">计划</label><select className="field-select" value={selected.id} onChange={(event) => setSelectedId(event.target.value)}>{visiblePlans.map((plan) => <option value={plan.id} key={plan.id}>{(plan.album || {}).title || plan.id} · {RENAME_STATUS_TEXT[plan.status] || plan.status}</option>)}</select></div>
+        <div className="modal-sub">{selected.id} · 章节 {summary.chapters || 0} · 特殊文件 {summary.special_files || 0} · 缺号 {summary.missing_chapters || 0} · 待处理 {summary.planned || 0}</div>
+      </div>
+      <div className="rename-plans-content" ref={contentRef}>
+        {['needs_review', 'pending_confirmation'].includes(selected.status) && <>
+          <div className="field-row"><label className="field-label">书名</label><input className="field-input" value={configuration.album_title || ''} onChange={(event) => setConfiguration((prev) => ({...prev, album_title: event.target.value}))} /></div>
+          <div className="field-row"><label className="field-label">章节单位与序号</label><div className="field-row-inline"><select className="field-select" value={configuration.chapter_unit || '集'} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_unit: event.target.value}))}><option value="集">集</option><option value="章">章</option><option value="回">回</option></select><select className="field-select" value={configuration.prefix_strategy || 'chapter'} onChange={(event) => setConfiguration((prev) => ({...prev, prefix_strategy: event.target.value}))}><option value="chapter">按章节号并保留缺号</option><option value="continuous">连续编号</option><option value="original">保留原序号</option></select></div></div>
+          <div className="field-row"><label className="field-label">补零位数</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="8" value={configuration.prefix_width || 4} onChange={(event) => setConfiguration((prev) => ({...prev, prefix_width: Number(event.target.value) || 4}))} /><span className="field-suffix">序号</span><input className="field-input" type="number" min="1" max="8" value={configuration.chapter_width || 3} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_width: Number(event.target.value) || 3}))} /><span className="field-suffix">章节号</span></div></div>
+          <details className="rename-format-details"><summary>本专辑命名模板</summary><div className="field-row"><label className="field-label">章节模板</label><input className="field-input" value={configuration.chapter_template || ''} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_template: event.target.value}))} /></div><div className="field-row"><label className="field-label">特殊文件模板</label><input className="field-input" value={configuration.special_template || ''} onChange={(event) => setConfiguration((prev) => ({...prev, special_template: event.target.value}))} /></div></details>
+          {selected.volume_count > 1 && Object.entries(configuration.volumes || {}).map(([index, name]) => <div className="field-row" key={index}><label className="field-label">第 {index} 册书名</label><input className="field-input" value={name} onChange={(event) => setConfiguration((prev) => ({...prev, volumes: {...(prev.volumes || {}), [index]: event.target.value}}))} placeholder="总书名·分册名" /></div>)}
+        </>}
+        {!!unresolved.length && <div className="field-row"><div className="rename-review-heading"><label className="field-label">待确认问题（{unresolved.length}）</label><button className="btn btn-ghost btn-sm" disabled={!!operation || busy['renameAI:' + selected.id]} onClick={() => run('ai', () => actions.analyzeRenamePlanAI(selected.id), false)}><BusyIcon busy={operation === 'ai'} icon="i-agent" />{operation === 'ai' ? 'AI 正在复核' : 'AI 复核风险项'}</button></div><div className="event-list">{unresolved.map((issue) => <div className="event-row" key={issue.id}><strong>{issue.file || issue.type}</strong><span>{issue.message}</span></div>)}</div></div>}
+        {!!aiSuggestions.length && <div className="ai-review-summary"><strong>AI 建议 {aiSuggestions.length} 条</strong><span>{selected.ai_analysis?.summary || 'AI 建议不会自动执行，请逐项选择。'}</span><div className="field-row-inline"><button className="btn btn-ghost btn-sm" disabled={!selectedSuggestionIds.length || !!operation} onClick={() => run('aiApply', () => actions.applyAIRenameSuggestions(selected.id, selectedSuggestionIds), false)}>应用选中建议</button><button className="btn btn-ghost btn-sm" disabled={!!operation} onClick={() => run('aiRule', () => actions.createAIRenameRuleDraft(selected.id), false)}>生成规则草稿</button></div></div>}
+        {(selected.items || []).filter((item) => item.kind === 'special').map((item) => {
+          const key = item.relative_source || item.source_name;
+          const reason = unresolved.find((issue) => (issue.relative_source || issue.file) === key);
+          return <div className="field-row rename-special-item" key={key}><div className="rename-review-name"><span>原文件</span><strong>{item.source_name}</strong></div><div className="rename-special-meta"><span>{item.special_type === 'content' ? '内容文件' : item.special_type === 'operational' ? '运营文件' : '未分类'}</span><span>{Math.max(0.01, Number(item.size || 0) / 1024 / 1024).toFixed(2)} MB</span></div><div className="rename-review-name suggested"><span>整理后</span><strong>{item.target_name || '保持原名'}</strong></div>{reason && <div className="rename-review-reason">建议原因：{reason.message}</div>}<select className="field-select" value={specialActions[key] || 'keep'} onChange={(event) => setSpecialActions((prev) => ({...prev, [key]: event.target.value}))}><option value="organize">保留并按书名整理</option><option value="keep">保持原名不动</option><option value="quarantine">移入可恢复隔离目录</option></select></div>;
+        })}
+        {riskyItems.map((item) => {
+          const key = item.relative_source || item.source_name;
+          const reasons = unresolved.filter((issue) => (issue.relative_source || issue.file) === key || issue.file === item.source_name);
+          const ai = aiSuggestions.find((entry) => entry.relative_source === key);
+          return <div className="field-row rename-review-item" key={key}>
+            <div className="rename-review-name"><span>原文件</span><strong>{item.source_name}</strong></div>
+            <div className="rename-review-name suggested"><span>建议改为</span><strong>{item.target_name || '保持原名不动'}</strong></div>
+            {!!reasons.length && <div className="rename-review-reason">复核原因：{reasons.map((issue) => issue.message).join('；')}</div>}
+            {ai && <label className="ai-suggestion"><input type="checkbox" checked={selectedSuggestionIds.includes(ai.id)} onChange={(event) => setSelectedSuggestionIds((prev) => event.target.checked ? [...prev, ai.id] : prev.filter((id) => id !== ai.id))} /><span><strong>AI：{ai.action === 'rename' ? `建议标题“${ai.clean_title}”` : ai.action === 'accept' ? '接受当前建议' : '保持原名'}</strong><em>{Math.round((ai.confidence || 0) * 100)}% · {ai.reason}</em></span></label>}
+            <label className="field rename-manual-title"><span>手工修正纯标题</span><input className="field-input" value={itemOverrides[key]?.clean_title ?? item.clean_title ?? ''} onChange={(event) => { setItemOverrides((prev) => ({...prev, [key]: {...(prev[key] || {}), clean_title: event.target.value, action: 'accept'}})); setItemActions((prev) => ({...prev, [key]: 'accept'})); }} /></label>
+            <select className="field-select" aria-label={`${item.source_name} 的处理方式`} value={itemActions[key] || 'keep'} onChange={(event) => setItemActions((prev) => ({...prev, [key]: event.target.value}))}><option value="keep">保持原名不动</option><option value="accept">按上方建议重命名</option></select>
+          </div>;
+        })}
+        <details><summary>查看完整映射（{(selected.items || []).length}）</summary><pre className="code log-code rename-full-mapping">{(selected.items || []).map((item) => `${item.source_name} -> ${item.target_name}`).join('\n') || '无变更'}</pre></details>
+        {operation === 'confirm' && <div className="cookie-desc" role="status">正在校验并执行 {summary.planned || 0} 个文件...</div>}
+        {!!operationError && <div className="login-error" role="alert">{operationError}</div>}
+      </div>
+      <div className="modal-actions rename-plans-actions">
         <button className="btn btn-ghost btn-sm" disabled={!!operation} onClick={onClose}>关闭</button>
+        {['needs_review', 'pending_confirmation', 'no_changes'].includes(selected.status) && <button className="btn btn-ghost btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('regenerate', () => actions.regenerateRenamePlan(selected))}><BusyIcon busy={operation === 'regenerate'} icon="i-refresh" />{operation === 'regenerate' ? '正在生成' : '重新生成'}</button>}
         {!['completed', 'cancelled', 'no_changes'].includes(selected.status) && <button className="btn btn-danger btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('cancel', () => actions.cancelRenamePlan(selected.id))}><Icon id="i-close" className="icon icon-sm" />取消计划</button>}
         {selected.status === 'needs_review' && <button className="btn btn-ghost btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('resolve', () => actions.resolveRenamePlanSafe(selected.id))}>风险项保持不动</button>}
-        {selected.status === 'needs_review' && <button className="btn btn-primary btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('review', () => actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}))}><BusyIcon busy={operation === 'review'} icon="i-check" />{operation === 'review' ? '正在保存' : '保存复核'}</button>}
-        {selected.status === 'pending_confirmation' && <button className="btn btn-primary btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('confirm', async () => { await actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}); await actions.confirmRenamePlan(selected.id); })}><BusyIcon busy={operation === 'confirm'} icon="i-bolt" />{operation === 'confirm' ? '正在执行' : '确认格式并执行'}</button>}
+        {selected.status === 'needs_review' && <button className="btn btn-primary btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('review', () => actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions, item_overrides: itemOverrides}))}><BusyIcon busy={operation === 'review'} icon="i-check" />{operation === 'review' ? '正在保存' : '保存复核'}</button>}
+        {selected.status === 'pending_confirmation' && <button className="btn btn-primary btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('confirm', async () => { await actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions, item_overrides: itemOverrides}); return actions.confirmRenamePlan(selected.id); })}><BusyIcon busy={operation === 'confirm'} icon="i-bolt" />{operation === 'confirm' ? '正在执行' : '确认格式并执行'}</button>}
       </div>
-    </>
+    </div>
   );
 }
 
 export function AgentPage({app, mobile = false}) {
-  const {agentStatus, agentSessions, agentSession, renamePlans, busy, actions, setModal, closeModal} = app;
+  const {agentStatus, agentSessions, agentSession, renamePlans, renameRules, busy, actions, setModal, closeModal} = app;
   const remote = agentStatus.config || {};
   const [draft, setDraft] = useState(remote);
   const [message, setMessage] = useState('');
@@ -2198,14 +2343,16 @@ export function AgentPage({app, mobile = false}) {
       <section className="agent-chat-panel">
         <div className="agent-chat-head">
           <div className="agent-avatar"><AppLogo title="AudioFlow Agent" /></div>
-          <div><strong>AudioFlow Agent</strong><span>{remote.enabled && configured ? `${provider.name || providerId} · ${provider.model || '未选择模型'}` : '等待模型配置'}</span></div>
+          <div><strong>AudioFlow Agent</strong><span>{remote.enabled && configured ? `${provider.name || providerId} · ${provider.model || '未选择模型'}${agentSession?.last_latency_ms != null ? ` · ${(agentSession.last_latency_ms / 1000).toFixed(1)} 秒` : ''}` : '等待模型配置'}</span></div>
           <button className="btn btn-ghost btn-sm" onClick={() => setModal({className: 'modal-wide', content: <RenamePlansModal plans={renamePlans} actions={actions} busy={busy} onClose={closeModal} />})}><Icon id="i-edit" className="icon icon-sm" />整理计划{renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length ? ` (${renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length})` : ''}</button>
+          <button className="btn btn-ghost btn-sm" title="管理重命名规则" onClick={() => setModal({className: 'modal-wide', content: <RenameRulesModal rulesState={renameRules} actions={actions} busy={busy} onClose={closeModal} />})}><Icon id="i-settings" className="icon icon-sm" />规则</button>
           <details className="agent-config">
             <summary className="btn btn-ghost btn-sm"><Icon id="i-settings" className="icon icon-sm" />模型设置</summary>
             <div className="agent-config-popover">
               <label className="field"><span>启用 Agent</span><input type="checkbox" checked={Boolean(draft.enabled)} onChange={(event) => setDraft((prev) => ({...prev, enabled: event.target.checked}))} /></label>
               <label className="field"><span>AI 平台</span><select value={providerId} onChange={(event) => setDraft((prev) => ({...prev, provider: event.target.value}))}>{Object.entries(providers).map(([id, item]) => <option value={id} key={id}>{item.name || id}</option>)}</select></label>
               <label className="field"><span>Agent 运行时</span><select value={draft.runner || 'native'} onChange={(event) => setDraft((prev) => ({...prev, runner: event.target.value}))}><option value="native">AudioFlow 原生</option><option value="deepseek-harness" disabled={!agentStatus.harness?.available}>deepseek-harness{agentStatus.harness?.available ? '' : '（未安装）'}</option></select></label>
+              <label className="field"><span>快速响应</span><input type="checkbox" checked={draft.fast_mode !== false} onChange={(event) => setDraft((prev) => ({...prev, fast_mode: event.target.checked}))} /></label>
               <label className="field"><span>模型</span><input value={provider.model || ''} onChange={(event) => updateProvider('model', event.target.value)} placeholder="模型或 Endpoint ID" /></label>
               <label className="field"><span>API 地址</span><input value={provider.base_url || ''} onChange={(event) => updateProvider('base_url', event.target.value)} placeholder="https://.../v1" /></label>
               <label className="field"><span>API Key</span><input type="password" value={provider.api_key || ''} onChange={(event) => updateProvider('api_key', event.target.value)} placeholder={provider.api_key_masked || (provider.api_key_optional ? '可留空' : '输入新密钥')} autoComplete="new-password" /></label>
@@ -2240,7 +2387,7 @@ export function AgentPage({app, mobile = false}) {
             </div>
           )}
           {(agentSession?.messages || []).map((item, index) => (
-            <article className={`agent-message ${item.role}`} key={`${item.created_at}-${index}`}>
+            <article className={`agent-message ${item.role} ${item.pending ? 'pending' : ''}`} key={`${item.created_at}-${index}`}>
               {item.role === 'assistant' && <div className="agent-message-avatar"><AppLogo title="Agent" /></div>}
               <div className="agent-message-body">
                 <p>{item.content}</p>

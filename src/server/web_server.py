@@ -21,13 +21,14 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 
 from core.auth_manager import AuthManager
 from core.agent_manager import AgentManager
-from core.audiobook_renamer import RenamePlanManager
+from core.audiobook_renamer import RenamePlanManager, preview_rule_samples
 from core.cookie_manager import CookieManager
 from core.download_worker import DownloadWorker
 from core.developer_agent_manager import DeveloperAgentManager
 from core.enhanced_search_manager import EnhancedSearchManager
 from core.feishu_bridge import FeishuBridge
 from core.notification_manager import NotificationManager
+from core.rename_rules import RenameRuleStore, merge_rule_values
 from core.wecom_crypto import WeComCrypto, parse_wecom_message
 from core.lrts_manager import (
     lrts_send_sms_code,
@@ -384,7 +385,8 @@ migrate_runtime_file(data_dir() / "tasks.json", TASKS_FILE)
 subscription_manager = SubscriptionManager(config_dir=config_dir())
 
 notification_manager = NotificationManager(config_dir() / "notifications.json")
-rename_plan_manager = RenamePlanManager(config_dir() / "rename_plans.json")
+rename_rule_store = RenameRuleStore(config_dir() / "rename_rules.json")
+rename_plan_manager = RenamePlanManager(config_dir() / "rename_plans.json", rename_rule_store)
 agent_manager = AgentManager(
     config_dir() / "agent.json",
     config_dir() / "agent_sessions.json",
@@ -2587,6 +2589,55 @@ def api_rename_plans():
     return json_ok(plans=rename_plan_manager.list(request.args.get("status") or None))
 
 
+@app.get("/api/rename-rules")
+def api_rename_rules():
+    return json_ok(
+        packs=rename_rule_store.list(),
+        effective=rename_rule_store.effective({}),
+    )
+
+
+@app.post("/api/rename-rules/drafts")
+def api_save_rename_rule_draft():
+    try:
+        return json_ok(rule=rename_rule_store.save_draft(request.get_json(silent=True) or {}))
+    except (TypeError, ValueError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-rules/<rule_id>/activate")
+def api_activate_rename_rule(rule_id):
+    try:
+        return json_ok(rule=rename_rule_store.activate(rule_id), packs=rename_rule_store.list())
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+
+@app.delete("/api/rename-rules/<rule_id>")
+def api_delete_rename_rule(rule_id):
+    try:
+        if not rename_rule_store.delete_draft(rule_id):
+            return json_error("重命名规则不存在", 404)
+        return json_ok(deleted=True, packs=rename_rule_store.list())
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-rules/test")
+def api_test_rename_rules():
+    payload = request.get_json(silent=True) or {}
+    try:
+        return json_ok(results=preview_rule_samples(
+            payload.get("rules") or {},
+            payload.get("samples") or [],
+            str(payload.get("album_title") or "示例书名"),
+        ))
+    except (TypeError, ValueError) as exc:
+        return json_error(str(exc), 400)
+
+
 @app.get("/api/rename-plans/<plan_id>")
 def api_rename_plan(plan_id):
     plan = rename_plan_manager.get(plan_id)
@@ -2630,6 +2681,46 @@ def api_resolve_safe_rename_plan(plan_id):
     except KeyError as exc:
         return json_error(str(exc), 404)
     except (TypeError, ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/ai-analyze")
+def api_ai_analyze_rename_plan(plan_id):
+    plan = rename_plan_manager.get(plan_id)
+    if not plan:
+        return json_error("重命名计划不存在", 404)
+    try:
+        analysis = agent_manager.analyze_rename_plan(plan)
+        return json_ok(plan=rename_plan_manager.save_ai_analysis(plan_id, analysis))
+    except (TypeError, ValueError, requests.RequestException) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/ai-apply")
+def api_apply_ai_rename_suggestions(plan_id):
+    payload = request.get_json(silent=True) or {}
+    try:
+        return json_ok(plan=rename_plan_manager.apply_ai_suggestions(
+            plan_id, payload.get("suggestion_ids") or []
+        ))
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except (TypeError, ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/ai-rule-draft")
+def api_create_ai_rename_rule_draft(plan_id):
+    plan = rename_plan_manager.get(plan_id)
+    if not plan:
+        return json_error("重命名计划不存在", 404)
+    try:
+        proposed = agent_manager.propose_rename_rule_draft(plan)
+        effective = rename_rule_store.effective(plan.get("album") or {})["rules"]
+        proposed["rules"] = merge_rule_values(effective, proposed.get("rules") or {})
+        proposed["source"] = f"agent:{plan_id}"
+        return json_ok(rule=rename_rule_store.save_draft(proposed), packs=rename_rule_store.list())
+    except (TypeError, ValueError, requests.RequestException) as exc:
         return json_error(str(exc), 400)
 
 
@@ -2716,6 +2807,44 @@ def _agent_create_rename_plan(task_id):
     }
 
 
+def _agent_analyze_rename_plan_with_ai(plan_id):
+    plan = rename_plan_manager.get(str(plan_id or ""))
+    if not plan:
+        raise KeyError("重命名计划不存在")
+    analysis = agent_manager.analyze_rename_plan(plan)
+    saved = rename_plan_manager.save_ai_analysis(str(plan_id), analysis)
+    return {
+        "id": saved.get("id"),
+        "status": saved.get("status"),
+        "suggestions": len((saved.get("ai_analysis") or {}).get("suggestions") or []),
+        "message": "AI 风险建议已保存到计划，尚未应用或执行。",
+    }
+
+
+def _agent_apply_ai_rename_suggestions(plan_id, suggestion_ids):
+    plan = rename_plan_manager.apply_ai_suggestions(str(plan_id or ""), suggestion_ids or [])
+    return {
+        "id": plan.get("id"), "status": plan.get("status"),
+        "summary": plan.get("summary") or {},
+        "message": "选中的 AI 建议已写入计划；仍需用户最终确认后才会执行。",
+    }
+
+
+def _agent_create_rename_rule_draft(plan_id):
+    plan = rename_plan_manager.get(str(plan_id or ""))
+    if not plan:
+        raise KeyError("重命名计划不存在")
+    proposed = agent_manager.propose_rename_rule_draft(plan)
+    effective = rename_rule_store.effective(plan.get("album") or {})["rules"]
+    proposed["rules"] = merge_rule_values(effective, proposed.get("rules") or {})
+    proposed["source"] = f"agent:{plan_id}"
+    rule = rename_rule_store.save_draft(proposed)
+    return {
+        "id": rule.get("id"), "name": rule.get("name"), "status": rule.get("status"),
+        "message": "规则草稿已生成；必须在规则中心测试并手动启用。",
+    }
+
+
 def _agent_resolve_rename_plan_safe(plan_id):
     plan = rename_plan_manager.resolve_safe(str(plan_id or ""))
     return {
@@ -2747,6 +2876,9 @@ agent_manager.set_tools({
     "list_rename_plans": _agent_list_rename_plans,
     "get_rename_plan": _agent_get_rename_plan,
     "create_rename_plan": _agent_create_rename_plan,
+    "analyze_rename_plan_with_ai": _agent_analyze_rename_plan_with_ai,
+    "apply_ai_rename_suggestions": _agent_apply_ai_rename_suggestions,
+    "create_rename_rule_draft": _agent_create_rename_rule_draft,
     "resolve_rename_plan_safe": _agent_resolve_rename_plan_safe,
     "confirm_rename_plan": _agent_confirm_rename_plan,
     "cancel_rename_plan": _agent_cancel_rename_plan,

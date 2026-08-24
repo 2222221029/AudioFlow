@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
+from core.rename_rules import DEFAULT_RULE_VALUES, RenameRuleStore, sanitize_rules
+
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav", ".ogg", ".caf"}
 DEFAULT_PLAN_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -46,12 +48,13 @@ _AUDIO_SORT_RE = re.compile(r"^(\d+)[-._\s]")
 _SORT_PREFIX_RE = re.compile(r"^\s*\d+\s*[-._、]\s*")
 _CHAPTER_RE = re.compile(
     r"(?:第\s*)?(?P<number>\d+|[零〇一二两三四五六七八九十百千万]+)\s*"
-    r"(?P<unit>章|节|集)+(?:\s*[-:：._、]\s*|\s*)"
+    r"(?P<unit>章|节|集|回)(?:\s*[-:：._、]\s*|\s*)"
 )
 _LEADING_NUMBER_RE = re.compile(
     r"^\s*第?\s*(?:\d+|[零〇一二两三四五六七八九十百千万]+)\s*"
-    r"(?:章|节|集)*\s*[-:：._、]?\s*"
+    r"(?:章|节|集|回)*\s*[-:：._、]?\s*"
 )
+_LEADING_BOOK_TITLE_RE = re.compile(r"^\s*《(?P<title>[^《》]{1,100})》")
 _PAREN_BLOCK_RE = re.compile(r"[（(]([^（）()]*)[）)]")
 _WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
@@ -82,6 +85,15 @@ def _safe_filename(value: Any) -> str:
     for source, target in replacements.items():
         text = text.replace(source, target)
     return text[:220].rstrip(" .")
+
+
+def _canonical_book_title(value: Any) -> str:
+    """Prefer the formal title over platform marketing copy in album names."""
+    text = str(value or "").strip()
+    match = _LEADING_BOOK_TITLE_RE.match(text)
+    if match:
+        return match.group("title").strip()
+    return text.strip("《》 ")
 
 
 def _cn_number(value: str) -> int | None:
@@ -147,35 +159,66 @@ def _normalize_punctuation(value: str) -> tuple[str, list[str]]:
     return text, issues
 
 
-def _remove_ad_blocks(value: str) -> tuple[str, list[str], bool]:
+def _remove_ad_blocks(
+    value: str, cleanup_rules: dict[str, Any] | None = None
+) -> tuple[str, list[str], bool]:
+    cleanup = (cleanup_rules or DEFAULT_RULE_VALUES["cleanup"])
+    ad_keywords = tuple(cleanup.get("ad_keywords") or _AD_KEYWORDS)
+    preserve_keywords = tuple(cleanup.get("preserve_keywords") or _ENDING_MARKERS)
     removed = []
+
+    protected = {}
+    text = str(value or "")
+    for index, marker in enumerate(sorted(preserve_keywords, key=len, reverse=True)):
+        token = f"\ue000{index}\ue001"
+        if marker and marker in text:
+            protected[token] = marker
+            text = text.replace(marker, token)
 
     def replace_block(match: re.Match[str]) -> str:
         content = match.group(1).strip()
-        if any(keyword.casefold() in content.casefold() for keyword in _AD_KEYWORDS):
+        if any(keyword.casefold() in content.casefold() for keyword in ad_keywords):
             removed.append(content)
             return ""
         return match.group(0)
 
-    text = _PAREN_BLOCK_RE.sub(replace_block, value)
-    for keyword in sorted(_AD_KEYWORDS, key=len, reverse=True):
+    text = _PAREN_BLOCK_RE.sub(replace_block, text)
+    for pattern in cleanup.get("ad_patterns") or []:
+        def replace_pattern(match: re.Match[str]) -> str:
+            removed.append(match.group(0).strip())
+            return ""
+        text = re.sub(pattern, replace_pattern, text, flags=re.I)
+    for keyword in sorted(ad_keywords, key=len, reverse=True):
         match = re.search(rf"(?:[，。！!；;、~\s-]+){re.escape(keyword)}.*$", text, re.I)
         if match:
             removed.append(text[match.start():].strip())
             text = text[:match.start()]
             break
+    if cleanup.get("split_ad_after_first_space"):
+        title = text.strip()
+        if title not in set(cleanup.get("title_exceptions") or []):
+            boundary = re.search(r"[ \u3000]", title)
+            if boundary:
+                suffix = title[boundary.start():].strip()
+                if any(keyword.casefold() in suffix.casefold() for keyword in ad_keywords):
+                    removed.append(suffix)
+                    text = title[:boundary.start()]
     text = re.sub(r"[（(]\s*[）)]", "", text).strip(" \t\u3000_-—~")
-    residual = any(keyword.casefold() in text.casefold() for keyword in _AD_KEYWORDS)
+    for token, marker in protected.items():
+        text = text.replace(token, marker)
+    residual = any(keyword.casefold() in text.casefold() for keyword in ad_keywords)
     return text, removed, residual
 
 
-def _clean_title(title: str, album_title: str) -> tuple[str, list[str], list[str]]:
+def _clean_title(
+    title: str, album_title: str, rules: dict[str, Any] | None = None
+) -> tuple[str, list[str], list[str]]:
     text = _strip_existing_chapter_prefix(title)
     book = str(album_title or "").strip("《》 ")
     for variant in sorted({book, f"《{book}》"}, key=len, reverse=True):
         if variant and text.startswith(variant):
             text = text[len(variant):].strip(" \t\u3000_-—:：、")
-    text, removed, residual = _remove_ad_blocks(text)
+    text, removed, residual = _remove_ad_blocks(text, (rules or {}).get("cleanup"))
     text, punctuation_issues = _normalize_punctuation(text)
     blocking = list(punctuation_issues)
     notes = []
@@ -203,9 +246,10 @@ def _parse_file_chapter(path: Path) -> dict[str, Any] | None:
     number = int(token) if token.isdigit() else _cn_number(token)
     if not number:
         return None
+    raw_unit = match.group("unit")
     return {
         "number": number,
-        "unit": "章" if match.group("unit") == "章" else "集",
+        "unit": raw_unit if raw_unit in {"章", "集", "回"} else "集",
         "title": parse_stem[match.end():].strip(" \t\u3000_-—:：、"),
         "prelude": parse_stem[:match.start()].strip(" \t\u3000_-—:：、"),
         "quality": quality,
@@ -238,15 +282,19 @@ def _audio_files(album_dir: Path) -> list[Path]:
     )
 
 
-def _special_kind(value: str) -> tuple[str, str]:
+def _special_kind(value: str, rules: dict[str, Any] | None = None) -> tuple[str, str]:
     text = _SORT_PREFIX_RE.sub("", str(value or ""), count=1)
-    for label in _SPECIAL_CONTENT_LABELS:
+    special = (rules or {}).get("special_files") or {}
+    content_labels = special.get("content_labels") or _SPECIAL_CONTENT_LABELS
+    operational_labels = special.get("operational_labels") or _SPECIAL_OPERATIONAL_LABELS
+    ad_keywords = ((rules or {}).get("cleanup") or {}).get("ad_keywords") or _AD_KEYWORDS
+    for label in content_labels:
         if label in text:
             return "content", label
-    for label in _SPECIAL_OPERATIONAL_LABELS:
+    for label in operational_labels:
         if label in text:
             return "operational", label
-    if any(keyword.casefold() in text.casefold() for keyword in _AD_KEYWORDS):
+    if any(keyword.casefold() in text.casefold() for keyword in ad_keywords):
         return "operational", text
     return "unknown", text.strip() or "特殊文件"
 
@@ -359,31 +407,60 @@ def _book_for_item(config: dict[str, Any], item: dict[str, Any]) -> str:
     return str(value or "未知专辑").strip("《》 ")
 
 
+def _render_filename(template: str, values: dict[str, Any], extension: str) -> str:
+    rendered = str(template or "").format_map({key: str(value or "") for key, value in values.items()})
+    suffix = str(extension or "").lower()
+    if suffix and rendered.lower().endswith(suffix):
+        rendered = rendered[:-len(suffix)]
+    return _safe_filename(rendered) + suffix
+
+
 def _format_chapter_name(config: dict[str, Any], item: dict[str, Any]) -> str:
     book = _book_for_item(config, item)
     prefix = str(item["prefix"]).zfill(int(config.get("prefix_width") or 4))
     number = str(item["chapter"]).zfill(int(config.get("chapter_width") or 3))
-    unit = config.get("chapter_unit") if config.get("chapter_unit") in {"章", "集"} else "集"
+    unit = config.get("chapter_unit") if config.get("chapter_unit") in {"章", "集", "回"} else "集"
     title = str(item.get("clean_title") or "").strip()
-    separator = "" if title.startswith(("《", "“", "「", "『")) else (" " if title else "")
+    smart_separator = config.get("smart_title_separator", True)
+    separator = (
+        "" if not title or (smart_separator and title.startswith(("《", "“", "「", "『")))
+        else " "
+    )
     quality = str(item.get("quality") or "")
-    quality_suffix = f" {quality}" if quality and quality not in title else ""
-    return _safe_filename(f"{prefix}-《{book}》第{number}{unit}{separator}{title}{quality_suffix}") + item["extension"]
+    if quality and quality in title:
+        quality = ""
+    values = {
+        "prefix": prefix, "book": book, "chapter": number, "unit": unit,
+        "title": title, "title_sep": separator, "quality": quality,
+        "quality_sep": " " if quality else "", "label": "", "ext": item["extension"],
+    }
+    template = str(config.get("chapter_template") or DEFAULT_RULE_VALUES["format"]["chapter_template"])
+    return _render_filename(template, values, item["extension"])
 
 
-def _format_special_name(config: dict[str, Any], item: dict[str, Any]) -> str:
+def _format_special_name(
+    config: dict[str, Any], item: dict[str, Any], rules: dict[str, Any] | None = None
+) -> str:
     book = _book_for_item(config, item)
     prefix = str(item["prefix"]).zfill(int(config.get("prefix_width") or 4))
     label, _issues = _normalize_punctuation(item.get("special_label") or "特殊文件")
-    label, _removed, _residual = _remove_ad_blocks(label)
-    return _safe_filename(f"{prefix}-《{book}》{label or item.get('special_type') or '特殊文件'}") + item["extension"]
+    label, _removed, _residual = _remove_ad_blocks(label, (rules or {}).get("cleanup"))
+    label = label or item.get("special_type") or "特殊文件"
+    values = {
+        "prefix": prefix, "book": book, "chapter": "", "unit": "", "title": "",
+        "title_sep": "", "quality": "", "quality_sep": "", "label": label,
+        "ext": item["extension"],
+    }
+    template = str(config.get("special_template") or DEFAULT_RULE_VALUES["format"]["special_template"])
+    return _render_filename(template, values, item["extension"])
 
 
 class RenamePlanManager:
     """Persist complete plans and execute confirmed changes idempotently."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, rule_store: RenameRuleStore | None = None):
         self.path = Path(path)
+        self.rule_store = rule_store
         self._lock = threading.RLock()
 
     def _load_payload_unlocked(self) -> dict[str, Any]:
@@ -473,7 +550,8 @@ class RenamePlanManager:
         origin_source: str = "",
     ) -> dict[str, Any]:
         album_dir = Path(album_dir).resolve()
-        title = str((album or {}).get("title") or album_dir.name or "未知专辑").strip("《》 ")
+        title = str((album or {}).get("title") or album_dir.name or "未知专辑").strip()
+        book_title = _canonical_book_title(title) or "未知专辑"
         files = _audio_files(album_dir)
         chapter_list = list(chapters or [])
         metadata_by_number: dict[int, list[dict[str, Any]]] = {}
@@ -483,17 +561,41 @@ class RenamePlanManager:
         with self._lock:
             payload = self._load_payload_unlocked()
             profile = payload["profiles"].get(self._profile_key(album))
+        effective = (
+            self.rule_store.effective(album) if self.rule_store
+            else {"rules": sanitize_rules({}), "applied": [{"id": "builtin-audioflow", "version": 1}]}
+        )
+        rules = effective["rules"]
+        rule_version = "|".join(
+            f"{item.get('id')}@{item.get('version')}" for item in effective.get("applied") or []
+        )
+        format_rules = rules["format"]
+        validation_rules = rules["validation"]
+        profile_rule_version = str((profile or {}).get("rule_version") or "")
+        profile_outdated = bool(profile_rule_version and profile_rule_version != rule_version)
+        parsed_units = {
+            parsed["unit"]
+            for path in files
+            if (parsed := _parse_file_chapter(path))
+        }
+        inferred_unit = "回" if parsed_units == {"回"} else chapter_unit
+        configured_unit = (profile or {}).get("chapter_unit") or format_rules.get("chapter_unit")
         config = {
-            "album_title": str((profile or {}).get("album_title") or title),
-            "template": "{prefix}-《{book}》第{chapter}{unit} {title}.ext",
-            "prefix_width": max(1, min(8, int((profile or {}).get("prefix_width") or prefix_width))),
-            "chapter_width": max(1, min(8, int((profile or {}).get("chapter_width") or chapter_width))),
-            "chapter_unit": ((profile or {}).get("chapter_unit")
-                             if (profile or {}).get("chapter_unit") in {"章", "集"}
-                             else (chapter_unit if chapter_unit in {"章", "集"} else "集")),
-            "reserve_missing_prefixes": True,
-            "special_files_keep_position": True,
+            "album_title": str((profile or {}).get("album_title") or book_title),
+            "chapter_template": str((profile or {}).get("chapter_template") or format_rules["chapter_template"]),
+            "special_template": str((profile or {}).get("special_template") or format_rules["special_template"]),
+            "prefix_width": max(1, min(8, int((profile or {}).get("prefix_width") or format_rules.get("prefix_width") or prefix_width))),
+            "chapter_width": max(1, min(8, int((profile or {}).get("chapter_width") or format_rules.get("chapter_width") or chapter_width))),
+            "chapter_unit": (configured_unit if configured_unit in {"章", "集", "回"}
+                             else (inferred_unit if inferred_unit in {"章", "集", "回"} else "集")),
+            "prefix_strategy": str((profile or {}).get("prefix_strategy") or format_rules.get("prefix_strategy") or "chapter"),
+            "prefix_start": max(1, int((profile or {}).get("prefix_start") or format_rules.get("prefix_start") or 1)),
+            "smart_title_separator": bool((profile or {}).get("smart_title_separator", format_rules.get("smart_title_separator", True))),
+            "reserve_missing_prefixes": bool(validation_rules.get("reserve_missing_prefixes", True)),
+            "special_files_keep_position": bool(validation_rules.get("special_files_keep_position", True)),
             "profile_reused": bool(profile),
+            "profile_rule_outdated": profile_outdated,
+            "rule_version": rule_version,
             "volumes": dict((profile or {}).get("volumes") or {}),
         }
         items = []
@@ -504,7 +606,7 @@ class RenamePlanManager:
                 "no_audio_files", "专辑目录中没有找到可整理的音频文件"
             ))
         previous_chapter = 0
-        next_prefix = 1
+        next_prefix = config["prefix_start"]
         volume_index = 1
         seen_chapters: dict[tuple[int, int], dict[str, Any]] = {}
 
@@ -521,7 +623,7 @@ class RenamePlanManager:
                             candidates.append((number, raw))
                 if len(candidates) == 1:
                     number, raw = candidates[0]
-                    parsed = {"number": number, "unit": chapter_unit, "title": raw,
+                    parsed = {"number": number, "unit": inferred_unit, "title": raw,
                               "prelude": "", "quality": ""}
 
             relative = path.relative_to(album_dir)
@@ -531,23 +633,31 @@ class RenamePlanManager:
                 "relative_source": str(relative), "extension": path.suffix.lower(),
                 "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
             }
+            prefix_match = _AUDIO_SORT_RE.match(path.name)
+            original_prefix = int(prefix_match.group(1)) if prefix_match else None
             if parsed:
                 number = int(parsed["number"])
                 if previous_chapter and number < previous_chapter:
                     volume_index += 1
                     previous_chapter = 0
-                if not previous_chapter and number > 1:
-                    next_prefix += number - 1
-                elif previous_chapter and number > previous_chapter + 1:
-                    next_prefix += number - previous_chapter - 1
+                if config["prefix_strategy"] == "chapter" and config["reserve_missing_prefixes"]:
+                    if not previous_chapter and number > 1:
+                        next_prefix += number - 1
+                    elif previous_chapter and number > previous_chapter + 1:
+                        next_prefix += number - previous_chapter - 1
+                assigned_prefix = (
+                    original_prefix if config["prefix_strategy"] == "original" and original_prefix is not None
+                    else next_prefix
+                )
                 item = {
                     **base_item, "kind": "chapter", "chapter": number,
                     "volume_index": volume_index,
-                    "original_unit": parsed.get("unit") or "集", "prefix": next_prefix,
+                    "original_unit": parsed.get("unit") or "集", "prefix": assigned_prefix,
+                    "original_prefix": original_prefix,
                     "quality": parsed.get("quality") or "", "prelude": parsed.get("prelude") or "",
                 }
                 clean_title, title_issues, title_notes = _clean_title(
-                    parsed.get("title") or f"第{number}集", config["album_title"]
+                    parsed.get("title") or f"第{number}集", config["album_title"], rules
                 )
                 item["original_title"] = parsed.get("title") or ""
                 item["clean_title"] = clean_title
@@ -565,28 +675,32 @@ class RenamePlanManager:
                 chapter_identity = (volume_index, number)
                 if chapter_identity in seen_chapters:
                     issues.append(self._issue(
-                        "duplicate_chapter", f"第 {number} 集出现多个文件，可能是分册重置或重复下载",
+                        "duplicate_chapter", f"章节号 {number} 出现多个文件，可能是分册重置或重复下载",
                         item=item, files=[seen_chapters[chapter_identity]["source_name"], path.name],
                     ))
                 seen_chapters.setdefault(chapter_identity, item)
                 previous_chapter = max(previous_chapter, number)
-                next_prefix += 1
+                next_prefix = max(next_prefix + 1, assigned_prefix + 1)
             else:
-                special_type, label = _special_kind(path.stem)
+                special_type, label = _special_kind(path.stem, rules)
+                assigned_prefix = (
+                    original_prefix if config["prefix_strategy"] == "original" and original_prefix is not None
+                    else next_prefix
+                )
                 item = {
                     **base_item, "kind": "special", "special_type": special_type,
-                    "special_label": label, "prefix": next_prefix, "volume_index": volume_index,
+                    "special_label": label, "prefix": assigned_prefix, "original_prefix": original_prefix,
+                    "volume_index": volume_index,
                     "action": "undecided",
                 }
                 items.append(item)
+                default_action = rules["special_files"].get(f"{special_type}_default", "keep")
                 issues.append(self._issue(
                     "special_file", "非章节文件必须由你选择整理、保持原名或隔离",
                     item=item, special_type=special_type,
-                    suggested_action="organize" if special_type == "content" else (
-                        "quarantine" if special_type == "operational" else "keep"
-                    ),
+                    suggested_action=default_action,
                 ))
-                next_prefix += 1
+                next_prefix = max(next_prefix + 1, assigned_prefix + 1)
 
         for issue_data in _normalize_repeated_titles(items):
             issue_item = next((entry for entry in items
@@ -657,7 +771,7 @@ class RenamePlanManager:
                 item["target_name"] = _format_chapter_name(config, item)
                 item.setdefault("action", "rename")
             else:
-                item["target_name"] = _format_special_name(config, item)
+                item["target_name"] = _format_special_name(config, item, rules)
             target = Path(item["source"]).with_name(item["target_name"])
             item["target"] = str(target)
             item["relative_target"] = str(target.relative_to(album_dir))
@@ -671,14 +785,18 @@ class RenamePlanManager:
         plan = {
             "id": plan_id, "task_id": str(task_id or ""), "origin_source": str(origin_source or ""),
             "album": {
-                "title": title, "platform": str((album or {}).get("platform") or ""),
+                "title": title, "book_title": book_title,
+                "platform": str((album or {}).get("platform") or ""),
                 "id": str((album or {}).get("id") or (album or {}).get("album_id") or ""),
             },
             "profile_key": self._profile_key(album), "album_dir": str(album_dir),
-            "configuration": config, "configuration_confirmation_required": not bool(profile),
+            "configuration": config,
+            "configuration_confirmation_required": not bool(profile) or profile_outdated,
+            "rule_version": rule_version,
+            "rule_snapshot": {"rules": rules, "applied": effective.get("applied") or []},
             "suggested_format": (
-                f"{config['prefix_width']}位序号-《书名》第{config['chapter_width']}位"
-                f"{config['chapter_unit']} 标题.ext"
+                f"{config['prefix_width']}位序号 · {config['chapter_width']}位章节号 · "
+                f"{config['chapter_unit']} · {config['prefix_strategy']}"
             ),
             "created_at": created_at, "expires_at": created_at + max(60, int(ttl_seconds)),
             "items": items, "issues": issues, "notes": notes,
@@ -758,11 +876,19 @@ class RenamePlanManager:
                 config["album_title"] = str(incoming_config.get("album_title") or "").strip("《》 ")
                 if not config["album_title"]:
                     raise ValueError("书名不能为空")
-            for key in ("prefix_width", "chapter_width"):
-                if key in incoming_config:
-                    config[key] = max(1, min(8, int(incoming_config[key])))
-            if incoming_config.get("chapter_unit") in {"章", "集"}:
-                config["chapter_unit"] = incoming_config["chapter_unit"]
+            format_input = {
+                key: incoming_config.get(key, config.get(key))
+                for key in (
+                    "chapter_template", "special_template", "prefix_width", "chapter_width",
+                    "chapter_unit", "prefix_strategy", "prefix_start", "smart_title_separator",
+                )
+            }
+            validated_format = sanitize_rules({"format": format_input})["format"]
+            for key in format_input:
+                value = validated_format[key]
+                if key == "chapter_unit" and value == "auto":
+                    continue
+                config[key] = value
             if isinstance(incoming_config.get("volumes"), dict):
                 volumes = {}
                 for key, value in incoming_config["volumes"].items():
@@ -772,9 +898,25 @@ class RenamePlanManager:
                 config["volumes"] = volumes
             special_actions = choices.get("special_actions") or {}
             item_actions = choices.get("item_actions") or {}
+            item_overrides = choices.get("item_overrides") or {}
+            snapshot_rules = (plan.get("rule_snapshot") or {}).get("rules") or sanitize_rules({})
             for item in plan.get("items") or []:
                 key = item.get("relative_source") or item.get("source_name")
-                action = special_actions.get(key) if item.get("kind") == "special" else item_actions.get(key)
+                override = item_overrides.get(key) if isinstance(item_overrides.get(key), dict) else {}
+                action = (
+                    special_actions.get(key) if item.get("kind") == "special"
+                    else (override.get("action") or item_actions.get(key))
+                )
+                if item.get("kind") == "chapter" and "clean_title" in override:
+                    clean_title, punctuation_issues = _normalize_punctuation(
+                        str(override.get("clean_title") or "").strip()
+                    )
+                    if not clean_title:
+                        raise ValueError(f"手工标题不能为空：{item.get('source_name')}")
+                    if punctuation_issues:
+                        raise ValueError(f"手工标题符号不完整：{item.get('source_name')}")
+                    item["clean_title"] = clean_title
+                    item["manual_override"] = True
                 if action in {"organize", "rename", "accept"}:
                     item["action"] = "rename"
                     item["status"] = "planned"
@@ -787,7 +929,7 @@ class RenamePlanManager:
                 if item.get("kind") == "chapter":
                     item["target_name"] = _format_chapter_name(config, item)
                 else:
-                    item["target_name"] = _format_special_name(config, item)
+                    item["target_name"] = _format_special_name(config, item, snapshot_rules)
                 target = Path(item["source"]).with_name(item["target_name"])
                 item["target"] = str(target)
                 item["relative_target"] = str(target.relative_to(Path(plan["album_dir"])))
@@ -814,6 +956,90 @@ class RenamePlanManager:
             self._write_mapping(plan)
             self._save_payload_unlocked(payload)
             return dict(plan)
+
+    def save_ai_analysis(self, plan_id: str, analysis: dict[str, Any]) -> dict[str, Any]:
+        """Attach AI suggestions to a plan without resolving or executing it."""
+        with self._lock:
+            payload = self._load_payload_unlocked()
+            plan = payload["plans"].get(str(plan_id or ""))
+            if not plan:
+                raise KeyError("重命名计划不存在")
+            if plan.get("status") in {"completed", "executing", "cancelled"}:
+                raise ValueError("该计划当前不能进行 AI 复核")
+            known = {
+                item.get("relative_source") or item.get("source_name")
+                for item in plan.get("items") or []
+            }
+            suggestions = []
+            for raw in (analysis or {}).get("suggestions") or []:
+                key = str(raw.get("relative_source") or raw.get("file") or "")
+                if key not in known:
+                    continue
+                action = str(raw.get("action") or "keep")
+                if action not in {"keep", "accept", "rename", "quarantine"}:
+                    action = "keep"
+                try:
+                    confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0)))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                suggestions.append({
+                    "id": str(raw.get("id") or uuid.uuid4().hex[:12]),
+                    "relative_source": key,
+                    "action": action,
+                    "clean_title": str(raw.get("clean_title") or "").strip()[:220],
+                    "reason": str(raw.get("reason") or "AI 未提供理由").strip()[:500],
+                    "confidence": confidence,
+                })
+            plan["ai_analysis"] = {
+                "status": "completed", "suggestions": suggestions,
+                "summary": str((analysis or {}).get("summary") or "").strip()[:1000],
+                "model": str((analysis or {}).get("model") or ""), "created_at": _now(),
+            }
+            self._save_payload_unlocked(payload)
+            return dict(plan)
+
+    def apply_ai_suggestions(
+        self, plan_id: str, suggestion_ids: Iterable[str] | None = None
+    ) -> dict[str, Any]:
+        """Apply explicitly selected AI suggestions through normal plan review."""
+        plan = self.get(plan_id)
+        if not plan:
+            raise KeyError("重命名计划不存在")
+        available = (plan.get("ai_analysis") or {}).get("suggestions") or []
+        selected_ids = {str(item) for item in (suggestion_ids or []) if str(item)}
+        selected = [item for item in available if not selected_ids or item.get("id") in selected_ids]
+        if not selected:
+            raise ValueError("没有可应用的 AI 建议")
+        item_overrides = {}
+        special_actions = {}
+        for item in selected:
+            key = item["relative_source"]
+            action = item.get("action") or "keep"
+            source_item = next((entry for entry in plan.get("items") or []
+                                if (entry.get("relative_source") or entry.get("source_name")) == key), None)
+            if not source_item:
+                continue
+            if source_item.get("kind") == "special":
+                special_actions[key] = action if action in {"keep", "quarantine"} else "organize"
+            else:
+                item_overrides[key] = {
+                    "action": "accept" if action in {"accept", "rename"} else "keep",
+                    **({"clean_title": item["clean_title"]} if item.get("clean_title") else {}),
+                }
+        reviewed = self.configure(plan_id, {
+            "configuration": plan.get("configuration") or {},
+            "special_actions": special_actions,
+            "item_overrides": item_overrides,
+        })
+        with self._lock:
+            payload = self._load_payload_unlocked()
+            stored = payload["plans"].get(str(plan_id))
+            if stored:
+                stored.setdefault("ai_analysis", {})["applied_ids"] = [item["id"] for item in selected]
+                stored["ai_analysis"]["applied_at"] = _now()
+                self._save_payload_unlocked(payload)
+                reviewed = dict(stored)
+        return reviewed
 
     def resolve_safe(self, plan_id: str) -> dict[str, Any]:
         """Keep every uncertain file untouched and organize only safe chapters."""
@@ -974,4 +1200,60 @@ class RenamePlanManager:
                 raise
 
 
-__all__ = ["AUDIO_EXTENSIONS", "RenamePlanManager", "chapter_number"]
+def preview_rule_samples(
+    rule_values: dict[str, Any] | None,
+    samples: Iterable[str],
+    album_title: str = "示例书名",
+) -> list[dict[str, Any]]:
+    """Preview declarative rules without touching the filesystem."""
+    rules = sanitize_rules(rule_values or {})
+    fmt = rules["format"]
+    config = {
+        "album_title": _canonical_book_title(album_title) or "示例书名",
+        "chapter_template": fmt["chapter_template"],
+        "special_template": fmt["special_template"],
+        "prefix_width": fmt["prefix_width"],
+        "chapter_width": fmt["chapter_width"],
+        "chapter_unit": "集" if fmt["chapter_unit"] == "auto" else fmt["chapter_unit"],
+        "prefix_strategy": fmt["prefix_strategy"],
+        "prefix_start": fmt["prefix_start"],
+        "smart_title_separator": fmt["smart_title_separator"],
+        "volumes": {},
+    }
+    results = []
+    next_prefix = config["prefix_start"]
+    for raw in list(samples or [])[:100]:
+        name = Path(str(raw or "").strip()).name
+        if not name:
+            continue
+        path = Path(name)
+        extension = path.suffix.lower() if path.suffix.lower() in AUDIO_EXTENSIONS else ".m4a"
+        parsed = _parse_file_chapter(path)
+        issues = []
+        if parsed:
+            clean_title, blocking, notes = _clean_title(
+                parsed.get("title") or "", config["album_title"], rules
+            )
+            item = {
+                "prefix": next_prefix, "chapter": parsed["number"], "clean_title": clean_title,
+                "quality": parsed.get("quality") or "", "extension": extension, "volume_index": 1,
+            }
+            target = _format_chapter_name(config, item)
+            issues.extend(blocking)
+            issues.extend(notes)
+        else:
+            special_type, label = _special_kind(path.stem, rules)
+            item = {
+                "prefix": next_prefix, "special_label": label, "special_type": special_type,
+                "extension": extension, "volume_index": 1,
+            }
+            target = _format_special_name(config, item, rules)
+            issues.append("未识别为章节，按特殊文件预览")
+        results.append({"source_name": name, "target_name": target, "issues": issues})
+        next_prefix += 1
+    return results
+
+
+__all__ = [
+    "AUDIO_EXTENSIONS", "RenamePlanManager", "chapter_number", "preview_rule_samples",
+]

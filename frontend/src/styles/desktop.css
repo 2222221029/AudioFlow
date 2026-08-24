@@ -1159,6 +1159,12 @@ html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-s
 /* ── 密码提示 ── */
 .field-hint{font-size:12px;padding:2px 4px 6px;line-height:1.4}
 .field-hint.err{color:var(--danger)}
+.rename-review-item{padding:10px 0;border-top:1px solid var(--border)}
+.rename-review-name{display:grid;grid-template-columns:64px minmax(0,1fr);gap:8px;align-items:start;font-size:12px;line-height:1.5}
+.rename-review-name span{color:var(--text-mute)}
+.rename-review-name strong{min-width:0;color:var(--text);font-size:12px;font-weight:600;overflow-wrap:anywhere;letter-spacing:0;text-transform:none}
+.rename-review-name.suggested strong{color:var(--success)}
+.rename-review-reason{padding-left:72px;color:var(--warning);font-size:11px;line-height:1.45;overflow-wrap:anywhere}
 
 /* ── 工具栏分隔符 ── */
 .toolbar-sep{width:1px;background:var(--border);align-self:stretch;margin:0 2px;flex:0 0 1px}
@@ -1380,6 +1386,20 @@ html[data-theme-mode="light"],html[data-theme-mode="dark"]{
 .task-counts .ok{color:var(--success)}
 .task-counts .danger{color:var(--danger)}
 .modal.modal-wide{width:min(920px,calc(100vw - 48px));max-width:920px;overflow:hidden}
+.rename-plans-modal{display:flex;flex-direction:column;min-height:0;height:min(760px,calc(100vh - 104px));max-height:calc(100vh - 104px)}
+.rename-plans-head{flex:0 0 auto;padding-right:44px}
+.rename-plans-head .modal-sub{margin-bottom:10px}
+.rename-plans-content{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:4px 8px 12px 0;scrollbar-gutter:stable}
+.rename-plans-actions{flex:0 0 auto;flex-wrap:wrap;margin-top:0;padding-top:12px;border-top:1px solid var(--border);background:var(--panel-2)}
+.rename-plans-actions .btn{min-width:0}
+.rename-rules-modal{display:flex;flex-direction:column;min-height:0;height:min(760px,calc(100vh - 104px));max-height:calc(100vh - 104px)}
+.rename-rules-content{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:0 8px 16px 0}
+.rule-pack-picker{margin:8px 0 10px}.rule-pack-picker .field-select{flex:1}
+.rule-section{padding:14px 0;border-top:1px solid var(--border)}.rule-section:first-child{border-top:0}.rule-section h3{margin:0 0 10px;font-size:13px;letter-spacing:0;color:var(--text)}
+.rule-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px}.rule-grid .field{display:block;min-width:0}.rule-grid .field>span{display:block;margin-bottom:5px;color:var(--text-mute);font-size:11px}.rule-grid input:not([type=checkbox]),.rule-grid select,.rule-grid textarea{width:100%;box-sizing:border-box}.rule-grid textarea{resize:vertical}.rule-grid .rule-span{grid-column:1/-1}.rule-grid .check-row{align-self:end;min-height:38px}
+.rule-test>.btn{margin-top:10px}.rule-test-results{margin-top:10px;max-height:240px;overflow:auto;border-top:1px solid var(--border)}.rule-test-results>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:5px 12px;padding:8px 0;border-bottom:1px solid var(--border);font-size:11px}.rule-test-results strong,.rule-test-results span{overflow-wrap:anywhere}.rule-test-results span{color:var(--success)}.rule-test-results em{grid-column:1/-1;color:var(--warning);font-size:10px;font-style:normal}
+.rename-review-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.rename-review-heading .field-label{margin:0}.ai-review-summary{margin:10px 0;padding:10px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);display:grid;gap:6px}.ai-review-summary>strong{font-size:12px}.ai-review-summary>span{color:var(--text-mute);font-size:11px;line-height:1.5}.ai-review-summary .field-row-inline{justify-content:flex-end}
+.rename-special-item{padding:10px 0;border-top:1px solid var(--border)}.rename-special-meta{display:flex;gap:10px;margin:5px 0 5px 72px;color:var(--text-mute);font-size:10px}.ai-suggestion{display:flex;gap:8px;align-items:flex-start;margin:8px 0;padding:8px;border-left:2px solid var(--accent);background:var(--panel)}.ai-suggestion input{margin-top:2px}.ai-suggestion>span{display:flex;flex-direction:column;gap:3px;min-width:0}.ai-suggestion strong{font-size:11px}.ai-suggestion em{color:var(--text-mute);font-size:10px;font-style:normal;line-height:1.45}.rename-manual-title{display:block;margin:8px 0}.rename-manual-title>span{display:block;margin-bottom:4px;color:var(--text-mute);font-size:10px}.rename-format-details{margin-bottom:10px}.rename-format-details summary{cursor:pointer;color:var(--text-mute);font-size:11px}.rename-full-mapping{max-height:360px;overflow:auto}
 .task-detail-modal{display:flex;flex-direction:column;min-height:0;max-height:calc(100vh - 104px)}
 .task-detail-hero{display:flex;align-items:center;gap:12px;margin-bottom:14px;padding-right:44px}
 .task-detail-cover{width:58px;height:58px;flex:0 0 58px;border-radius:8px;background:var(--primary-soft) center/cover no-repeat;display:grid;place-items:center;color:var(--primary)}
@@ -1452,6 +1472,7 @@ html[data-theme-mode="light"],html[data-theme-mode="dark"]{
 .agent-config-popover .field:first-child{display:flex;align-items:center;justify-content:space-between}.agent-config-popover .field:first-child>span{margin:0}.agent-config-popover input[type=checkbox]{width:20px;height:20px}
 .agent-runtime-status{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:6px}.agent-runtime-status span{margin:0;font-weight:700}.agent-runtime-status span.ok{color:var(--success)}.agent-runtime-status em{margin-left:auto;color:var(--text-faint);font-size:10px;font-style:normal;text-align:right}
 .agent-config-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.agent-message.pending{opacity:.72}.agent-message.pending .agent-message-body:after{content:'发送中';display:block;margin-top:4px;color:var(--text-faint);font-size:9px}
 .agent-messages{flex:1;min-height:0;overflow:auto;padding:22px clamp(16px,5vw,70px)}
 .agent-welcome{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.agent-welcome-mark{width:92px;height:92px;margin-bottom:12px}.agent-welcome-mark .app-logo{width:100%;height:100%}.agent-welcome>strong{font-size:18px}
 .agent-prompts{width:min(480px,100%);margin-top:18px;display:grid;gap:7px}.agent-prompts button{padding:10px 12px;border:1px solid var(--border);border-radius:7px;background:var(--panel-2);color:var(--text-mute);font-size:12px;text-align:left}.agent-prompts button:hover{border-color:var(--border-hi);color:var(--text)}
