@@ -37,13 +37,15 @@ export function setAuthRequiredHandler(handler) {
 
 async function requestJson(path, options = {}) {
   const normalized = normalizeBody(options);
+  const timeoutMs = Math.max(1000, Number(normalized.timeoutMs) || 30000);
+  const {timeoutMs: _timeoutMs, ...fetchOptions} = normalized;
   const headers = normalized.body && !(normalized.body instanceof FormData)
     ? {'Content-Type': 'application/json', ...(normalized.headers || {})}
     : (normalized.headers || {});
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(apiUrl(path), {...normalized, headers, credentials: 'same-origin', signal: controller.signal});
+    const response = await fetch(apiUrl(path), {...fetchOptions, headers, credentials: 'same-origin', signal: controller.signal});
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) {
       const error = new Error(data.error || response.statusText || 'Request failed');
@@ -52,6 +54,11 @@ async function requestJson(path, options = {}) {
       throw error;
     }
     return data;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`请求执行超过 ${Math.ceil(timeoutMs / 1000)} 秒，请刷新后查看最新状态`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }

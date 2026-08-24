@@ -1074,7 +1074,11 @@ export function useAudioFlowApp() {
   }), [reloadRenamePlans, runBusy, showToast]);
 
   const confirmRenamePlan = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/confirm`, {method: 'POST', body: {}});
+    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/confirm`, {
+      method: 'POST',
+      body: {},
+      timeoutMs: 15 * 60 * 1000,
+    });
     await reloadRenamePlans();
     showToast('有声书整理完成', 'ok');
     return data.plan;

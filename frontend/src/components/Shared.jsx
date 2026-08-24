@@ -2082,14 +2082,29 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
   const [configuration, setConfiguration] = useState(selected?.configuration || {});
   const [specialActions, setSpecialActions] = useState({});
   const [itemActions, setItemActions] = useState({});
+  const [operation, setOperation] = useState('');
+  const [operationError, setOperationError] = useState('');
+  const operationRef = useRef(false);
   useEffect(() => {
     setConfiguration(selected?.configuration || {});
     setSpecialActions(Object.fromEntries((selected?.items || []).filter((item) => item.kind === 'special').map((item) => [item.relative_source || item.source_name, item.action === 'undecided' ? (item.special_type === 'content' ? 'organize' : 'keep') : item.action])));
     setItemActions({});
+    setOperationError('');
   }, [selected?.id]);
-  const run = async (fn) => {
-    await fn();
-    onClose();
+  const run = async (name, fn) => {
+    if (operationRef.current) return;
+    operationRef.current = true;
+    setOperation(name);
+    setOperationError('');
+    try {
+      await fn();
+      onClose();
+    } catch (error) {
+      setOperationError(error?.message || '操作失败，请刷新计划后重试');
+    } finally {
+      operationRef.current = false;
+      setOperation('');
+    }
   };
   if (!selected) return <><div className="modal-title"><Icon id="i-edit" />有声书整理计划</div><div className="empty small">暂无计划</div></>;
   const summary = selected.summary || {};
@@ -2116,12 +2131,14 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
         return <div className="field-row" key={key}><label className="field-label">{item.source_name}</label><select className="field-select" value={itemActions[key] || 'keep'} onChange={(event) => setItemActions((prev) => ({...prev, [key]: event.target.value}))}><option value="keep">保持原名不动</option><option value="accept">接受计划建议</option></select></div>;
       })}
       <details><summary>查看映射样例</summary><pre className="code log-code">{(selected.items || []).slice(0, 20).map((item) => `${item.source_name} -> ${item.target_name}`).join('\n') || '无变更'}</pre></details>
+      {operation === 'confirm' && <div className="cookie-desc" role="status">正在校验并执行 {summary.planned || 0} 个文件...</div>}
+      {!!operationError && <div className="login-error" role="alert">{operationError}</div>}
       <div className="modal-actions">
-        <button className="btn btn-ghost btn-sm" onClick={onClose}>关闭</button>
-        {!['completed', 'cancelled', 'no_changes'].includes(selected.status) && <button className="btn btn-danger btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(() => actions.cancelRenamePlan(selected.id))}><Icon id="i-close" className="icon icon-sm" />取消计划</button>}
-        {selected.status === 'needs_review' && <button className="btn btn-ghost btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(() => actions.resolveRenamePlanSafe(selected.id))}>风险项保持不动</button>}
-        {selected.status === 'needs_review' && <button className="btn btn-primary btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(() => actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}))}><Icon id="i-check" className="icon icon-sm" />保存复核</button>}
-        {selected.status === 'pending_confirmation' && <button className="btn btn-primary btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(async () => { await actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}); await actions.confirmRenamePlan(selected.id); })}><Icon id="i-bolt" className="icon icon-sm" />确认格式并执行</button>}
+        <button className="btn btn-ghost btn-sm" disabled={!!operation} onClick={onClose}>关闭</button>
+        {!['completed', 'cancelled', 'no_changes'].includes(selected.status) && <button className="btn btn-danger btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('cancel', () => actions.cancelRenamePlan(selected.id))}><Icon id="i-close" className="icon icon-sm" />取消计划</button>}
+        {selected.status === 'needs_review' && <button className="btn btn-ghost btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('resolve', () => actions.resolveRenamePlanSafe(selected.id))}>风险项保持不动</button>}
+        {selected.status === 'needs_review' && <button className="btn btn-primary btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('review', () => actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}))}><BusyIcon busy={operation === 'review'} icon="i-check" />{operation === 'review' ? '正在保存' : '保存复核'}</button>}
+        {selected.status === 'pending_confirmation' && <button className="btn btn-primary btn-sm" disabled={!!operation || busy['renamePlan:' + selected.id]} onClick={() => run('confirm', async () => { await actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}); await actions.confirmRenamePlan(selected.id); })}><BusyIcon busy={operation === 'confirm'} icon="i-bolt" />{operation === 'confirm' ? '正在执行' : '确认格式并执行'}</button>}
       </div>
     </>
   );
