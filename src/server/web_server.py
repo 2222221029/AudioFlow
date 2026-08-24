@@ -391,8 +391,25 @@ agent_manager = AgentManager(
 )
 
 
-def auto_rename_enabled():
-    return str(os.getenv("AUDIOFLOW_AUTO_RENAME", "false")).strip().lower() in {"1", "true", "yes", "on"}
+MANUAL_ORGANIZE_MODES = {"off", "review", "auto_safe"}
+MANUAL_DOWNLOAD_SOURCES = {"web", "wecom"}
+
+
+def manual_organize_mode():
+    """Return the UI-managed post-download organization policy.
+
+    AUDIOFLOW_AUTO_RENAME remains a compatibility fallback for existing
+    deployments, but new deployments do not need another Compose variable.
+    """
+    saved = str(cookie_manager.get_cookie("manual_organize_mode") or "").strip()
+    if saved in MANUAL_ORGANIZE_MODES:
+        return saved
+    legacy_enabled = str(os.getenv("AUDIOFLOW_AUTO_RENAME", "false")).strip().lower()
+    return "review" if legacy_enabled in {"1", "true", "yes", "on"} else "off"
+
+
+def manual_download_origin(source):
+    return str(source or "").strip().casefold() in MANUAL_DOWNLOAD_SOURCES
 
 
 def _rename_safe_name(value):
@@ -410,15 +427,23 @@ def _task_album_dir(task):
     return root / _rename_safe_name(album.get("title") or task.get("title") or "未知专辑")
 
 
-def create_rename_plan_for_task(task_id, *, notify=True):
+def create_rename_plan_for_task(task_id, *, notify=True, replace=False):
     task = task_snapshot(task_id)
     if not task:
         raise KeyError("下载任务不存在")
     if task.get("status") != "completed":
         raise ValueError("只有完整下载成功的任务才能生成重命名计划")
-    existing = next((item for item in rename_plan_manager.list() if item.get("task_id") == task_id), None)
+    existing = next((
+        item for item in rename_plan_manager.list()
+        if item.get("task_id") == task_id
+        and item.get("status") not in {"cancelled", "expired", "failed"}
+    ), None)
     if existing:
-        return existing
+        if not replace:
+            return existing
+        if existing.get("status") in {"executing", "completed"}:
+            raise ValueError("该任务已有已执行或正在执行的整理计划")
+        rename_plan_manager.cancel(existing.get("id"))
     album = task.get("album") or {}
     chapters = task.get("success_chapters") or task.get("chapters") or []
     plan = rename_plan_manager.create_plan(
@@ -426,6 +451,7 @@ def create_rename_plan_for_task(task_id, *, notify=True):
         album=album,
         chapters=chapters,
         album_dir=_task_album_dir(task),
+        origin_source=task.get("origin_source") or task.get("source") or "",
     )
     if notify and plan.get("status") in {"pending_confirmation", "needs_review"}:
         summary = plan.get("summary") or {}
@@ -439,14 +465,15 @@ def create_rename_plan_for_task(task_id, *, notify=True):
             f"格式：{plan.get('suggested_format')}",
             f"待重命名：{summary.get('planned', 0)} 个",
             f"需复核问题：{summary.get('issues', 0)} 个",
-            f"未匹配文件（保持不动）：{summary.get('unmatched', 0)} 个",
+            f"特殊文件：{summary.get('special_files', summary.get('unmatched', 0))} 个",
+            f"缺失章节（已预留空号）：{summary.get('missing_chapters', 0)} 个",
         ]
         if samples:
             lines.extend(["示例：", *samples])
         if plan.get("status") == "pending_confirmation":
             lines.append(f"企业微信回复：确认重命名 {plan.get('id')} / 取消重命名 {plan.get('id')}")
         else:
-            lines.append("计划存在歧义，已阻止执行；请先通过 Web API 查看问题并重新分析。")
+            lines.append("计划存在歧义或特殊文件，已阻止执行；可逐项复核，或选择保留风险文件并整理其余文件。")
         base_url = str(os.getenv("PUBLIC_BASE_URL", "")).strip().rstrip("/")
         if base_url:
             lines.append(f"详情：{base_url}/api/rename-plans/{plan.get('id')}")
@@ -467,12 +494,31 @@ def create_rename_plan_for_task(task_id, *, notify=True):
 
 
 def schedule_rename_plan(task_id):
-    if not auto_rename_enabled():
+    mode = manual_organize_mode()
+    task = task_snapshot(task_id)
+    if mode == "off" or not task or not task.get("organize_after_download"):
         return
 
     def worker():
         try:
-            create_rename_plan_for_task(task_id)
+            plan = create_rename_plan_for_task(task_id)
+            if (mode == "auto_safe" and plan.get("status") == "pending_confirmation"
+                    and not plan.get("configuration_confirmation_required")):
+                completed = rename_plan_manager.confirm(plan.get("id"))
+                summary = completed.get("summary") or {}
+                notification_manager.notify(
+                    "rename_confirmation",
+                    f"整理完成：{(completed.get('album') or {}).get('title') or task_id}",
+                    f"已按该专辑确认过的规则自动整理 {summary.get('planned', 0)} 个文件。",
+                    {
+                        "title": (completed.get("album") or {}).get("title") or "",
+                        "plan_id": completed.get("id"),
+                        "plan_status": completed.get("status"),
+                        "planned": summary.get("planned", 0),
+                        "issues": 0,
+                        "task_id": task_id,
+                    },
+                )
         except Exception:
             logging.exception("automatic audiobook rename analysis failed: %s", task_id)
 
@@ -2055,7 +2101,7 @@ except Exception:
     logging.debug("startup prune_tasks failed", exc_info=True)
 
 
-def start_download_task(task_id, album, chapters, options, source="web"):
+def start_download_task(task_id, album, chapters, options, source="web", origin_source=None):
     album = normalize_album(album)
     chapters = list(chapters or [])
     options = dict(options or {})
@@ -2065,6 +2111,9 @@ def start_download_task(task_id, album, chapters, options, source="web"):
     if identity_error:
         raise ValueError(identity_error)
     previous_task = task_snapshot(task_id)
+    origin_source = str(
+        origin_source or previous_task.get("origin_source") or previous_task.get("source") or source or ""
+    ).strip()
     active_chapters = active_task_chapter_tasks(album)
     pending_chapters = [chapter for chapter in chapters if chapter_key(chapter) not in active_chapters]
     if not pending_chapters and active_chapters:
@@ -2110,6 +2159,8 @@ def start_download_task(task_id, album, chapters, options, source="web"):
         chapters=chapters,
         options=options,
         source=source,
+        origin_source=origin_source,
+        organize_after_download=manual_download_origin(origin_source),
         total=len(chapters),
         completed=0,
         percent=0,
@@ -2376,6 +2427,7 @@ def api_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
+        manual_organize_mode=manual_organize_mode(),
         background_events_max_keep=background_events_max_keep(),
         **task_history_settings(),
     )
@@ -2409,6 +2461,11 @@ def api_set_config():
         fmt = str(payload.get("filename_prefix_format") or "0001-").strip()
         allowed = {"0001-", "001-", "01-", "1-", "0001.", "001.", "01.", "1.", "none"}
         cookie_manager.set_cookie("filename_prefix_format", fmt if fmt in allowed else "0001-")
+    if "manual_organize_mode" in payload:
+        mode = str(payload.get("manual_organize_mode") or "off").strip()
+        cookie_manager.set_cookie(
+            "manual_organize_mode", mode if mode in MANUAL_ORGANIZE_MODES else "off"
+        )
     task_setting_limits = {
         "task_history_max_keep": (10, 10000),
         "task_history_max_age_days": (1, 3650),
@@ -2441,6 +2498,7 @@ def api_set_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
+        manual_organize_mode=manual_organize_mode(),
         background_events_max_keep=background_events_max_keep(),
         **task_history_settings(),
     )
@@ -2538,11 +2596,37 @@ def api_rename_plan(plan_id):
 def api_analyze_rename_plan():
     payload = request.get_json(silent=True) or {}
     try:
-        plan = create_rename_plan_for_task(str(payload.get("task_id") or payload.get("taskId") or ""), notify=False)
+        plan = create_rename_plan_for_task(
+            str(payload.get("task_id") or payload.get("taskId") or ""),
+            notify=False,
+            replace=bool(payload.get("replace")),
+        )
         return json_ok(plan=plan)
     except KeyError as exc:
         return json_error(str(exc), 404)
     except (ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/review")
+def api_review_rename_plan(plan_id):
+    try:
+        return json_ok(plan=rename_plan_manager.configure(
+            plan_id, request.get_json(silent=True) or {}
+        ))
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except (TypeError, ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
+@app.post("/api/rename-plans/<plan_id>/resolve-safe")
+def api_resolve_safe_rename_plan(plan_id):
+    try:
+        return json_ok(plan=rename_plan_manager.resolve_safe(plan_id))
+    except KeyError as exc:
+        return json_error(str(exc), 404)
+    except (TypeError, ValueError, OSError) as exc:
         return json_error(str(exc), 400)
 
 
@@ -2629,11 +2713,40 @@ def _agent_create_rename_plan(task_id):
     }
 
 
+def _agent_resolve_rename_plan_safe(plan_id):
+    plan = rename_plan_manager.resolve_safe(str(plan_id or ""))
+    return {
+        "id": plan.get("id"),
+        "status": plan.get("status"),
+        "summary": plan.get("summary") or {},
+        "message": "风险和特殊文件将保持不动；安全章节已进入最终确认。",
+    }
+
+
+def _agent_confirm_rename_plan(plan_id):
+    plan = rename_plan_manager.confirm(str(plan_id or ""))
+    return {
+        "id": plan.get("id"),
+        "status": plan.get("status"),
+        "summary": plan.get("summary") or {},
+        "mapping_file": plan.get("mapping_file"),
+        "message": "AudioFlow 服务端已完成两阶段整理和结果校验。",
+    }
+
+
+def _agent_cancel_rename_plan(plan_id):
+    plan = rename_plan_manager.cancel(str(plan_id or ""))
+    return {"id": plan.get("id"), "status": plan.get("status"), "message": "整理计划已取消。"}
+
+
 agent_manager.set_tools({
     "list_downloads": _agent_list_downloads,
     "list_rename_plans": _agent_list_rename_plans,
     "get_rename_plan": _agent_get_rename_plan,
     "create_rename_plan": _agent_create_rename_plan,
+    "resolve_rename_plan_safe": _agent_resolve_rename_plan_safe,
+    "confirm_rename_plan": _agent_confirm_rename_plan,
+    "cancel_rename_plan": _agent_cancel_rename_plan,
 })
 
 feishu_bridge = FeishuBridge(
@@ -2799,7 +2912,7 @@ def _wecom_help_text():
         "订阅 序号：按网页版接口订阅最近一次搜索结果\n"
         "订阅 序号 杜比 / 无损：为该喜马拉雅专辑单独使用移动端 V4\n"
         "下载 序号：下载最近一次搜索结果全部章节\n"
-        "确认重命名 计划ID / 取消重命名 计划ID：处理下载后的重命名计划\n"
+        "确认整理 计划ID / 安全整理 计划ID / 取消整理 计划ID：处理下载后的整理计划\n"
         "示例：搜索 三体 / 搜索 喜马拉雅 三体"
     )
 
@@ -3071,18 +3184,24 @@ def _wecom_handle_text_command(service_id, user_id, text):
         tasks_now = task_snapshot()
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
         return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
-    rename_match = re.match(r"^(确认重命名|取消重命名)\s+([a-f0-9]{10})$", text, re.I)
+    rename_match = re.match(r"^(确认重命名|确认整理|安全整理|取消重命名|取消整理)\s+([a-f0-9]{10})$", text, re.I)
     if rename_match:
         plan_id = rename_match.group(2).lower()
         try:
-            if rename_match.group(1) == "确认重命名":
+            command = rename_match.group(1)
+            if command in {"确认重命名", "确认整理"}:
                 plan = rename_plan_manager.confirm(plan_id)
                 renamed = sum(1 for item in (plan.get("items") or []) if item.get("status") == "renamed")
-                return f"重命名已完成：{(plan.get('album') or {}).get('title') or plan_id}\n成功：{renamed} 个文件"
+                return f"整理已完成：{(plan.get('album') or {}).get('title') or plan_id}\n成功：{renamed} 个文件"
+            if command == "安全整理":
+                rename_plan_manager.resolve_safe(plan_id)
+                plan = rename_plan_manager.confirm(plan_id)
+                renamed = sum(1 for item in (plan.get("items") or []) if item.get("status") == "renamed")
+                return f"安全整理已完成：风险文件保持不动，整理 {renamed} 个文件"
             rename_plan_manager.cancel(plan_id)
-            return f"重命名计划已取消：{plan_id}"
+            return f"整理计划已取消：{plan_id}"
         except (KeyError, ValueError, OSError) as exc:
-            return f"重命名操作失败：{exc}"
+            return f"整理操作失败：{exc}"
     # 慢指令（搜索/翻页/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
     tpl = notification_manager.get_wecom_templates()
     if re.match(r"^(搜索|search|/search)\s+.+$", text, re.I):
@@ -3858,7 +3977,14 @@ def retry_existing_download_task(task_id, task, source):
         options = {"download_dir": info.get("download_dir"), "quality": info.get("quality"), "voice": info.get("voice_config")}
     if options.get("voice"):
         options["voice"] = resolve_voice_for_album(album, options.get("voice"))
-    retried_task = start_download_task(task_id, album, chapters, options, source=source)
+    retried_task = start_download_task(
+        task_id,
+        album,
+        chapters,
+        options,
+        source=source,
+        origin_source=task.get("origin_source") or task.get("source"),
+    )
     if retried_task.get("id") != task_id:
         return None, "失败章节已在其他下载任务中"
     return retried_task, None
@@ -3899,7 +4025,14 @@ def api_download_resume(task_id):
         options["voice"] = resolve_voice_for_album(album, options.get("voice"))
     set_task(task_id, status="stopped", finished_at=time.time())
     new_task_id = f"resume-{uuid.uuid4().hex[:12]}"
-    new_task = start_download_task(new_task_id, album, chapters, options, source=f"resume:{task_id}")
+    new_task = start_download_task(
+        new_task_id,
+        album,
+        chapters,
+        options,
+        source=f"resume:{task_id}",
+        origin_source=task.get("origin_source") or task.get("source"),
+    )
     return json_ok(task_id=new_task.get("id") or new_task_id, task=new_task, resumed=True, deduplicated=bool(new_task.get("deduplicated")))
 
 

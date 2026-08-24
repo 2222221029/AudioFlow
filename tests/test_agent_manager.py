@@ -174,6 +174,21 @@ class AgentRuntimeTests(unittest.TestCase):
         event = result["message"]["tool_events"][0]
         self.assertTrue(event["result"]["confirmation_required"])
 
+    def test_explicit_confirmation_calls_application_execution_tool(self):
+        calls = []
+
+        def confirm_plan(plan_id):
+            calls.append(plan_id)
+            return {"id": plan_id, "status": "completed"}
+
+        manager = FakeAgentManager(self.root, [
+            {"content": "", "tool_calls": [{"id": "call-1", "name": "confirm_rename_plan", "arguments": {"plan_id": "abc1234567"}}]},
+            {"content": "整理已完成。", "tool_calls": []},
+        ], {"confirm_rename_plan": confirm_plan})
+        result = manager.chat("确认执行计划 abc1234567")
+        self.assertEqual(calls, ["abc1234567"])
+        self.assertEqual(result["message"]["tool_events"][0]["result"]["status"], "completed")
+
     def test_unknown_tool_is_not_executed(self):
         manager = FakeAgentManager(self.root, [
             {"content": "", "tool_calls": [{"id": "call-1", "name": "run_shell", "arguments": {"command": "rm"}}]},

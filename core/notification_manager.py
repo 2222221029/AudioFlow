@@ -597,7 +597,8 @@ class NotificationManager:
         payload = message.get("payload") or {}
         plan_id = str(payload.get("plan_id") or "")
         plan_status = str(payload.get("plan_status") or "pending_confirmation")
-        if message.get("scene") != "rename_confirmation" or not plan_id or plan_status != "pending_confirmation":
+        if (message.get("scene") != "rename_confirmation" or not plan_id
+                or plan_status not in {"pending_confirmation", "needs_review"}):
             return self.send_feishu_text(config, f"{message['title']}\n\n{message['text']}".strip())
         receive_type = str(config.get("receive_id_type") or "open_id")
         receive_id = str(config.get("receive_id") or "")
@@ -607,20 +608,30 @@ class NotificationManager:
             user_id=receive_id if receive_type == "open_id" else "",
             chat_id=receive_id if receive_type == "chat_id" else "",
         )
+        review_mode = plan_status == "needs_review"
         summary = (
             f"**计划 ID：** `{plan_id}`\n"
             f"**待重命名：** {payload.get('planned', 0)} 个\n"
             f"**需要复核：** {payload.get('issues', 0)} 个\n\n"
-            "确认后将由 AudioFlow 服务端执行确定性重命名；Agent 无权直接操作文件。"
+            + (
+                "可选择保留全部风险/特殊文件不动，只整理安全章节；逐项处理请打开 AudioFlow。"
+                if review_mode else
+                "确认后将由 AudioFlow 服务端执行两阶段重命名并校验结果。"
+            )
         )
         common = {"plan_id": plan_id, "nonce": nonce}
+        primary_action = (
+            {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "保留风险项并执行其余"}, "value": {**common, "action": "resolve_safe_rename"}, "confirm": {"title": {"tag": "plain_text", "content": "确认安全整理"}, "text": {"tag": "plain_text", "content": "风险和特殊文件会保持原名，其余安全章节将立即整理。"}}}
+            if review_mode else
+            {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "确认整理"}, "value": {**common, "action": "confirm_rename"}, "confirm": {"title": {"tag": "plain_text", "content": "确认执行"}, "text": {"tag": "plain_text", "content": "将按完整映射执行两阶段文件整理。"}}}
+        )
         card = {
             "config": {"wide_screen_mode": True, "update_multi": True},
-            "header": {"template": "orange", "title": {"tag": "plain_text", "content": message["title"]}},
+            "header": {"template": "red" if review_mode else "orange", "title": {"tag": "plain_text", "content": message["title"]}},
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
                 {"tag": "action", "actions": [
-                    {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "确认重命名"}, "value": {**common, "action": "confirm_rename"}, "confirm": {"title": {"tag": "plain_text", "content": "确认执行"}, "text": {"tag": "plain_text", "content": "将按计划重命名文件，此操作需要你明确确认。"}}},
+                    primary_action,
                     {"tag": "button", "type": "danger", "text": {"tag": "plain_text", "content": "取消计划"}, "value": {**common, "action": "cancel_rename"}},
                 ]},
             ],

@@ -58,6 +58,28 @@ class FeishuBridgeCardTests(unittest.TestCase):
             self.assertEqual(response["toast"]["type"], "success")
             rename_plans.confirm.assert_called_once_with("plan123")
 
+    def test_review_card_keeps_risky_files_then_executes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifications = Mock()
+            notifications.load.return_value = {"services": [{
+                "id": "svc1", "type": "feishu", "enabled": True,
+                "config": {"allowed_users": "ou_user", "allowed_chats": "oc_chat"},
+            }]}
+            rename_plans = Mock()
+            rename_plans.resolve_safe.return_value = {"id": "plan123", "status": "pending_confirmation"}
+            rename_plans.confirm.return_value = {"id": "plan123", "status": "completed"}
+            bridge = FeishuBridge(notifications, Mock(), rename_plans, Path(tmp) / "actions.json")
+            nonce = bridge.actions.create("plan123", "svc1", user_id="ou_user", chat_id="oc_chat")
+            event = {"event": {
+                "operator": {"open_id": "ou_user"},
+                "context": {"open_chat_id": "oc_chat"},
+                "action": {"value": {"action": "resolve_safe_rename", "plan_id": "plan123", "nonce": nonce}},
+            }}
+            response = bridge._on_card_action("svc1", event)
+            self.assertEqual(response["toast"]["type"], "success")
+            rename_plans.resolve_safe.assert_called_once_with("plan123")
+            rename_plans.confirm.assert_called_once_with("plan123")
+
 
 class FeishuNotificationTests(unittest.TestCase):
     def setUp(self):
@@ -111,6 +133,20 @@ class FeishuNotificationTests(unittest.TestCase):
         self.assertEqual(actions[0]["value"]["action"], "confirm_rename")
         self.assertEqual(actions[1]["value"]["action"], "cancel_rename")
         self.assertEqual(actions[0]["value"]["nonce"], actions[1]["value"]["nonce"])
+
+    def test_review_notification_offers_safe_execution_card(self):
+        self.manager.save({"enabled": True, "scenes": {"rename_confirmation": True}, "services": [self._service()]})
+        with patch.object(self.manager, "send_feishu_message", return_value={"provider": "feishu"}) as send:
+            result = self.manager.notify(
+                "rename_confirmation",
+                "需要复核：测试书",
+                "请复核",
+                {"plan_id": "abc1234567", "plan_status": "needs_review", "planned": 3, "issues": 2},
+            )
+        self.assertEqual(result["sent"], 1)
+        card = send.call_args.args[1]
+        actions = card["elements"][1]["actions"]
+        self.assertEqual(actions[0]["value"]["action"], "resolve_safe_rename")
 
     def test_text_message_uses_official_feishu_api(self):
         config = self._service()["config"]

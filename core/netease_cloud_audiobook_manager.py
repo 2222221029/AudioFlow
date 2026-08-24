@@ -25,6 +25,8 @@ class NeteaseCloudAudiobookManager:
     """网易云播客/听书 API 管理器。"""
 
     base_url = "https://music.163.com"
+    program_page_limit = 500
+    max_program_pages = 200
     preset_key = "0CoJUm6Qyw8W8jud"
     iv = "0102030405060708"
     rsa_exponent = "010001"
@@ -140,10 +142,10 @@ class NeteaseCloudAudiobookManager:
         radio_id = str(radio_id or "").strip()
         if not radio_id:
             return None
-        chapters = self.get_chapters(radio_id, page=1, page_size=1)
+        chapters, total = self.get_chapters_page(radio_id, page=1, page_size=1)
         if chapters:
             raw_radio = chapters[0].get("_radio") or {}
-            return self._normalize_radio(raw_radio, fallback_id=radio_id, episode_count=len(chapters))
+            return self._normalize_radio(raw_radio, fallback_id=radio_id, episode_count=total or len(chapters))
         return {
             "id": radio_id,
             "title": f"网易云播客_{radio_id}",
@@ -157,19 +159,84 @@ class NeteaseCloudAudiobookManager:
         }
 
     def get_chapters(self, radio_id: str, page: int = 1, page_size: int = 1000) -> List[Dict]:
+        chapters, _total = self.get_chapters_page(radio_id, page=page, page_size=page_size)
+        return chapters
+
+    def get_chapters_page(self, radio_id: str, page: int = 1, page_size: int = 100) -> tuple[List[Dict], int]:
         self._require_cookie()
         radio_id = str(radio_id or "").strip()
         if not radio_id:
-            return []
+            return [], 0
         print(f"📚 获取网易云听书节目列表: {radio_id}")
         page = max(1, int(page or 1))
-        limit = min(max(page_size, 1), 1000)
+        limit = min(max(int(page_size or 1), 1), self.program_page_limit)
         offset = (page - 1) * limit
         data = self._fetch_program_page(radio_id, offset=offset, limit=limit)
         programs = list(data.get("programs") or [])
         chapters = [self._normalize_program(item, radio_id, offset + idx) for idx, item in enumerate(programs, 1)]
-        print(f"✅ 网易云听书章节加载完成，第 {page} 页 {len(chapters)} 章")
+        total = self._program_total(data, programs)
+        print(f"✅ 网易云听书章节加载完成，第 {page} 页 {len(chapters)} 章，总数 {total or '未知'}")
+        return chapters, total
+
+    def get_all_chapters(self, radio_id: str, page_size: int = 500) -> List[Dict]:
+        """Load every program without treating NetEase's 500-item cap as EOF."""
+        self._require_cookie()
+        radio_id = str(radio_id or "").strip()
+        if not radio_id:
+            return []
+        limit = min(max(int(page_size or self.program_page_limit), 1), self.program_page_limit)
+        chapters = []
+        seen_ids = set()
+        offset = 0
+        total = 0
+
+        print(f"📚 获取网易云听书完整节目列表: {radio_id}")
+        for page in range(1, self.max_program_pages + 1):
+            data = self._fetch_program_page(radio_id, offset=offset, limit=limit)
+            programs = [item for item in (data.get("programs") or []) if isinstance(item, dict)]
+            if not programs:
+                break
+            total = max(total, self._program_total(data, programs))
+            added = 0
+            for index, item in enumerate(programs, start=1):
+                chapter = self._normalize_program(item, radio_id, offset + index)
+                identity = str(chapter.get("id") or chapter.get("netease_program_id") or "")
+                if identity and identity in seen_ids:
+                    continue
+                if identity:
+                    seen_ids.add(identity)
+                chapters.append(chapter)
+                added += 1
+            if page == 1 or page % 10 == 0:
+                print(f"📚 网易云听书目录扫描进度: 第 {page} 页，已加载 {len(chapters)}/{total or '?'} 章")
+            if not added:
+                print("⚠️ 网易云听书返回了重复分页，停止目录扫描以避免无限循环")
+                break
+            offset += len(programs)
+            more = data.get("more") if "more" in data else None
+            if total and len(chapters) >= total:
+                break
+            if more is False:
+                break
+            if len(programs) < limit and more is not True:
+                break
+        print(f"✅ 网易云听书完整目录加载完成: {len(chapters)} 章")
         return chapters
+
+    @staticmethod
+    def _program_total(data: Dict, programs: List[Dict]) -> int:
+        candidates = [data.get("count"), data.get("total"), data.get("programCount")]
+        if programs:
+            radio = programs[0].get("radio") if isinstance(programs[0].get("radio"), dict) else {}
+            candidates.extend((radio.get("programCount"), radio.get("programsCount")))
+        for value in candidates:
+            try:
+                number = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                return number
+        return 0
 
     def _fetch_program_page(self, radio_id: str, offset: int = 0, limit: int = 1000) -> Dict:
         return self._post_weapi("/weapi/dj/program/byradio", {

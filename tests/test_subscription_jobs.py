@@ -87,6 +87,55 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertEqual(task["id"], "active-same")
         self.assertTrue(task["deduplicated"])
 
+    def test_download_origin_marks_only_manual_tasks_for_organization(self):
+        album = {"id": "album-1", "title": "Example", "platform": "测试"}
+        chapter = {"id": "track-1", "title": "第1集 One"}
+        with (
+            mock.patch.object(web_server, "save_tasks"),
+            mock.patch.object(web_server, "_write_album_source_file"),
+            mock.patch.object(web_server.threading, "Thread"),
+        ):
+            manual = web_server.start_download_task("manual-task", album, [chapter], {}, source="web")
+            subscription = web_server.start_download_task(
+                "subscription-task", {**album, "id": "album-2"}, [chapter], {}, source="auto-subscription"
+            )
+
+        self.assertEqual(manual["origin_source"], "web")
+        self.assertTrue(manual["organize_after_download"])
+        self.assertEqual(subscription["origin_source"], "auto-subscription")
+        self.assertFalse(subscription["organize_after_download"])
+
+    def test_retry_preserves_original_manual_or_subscription_source(self):
+        album = {"id": "album-1", "title": "Example", "platform": "测试"}
+        chapter = {"id": "track-1", "title": "第1集 One"}
+        for origin, expected in (("web", True), ("auto-subscription", False)):
+            task = {
+                "id": "retry-task", "status": "partial", "album": album,
+                "chapters": [chapter], "options": {}, "origin_source": origin,
+            }
+            with mock.patch.object(web_server, "start_download_task", return_value={"id": "retry-task"}) as start:
+                retried, error = web_server.retry_existing_download_task(
+                    "retry-task", task, source="retry:retry-task"
+                )
+            self.assertIsNone(error)
+            self.assertEqual(start.call_args.kwargs["origin_source"], origin)
+            self.assertEqual(web_server.manual_download_origin(origin), expected)
+
+    def test_automatic_plan_scheduler_skips_subscription_tasks(self):
+        with web_server.task_lock:
+            web_server.tasks.update({
+                "manual": {"id": "manual", "organize_after_download": True},
+                "subscription": {"id": "subscription", "organize_after_download": False},
+            })
+        with (
+            mock.patch.object(web_server, "manual_organize_mode", return_value="review"),
+            mock.patch.object(web_server.threading, "Thread") as thread,
+        ):
+            web_server.schedule_rename_plan("subscription")
+            thread.assert_not_called()
+            web_server.schedule_rename_plan("manual")
+            thread.assert_called_once()
+
     def test_retry_failed_reuses_original_task(self):
         task_id = "failed-task"
         album = {"id": "album-1", "title": "Example", "platform": "Ximalaya"}
@@ -344,6 +393,35 @@ class SubscriptionJobsTest(unittest.TestCase):
         thread.assert_called_once()
         thread.return_value.start.assert_called_once()
 
+    def test_netease_whole_album_download_uses_complete_directory(self):
+        album = {"id": "radio-1", "title": "Long Book", "platform": "网易云听书", "episodes": 1200}
+        chapters = [{"id": str(index), "title": f"Chapter {index}"} for index in range(1, 1201)]
+        with (
+            web_server.app.test_request_context(
+                "/api/downloads",
+                method="POST",
+                json={"album": album, "all_chapters": True, "options": {}},
+            ),
+            mock.patch.object(web_server, "save_tasks"),
+            mock.patch.object(web_server, "load_all_album_chapters", return_value=chapters) as load_all,
+            mock.patch.object(
+                web_server,
+                "start_download_task",
+                side_effect=lambda task_id, *_args, **_kwargs: {"id": task_id},
+            ) as start_download,
+            mock.patch.object(web_server.threading, "Thread") as thread,
+        ):
+            response = web_server.api_download()
+            thread.call_args.kwargs["target"]()
+
+        payload = response.get_json()
+        self.assertTrue(payload["preparing"])
+        load_all.assert_called_once()
+        self.assertEqual(load_all.call_args.args[0]["id"], "radio-1")
+        self.assertEqual(load_all.call_args.args[0]["platform"], "网易云听书")
+        self.assertIsNone(load_all.call_args.args[1])
+        self.assertEqual(len(start_download.call_args.args[2]), 1200)
+
     def test_subscription_job_dedupes_same_album_regardless_of_mode(self):
         with mock.patch.object(web_server.threading, "Thread") as thread:
             first = web_server.start_subscription_job("Ximalaya:album-1", queue_missing=False)
@@ -417,6 +495,30 @@ class SubscriptionJobsTest(unittest.TestCase):
         self.assertTrue(result["queued"])
         options = start_download.call_args.args[3]
         self.assertEqual(options["quality"], "杜比全景声优先（自动降级）")
+
+    def test_netease_subscription_queues_every_missing_chapter(self):
+        sid = "网易云听书:radio-1"
+        album = {"id": "radio-1", "title": "Long Book", "platform": "网易云听书"}
+        chapters = [{"id": str(index), "title": f"Chapter {index}"} for index in range(1, 1201)]
+        item = {"id": sid, "album": album, "platform": "网易云听书", "chapters": []}
+        diff = {"missing": chapters, "restricted_count": 0, "deferred_failed_count": 0}
+        with (
+            mock.patch.object(web_server.subscription_manager, "get", return_value=item),
+            mock.patch.object(web_server.search_manager, "get_album_chapters", return_value=chapters),
+            mock.patch.object(web_server.subscription_manager, "diff_chapters", return_value=diff),
+            mock.patch.object(web_server.subscription_manager, "update_check_result"),
+            mock.patch.object(web_server.subscription_manager, "stats_for", return_value={}),
+            mock.patch.object(web_server, "active_task_chapter_keys", return_value=set()),
+            mock.patch.object(web_server, "get_album_voices", return_value=[]),
+            mock.patch.object(web_server, "start_download_task") as start_download,
+            mock.patch.object(web_server.notification_manager, "notify"),
+        ):
+            result = web_server._run_subscription_check(sid, queue_missing=True)
+
+        self.assertEqual(result["chapter_count"], 1200)
+        self.assertEqual(result["queued_chapter_count"], 1200)
+        self.assertEqual(len(start_download.call_args.args[2]), 1200)
+        self.assertEqual(start_download.call_args.kwargs["source"], "subscription-check")
 
     def test_new_ximalaya_subscription_defaults_to_web_without_resetting_existing_override(self):
         album = {"id": "album-quality", "title": "Example", "platform": "喜马拉雅"}

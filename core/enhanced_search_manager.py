@@ -9,6 +9,9 @@
 import sys
 import threading
 import time
+import re
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,6 +43,15 @@ class EnhancedSearchManager:
     )
     SEARCH_CACHE_TTL = 120
     SEARCH_CACHE_MAX_ITEMS = 64
+    # These APIs accept a larger page size, so broader coverage still costs one
+    # network round trip per platform. Multi-page-only providers stay on page 1.
+    SEARCH_RESULT_LIMITS = {
+        '喜马拉雅': 60,
+        '懒人听书': 50,
+        '酷我听书': 60,
+        '起点听书': 50,
+        '网易云听书': 60,
+    }
     
     def __init__(self, cookie_manager=None):
         """初始化搜索管理器"""
@@ -358,6 +370,43 @@ class EnhancedSearchManager:
                 normalized.append(converters[platform](book, platform))
         return normalized
 
+    @staticmethod
+    def _normalize_search_title(value: Any) -> str:
+        text = unicodedata.normalize('NFKC', str(value or '')).casefold()
+        return re.sub(r'[\W_]+', '', text, flags=re.UNICODE)
+
+    @classmethod
+    def _rank_search_results(cls, keyword: str, books: List[Dict]) -> List[Dict]:
+        """Put exact names first, then prefixes/contains and fuzzy matches.
+
+        The original result order is the final tie-breaker so provider ordering
+        remains stable. This runs only on the small in-memory result collection.
+        """
+        query = cls._normalize_search_title(keyword)
+        if not query or len(books or []) < 2:
+            return list(books or [])
+
+        def sort_key(index_and_book):
+            index, book = index_and_book
+            title = cls._normalize_search_title((book or {}).get('title'))
+            if not title:
+                return 5, 0.0, index
+            if title == query:
+                tier = 0
+            elif title.startswith(query):
+                tier = 1
+            elif query in title:
+                tier = 2
+            elif title in query:
+                tier = 3
+            else:
+                tier = 4
+            similarity = SequenceMatcher(None, query, title).ratio()
+            return tier, -similarity, index
+
+        ranked = sorted(enumerate(books or []), key=sort_key)
+        return [book for _index, book in ranked]
+
     def _search_platform(self, keyword: str, platform: str) -> List[Dict]:
         started = time.monotonic()
         with log_context(platform=platform, operation="搜索", query=keyword):
@@ -371,12 +420,14 @@ class EnhancedSearchManager:
             return results
 
     def _search_platform_impl(self, keyword: str, platform: str) -> List[Dict]:
-        """Run one interactive first-page search without synchronous detail enrichment."""
+        """Run one interactive search request without synchronous detail enrichment."""
         try:
             if platform == '喜马拉雅':
-                books = self.ximalaya_manager.search_albums(keyword, page=1, page_size=20, max_pages=1)
+                books = self.ximalaya_manager.search_albums(
+                    keyword, page=1, page_size=self.SEARCH_RESULT_LIMITS[platform], max_pages=1
+                )
             elif platform == '懒人听书':
-                books = self.lrts_manager.search_books(keyword, limit=20)
+                books = self.lrts_manager.search_books(keyword, limit=self.SEARCH_RESULT_LIMITS[platform])
             elif platform == '番茄畅听':
                 books = self.fanqie_manager.search_books(keyword, max_pages=1)
             elif platform == '番茄听书':
@@ -384,13 +435,15 @@ class EnhancedSearchManager:
             elif platform == '七猫听书':
                 books = self.qimao_manager.search_books(keyword, max_pages=1)
             elif platform == '酷我听书':
-                books = self.kuwo_manager.search_books(keyword, limit=20)
+                books = self.kuwo_manager.search_books(keyword, limit=self.SEARCH_RESULT_LIMITS[platform])
             elif platform == '起点听书':
-                books = self.search_manager.search_qidian(keyword, page_size=20, enrich_details=False)
+                books = self.search_manager.search_qidian(
+                    keyword, page_size=self.SEARCH_RESULT_LIMITS[platform], enrich_details=False
+                )
             elif platform == '蜻蜓FM':
                 books = self.qtfm_manager.search_books(keyword, max_pages=1)
             elif platform == '网易云听书':
-                books = self.netease_manager.search_books(keyword, limit=20)
+                books = self.netease_manager.search_books(keyword, limit=self.SEARCH_RESULT_LIMITS[platform])
             elif platform == '荔枝FM':
                 books = self.lizhi_manager.search_books(keyword, limit=20)
             elif platform == '云听FM':
@@ -475,7 +528,8 @@ class EnhancedSearchManager:
             return self.search_by_id(keyword_stripped, platform)
 
         if platform != 'all':
-            return self._search_platform_cached(keyword_stripped, platform)
+            results = self._search_platform_cached(keyword_stripped, platform)
+            return self._rank_search_results(keyword_stripped, results)
 
         # 云听关键词能力不稳定，聚合搜索不调它；单独选择云听时仍保留链接/ID能力。
         grouped = {}
@@ -491,7 +545,8 @@ class EnhancedSearchManager:
                 except Exception as exc:
                     print(f"❌ {item} 聚合搜索失败: {exc}")
                     grouped[item] = []
-        return [book for item in self.KEYWORD_SEARCH_PLATFORMS for book in grouped.get(item, [])]
+        results = [book for item in self.KEYWORD_SEARCH_PLATFORMS for book in grouped.get(item, [])]
+        return self._rank_search_results(keyword_stripped, results)
     
     def search_by_id(self, book_id: str, platform: str = 'all') -> List[Dict]:
         """通过ID搜索书籍（支持喜马拉雅、懒人听书、番茄畅听）"""
@@ -921,7 +976,10 @@ class EnhancedSearchManager:
         elif platform in ['酷我听书', 'kuwo']:
             chapters = self.kuwo_manager.get_chapters(album_id, page=page, page_size=page_size)
         elif platform in ['网易云听书', 'netease']:
-            chapters = self.netease_manager.get_chapters(album_id, page=page, page_size=page_size)
+            chapters, exact_total = self.netease_manager.get_chapters_page(
+                album_id, page=page, page_size=page_size
+            )
+            return list(chapters or [])[:page_size], max(0, int(exact_total or 0))
         elif platform in ['荔枝FM', 'lizhi']:
             chapters = self.lizhi_manager.get_chapters(album_id, page=page, page_size=page_size, max_pages=1)
         else:
@@ -1095,20 +1153,9 @@ class EnhancedSearchManager:
                 # 酷我听书获取全部章节
                 chapters = self.kuwo_manager.get_chapters(album_id, page=1, page_size=10000)
             elif platform in ['网易云听书', 'netease']:
-                page = 1
-                page_size = 1000
-                while True:
-                    page_chapters = self.netease_manager.get_chapters(album_id, page=page, page_size=page_size)
-                    if not page_chapters:
-                        break
-                    chapters.extend(page_chapters)
-                    if len(page_chapters) < page_size:
-                        break
-                    page += 1
-                    if page > 100:
-                        break
+                chapters = self.netease_manager.get_all_chapters(album_id)
             elif platform in ['荔枝FM', 'lizhi']:
-                chapters = self.lizhi_manager.get_chapters(album_id, page=1, page_size=500, max_pages=20)
+                chapters = self.lizhi_manager.get_chapters(album_id, page=1, page_size=500)
             else:
                 return []
             

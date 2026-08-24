@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""AudioFlow Agent runtime.
+"""AudioFlow application Agent runtime.
 
-The model never receives filesystem or shell access. Every side effect is
-implemented by an application-owned tool, so existing download and rename
-invariants remain authoritative.
+File organization side effects stay behind application-owned tools so the
+download source filter, review decisions and two-stage execution remain
+authoritative even when a separate developer Agent has broader permissions.
 """
 
 import base64
@@ -38,12 +38,14 @@ PROVIDERS = {
     "custom": {"name": "自定义 OpenAI 兼容", "kind": "openai", "base_url": "", "model": ""},
 }
 
-SYSTEM_PROMPT = """你是 AudioFlow 的有声书管理助手。你可以帮助用户查看下载任务、检查和生成重命名计划。
+SYSTEM_PROMPT = """你是 AudioFlow 的有声书管理助手。你可以帮助用户查看下载任务、检查、复核并执行有声书整理计划。
 安全规则：
 1. 你不能直接访问文件系统、执行命令、删除或重命名文件。
 2. 重命名必须先调用工具生成确定性的完整计划，再由用户通过 AudioFlow 明确确认。
-3. 不得声称已经执行尚未确认的重命名；遇到歧义时要求用户复核。
-4. 回答简洁，清楚说明实际查询或工具执行结果。
+3. 用户明确说“确认/执行计划”并给出计划 ID 时，可以调用 confirm_rename_plan；不要再声称没有执行工具。
+4. needs_review 计划不能直接执行。用户同意保留全部风险文件、只整理安全文件时，先调用 resolve_rename_plan_safe，再调用 confirm_rename_plan。
+5. 不得声称已经执行尚未确认的整理；遇到歧义时要求用户复核。
+6. 回答简洁，清楚说明实际查询或工具执行结果。
 """
 
 TOOL_SCHEMAS = [
@@ -51,6 +53,9 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "list_rename_plans", "description": "列出有声书重命名计划", "parameters": {"type": "object", "properties": {"status": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "get_rename_plan", "description": "读取一个重命名计划的详情", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
     {"type": "function", "function": {"name": "create_rename_plan", "description": "为已完成的下载任务分析文件并生成待确认的重命名计划；不会执行重命名", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}},
+    {"type": "function", "function": {"name": "resolve_rename_plan_safe", "description": "复核计划时保留所有风险/特殊文件不动，只让安全章节进入待确认状态；仍不会执行", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
+    {"type": "function", "function": {"name": "confirm_rename_plan", "description": "在用户明确确认后执行一个 pending_confirmation 整理计划", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
+    {"type": "function", "function": {"name": "cancel_rename_plan", "description": "取消一个尚未执行的整理计划", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
 ]
 
 

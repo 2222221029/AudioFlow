@@ -148,9 +148,14 @@ class KuwoManager:
                 
                 # 转换为统一格式
                 books = []
-                for album in albums[:result_limit]:
+                seen_album_ids = set()
+                for album in albums:
+                    album_id = str(album.get('albumid', ''))
+                    if not album_id or album_id in seen_album_ids:
+                        continue
+                    seen_album_ids.add(album_id)
                     books.append({
-                        'id': str(album.get('albumid', '')),
+                        'id': album_id,
                         'title': album.get('name', ''),
                         'author': album.get('artist', ''),
                         'platform': '酷我听书',
@@ -166,6 +171,8 @@ class KuwoManager:
                         # 酷我特有字段
                         'kuwo_albumid': album.get('albumid', ''),
                     })
+                    if len(books) >= result_limit:
+                        break
                 
                 print(f"✅ 酷我听书搜索完成，找到 {len(books)} 本书")
                 return books

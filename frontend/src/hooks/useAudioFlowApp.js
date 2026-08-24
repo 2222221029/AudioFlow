@@ -182,6 +182,7 @@ export function useAudioFlowApp() {
   const [agentStatus, setAgentStatus] = useState({config: {enabled: false, provider: 'deepseek', runner: 'native', providers: {}, developer_agent: {}}, harness: {}, developer: {}, tools: []});
   const [agentSessions, setAgentSessions] = useState([]);
   const [agentSession, setAgentSession] = useState(null);
+  const [renamePlans, setRenamePlans] = useState([]);
   const [cookies, setCookies] = useState({});
   const [config, setConfig] = useState({});
   const [logs, setLogs] = useState([]);
@@ -970,6 +971,7 @@ export function useAudioFlowApp() {
     splitChaptersEnabled,
     chaptersPerFolder,
     filenamePrefixFormat,
+    manualOrganizeMode,
     taskHistoryMaxKeep,
     taskHistoryMaxAgeDays,
     taskDetailRetentionDays,
@@ -988,6 +990,7 @@ export function useAudioFlowApp() {
           split_chapters_enabled: splitChaptersEnabled,
           chapters_per_folder: chaptersPerFolder,
           filename_prefix_format: filenamePrefixFormat,
+          manual_organize_mode: manualOrganizeMode,
           task_history_max_keep: taskHistoryMaxKeep,
           task_history_max_age_days: taskHistoryMaxAgeDays,
           task_detail_retention_days: taskDetailRetentionDays,
@@ -1039,14 +1042,50 @@ export function useAudioFlowApp() {
   }, []);
 
   const loadAgent = useCallback(async () => {
-    const [statusData, sessionsData] = await Promise.all([
+    const [statusData, sessionsData, plansData] = await Promise.all([
       api('/api/agent/status'),
       api('/api/agent/sessions'),
+      api('/api/rename-plans'),
     ]);
     setAgentStatus(statusData || {});
     setAgentSessions(sessionsData.sessions || []);
+    setRenamePlans(plansData.plans || []);
     return statusData;
   }, []);
+
+  const reloadRenamePlans = useCallback(async () => {
+    const data = await api('/api/rename-plans');
+    setRenamePlans(data.plans || []);
+    return data.plans || [];
+  }, []);
+
+  const reviewRenamePlan = useCallback(async (planId, choices) => runBusy('renamePlan:' + planId, async () => {
+    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/review`, {method: 'POST', body: choices});
+    await reloadRenamePlans();
+    showToast(data.plan?.status === 'pending_confirmation' ? '复核完成，等待最终确认' : '复核选择已保存', 'ok');
+    return data.plan;
+  }), [reloadRenamePlans, runBusy, showToast]);
+
+  const resolveRenamePlanSafe = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
+    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/resolve-safe`, {method: 'POST', body: {}});
+    await reloadRenamePlans();
+    showToast('风险和特殊文件将保持不动', 'ok');
+    return data.plan;
+  }), [reloadRenamePlans, runBusy, showToast]);
+
+  const confirmRenamePlan = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
+    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/confirm`, {method: 'POST', body: {}});
+    await reloadRenamePlans();
+    showToast('有声书整理完成', 'ok');
+    return data.plan;
+  }), [reloadRenamePlans, runBusy, showToast]);
+
+  const cancelRenamePlan = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
+    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/cancel`, {method: 'POST', body: {}});
+    await reloadRenamePlans();
+    showToast('整理计划已取消', 'ok');
+    return data.plan;
+  }), [reloadRenamePlans, runBusy, showToast]);
 
   const loadAgentSession = useCallback(async (sessionId) => {
     if (!sessionId) {
@@ -1330,6 +1369,7 @@ export function useAudioFlowApp() {
     agentStatus,
     agentSessions,
     agentSession,
+    renamePlans,
     cookies,
     config,
     logs,
@@ -1421,6 +1461,11 @@ export function useAudioFlowApp() {
       loadNotifications,
       loadAgent,
       loadAgentSession,
+      reloadRenamePlans,
+      reviewRenamePlan,
+      resolveRenamePlanSafe,
+      confirmRenamePlan,
+      cancelRenamePlan,
       saveAgentConfig,
       startDeveloperAgent,
       stopDeveloperAgent,

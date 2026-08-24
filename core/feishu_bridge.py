@@ -240,10 +240,14 @@ class FeishuBridge:
             self.actions.consume(value.get("nonce"), service_id, plan_id, user_id, chat_id)
             if action == "confirm_rename":
                 plan = self.rename_plans.confirm(plan_id)
-                content = f"已确认并执行重命名计划 {plan_id}。"
+                content = f"已确认并执行整理计划 {plan_id}。"
+            elif action == "resolve_safe_rename":
+                plan = self.rename_plans.resolve_safe(plan_id)
+                plan = self.rename_plans.confirm(plan_id)
+                content = f"已保留全部风险/特殊文件，并执行其余安全整理：{plan_id}。"
             elif action == "cancel_rename":
                 plan = self.rename_plans.cancel(plan_id)
-                content = f"已取消重命名计划 {plan_id}。"
+                content = f"已取消整理计划 {plan_id}。"
             else:
                 raise ValueError("不支持的卡片操作")
             logging.info("Feishu rename action completed: plan=%s status=%s", plan_id, plan.get("status"))

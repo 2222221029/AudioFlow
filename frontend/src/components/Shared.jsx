@@ -2060,10 +2060,75 @@ const AGENT_TOOL_LABELS = {
   list_rename_plans: '读取重命名计划',
   get_rename_plan: '查看计划详情',
   create_rename_plan: '生成待确认计划',
+  resolve_rename_plan_safe: '保留风险文件',
+  confirm_rename_plan: '确认并执行整理',
+  cancel_rename_plan: '取消整理计划',
 };
 
+const RENAME_STATUS_TEXT = {
+  needs_review: '需要复核',
+  pending_confirmation: '等待确认',
+  completed: '已完成',
+  no_changes: '无需整理',
+  cancelled: '已取消',
+  failed: '执行失败',
+  expired: '已过期',
+};
+
+function RenamePlansModal({plans, actions, busy, onClose}) {
+  const visiblePlans = (plans || []).slice(0, 30);
+  const [selectedId, setSelectedId] = useState(visiblePlans[0]?.id || '');
+  const selected = visiblePlans.find((item) => item.id === selectedId) || visiblePlans[0];
+  const [configuration, setConfiguration] = useState(selected?.configuration || {});
+  const [specialActions, setSpecialActions] = useState({});
+  const [itemActions, setItemActions] = useState({});
+  useEffect(() => {
+    setConfiguration(selected?.configuration || {});
+    setSpecialActions(Object.fromEntries((selected?.items || []).filter((item) => item.kind === 'special').map((item) => [item.relative_source || item.source_name, item.action === 'undecided' ? (item.special_type === 'content' ? 'organize' : 'keep') : item.action])));
+    setItemActions({});
+  }, [selected?.id]);
+  const run = async (fn) => {
+    await fn();
+    onClose();
+  };
+  if (!selected) return <><div className="modal-title"><Icon id="i-edit" />有声书整理计划</div><div className="empty small">暂无计划</div></>;
+  const summary = selected.summary || {};
+  const unresolved = (selected.issues || []).filter((issue) => issue.blocking !== false && !issue.resolved);
+  const riskyItems = (selected.items || []).filter((item) => item.kind === 'chapter' && unresolved.some((issue) => (issue.relative_source || issue.file) === (item.relative_source || item.source_name) || issue.file === item.source_name));
+  return (
+    <>
+      <div className="modal-title"><Icon id="i-edit" />有声书整理计划</div>
+      <div className="field-row"><label className="field-label">计划</label><select className="field-select" value={selected.id} onChange={(event) => setSelectedId(event.target.value)}>{visiblePlans.map((plan) => <option value={plan.id} key={plan.id}>{(plan.album || {}).title || plan.id} · {RENAME_STATUS_TEXT[plan.status] || plan.status}</option>)}</select></div>
+      <div className="modal-sub">{selected.id} · 章节 {summary.chapters || 0} · 特殊文件 {summary.special_files || 0} · 缺集空号 {summary.missing_chapters || 0} · 待处理 {summary.planned || 0}</div>
+      {['needs_review', 'pending_confirmation'].includes(selected.status) && <>
+        <div className="field-row"><label className="field-label">书名</label><input className="field-input" value={configuration.album_title || ''} onChange={(event) => setConfiguration((prev) => ({...prev, album_title: event.target.value}))} /></div>
+        <div className="field-row"><label className="field-label">章节单位</label><select className="field-select" value={configuration.chapter_unit || '集'} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_unit: event.target.value}))}><option value="集">集</option><option value="章">章</option></select></div>
+        <div className="field-row"><label className="field-label">补零位数</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="8" value={configuration.prefix_width || 4} onChange={(event) => setConfiguration((prev) => ({...prev, prefix_width: Number(event.target.value) || 4}))} /><span className="field-suffix">序号</span><input className="field-input" type="number" min="1" max="8" value={configuration.chapter_width || 3} onChange={(event) => setConfiguration((prev) => ({...prev, chapter_width: Number(event.target.value) || 3}))} /><span className="field-suffix">集号</span></div></div>
+        {selected.volume_count > 1 && Object.entries(configuration.volumes || {}).map(([index, name]) => <div className="field-row" key={index}><label className="field-label">第 {index} 册书名</label><input className="field-input" value={name} onChange={(event) => setConfiguration((prev) => ({...prev, volumes: {...(prev.volumes || {}), [index]: event.target.value}}))} placeholder="总书名·分册名" /></div>)}
+      </>}
+      {!!unresolved.length && <div className="field-row"><label className="field-label">待确认问题</label><div className="event-list">{unresolved.slice(0, 30).map((issue) => <div className="event-row" key={issue.id}><strong>{issue.file || issue.type}</strong><span>{issue.message}</span></div>)}</div></div>}
+      {(selected.items || []).filter((item) => item.kind === 'special').map((item) => {
+        const key = item.relative_source || item.source_name;
+        return <div className="field-row" key={key}><label className="field-label">{item.source_name}</label><select className="field-select" value={specialActions[key] || 'keep'} onChange={(event) => setSpecialActions((prev) => ({...prev, [key]: event.target.value}))}><option value="organize">保留并按书名整理</option><option value="keep">保持原名不动</option><option value="quarantine">移入可恢复隔离目录</option></select></div>;
+      })}
+      {riskyItems.map((item) => {
+        const key = item.relative_source || item.source_name;
+        return <div className="field-row" key={key}><label className="field-label">{item.source_name}</label><select className="field-select" value={itemActions[key] || 'keep'} onChange={(event) => setItemActions((prev) => ({...prev, [key]: event.target.value}))}><option value="keep">保持原名不动</option><option value="accept">接受计划建议</option></select></div>;
+      })}
+      <details><summary>查看映射样例</summary><pre className="code log-code">{(selected.items || []).slice(0, 20).map((item) => `${item.source_name} -> ${item.target_name}`).join('\n') || '无变更'}</pre></details>
+      <div className="modal-actions">
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>关闭</button>
+        {!['completed', 'cancelled', 'no_changes'].includes(selected.status) && <button className="btn btn-danger btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(() => actions.cancelRenamePlan(selected.id))}><Icon id="i-close" className="icon icon-sm" />取消计划</button>}
+        {selected.status === 'needs_review' && <button className="btn btn-ghost btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(() => actions.resolveRenamePlanSafe(selected.id))}>风险项保持不动</button>}
+        {selected.status === 'needs_review' && <button className="btn btn-primary btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(() => actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}))}><Icon id="i-check" className="icon icon-sm" />保存复核</button>}
+        {selected.status === 'pending_confirmation' && <button className="btn btn-primary btn-sm" disabled={busy['renamePlan:' + selected.id]} onClick={() => run(async () => { await actions.reviewRenamePlan(selected.id, {configuration, special_actions: specialActions, item_actions: itemActions}); await actions.confirmRenamePlan(selected.id); })}><Icon id="i-bolt" className="icon icon-sm" />确认格式并执行</button>}
+      </div>
+    </>
+  );
+}
+
 export function AgentPage({app, mobile = false}) {
-  const {agentStatus, agentSessions, agentSession, busy, actions} = app;
+  const {agentStatus, agentSessions, agentSession, renamePlans, busy, actions, setModal, closeModal} = app;
   const remote = agentStatus.config || {};
   const [draft, setDraft] = useState(remote);
   const [message, setMessage] = useState('');
@@ -2117,6 +2182,7 @@ export function AgentPage({app, mobile = false}) {
         <div className="agent-chat-head">
           <div className="agent-avatar"><AppLogo title="AudioFlow Agent" /></div>
           <div><strong>AudioFlow Agent</strong><span>{remote.enabled && configured ? `${provider.name || providerId} · ${provider.model || '未选择模型'}` : '等待模型配置'}</span></div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setModal({className: 'modal-wide', content: <RenamePlansModal plans={renamePlans} actions={actions} busy={busy} onClose={closeModal} />})}><Icon id="i-edit" className="icon icon-sm" />整理计划{renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length ? ` (${renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length})` : ''}</button>
           <details className="agent-config">
             <summary className="btn btn-ghost btn-sm"><Icon id="i-settings" className="icon icon-sm" />模型设置</summary>
             <div className="agent-config-popover">
@@ -2152,7 +2218,7 @@ export function AgentPage({app, mobile = false}) {
               <div className="agent-welcome-mark"><AppLogo title="AudioFlow Agent" /></div>
               <strong>今天要整理哪本有声书？</strong>
               <div className="agent-prompts">
-                {['查看最近完成的下载', '列出等待确认的重命名计划', '为最近完成的任务生成重命名计划'].map((text) => <button key={text} onClick={() => setMessage(text)}>{text}</button>)}
+                {['查看最近完成的下载', '列出等待确认的整理计划', '为最近完成的手动下载生成整理计划'].map((text) => <button key={text} onClick={() => setMessage(text)}>{text}</button>)}
               </div>
             </div>
           )}
@@ -2185,6 +2251,7 @@ export function SettingsPage({app}) {
   const [splitChaptersEnabled, setSplitChaptersEnabled] = useState(false);
   const [chaptersPerFolder, setChaptersPerFolder] = useState(200);
   const [filenamePrefixFormat, setFilenamePrefixFormat] = useState('0001-');
+  const [manualOrganizeMode, setManualOrganizeMode] = useState('off');
   const [taskHistoryMaxKeep, setTaskHistoryMaxKeep] = useState(100);
   const [taskHistoryMaxAgeDays, setTaskHistoryMaxAgeDays] = useState(30);
   const [taskDetailRetentionDays, setTaskDetailRetentionDays] = useState(7);
@@ -2199,6 +2266,7 @@ export function SettingsPage({app}) {
     setSplitChaptersEnabled(!!config.split_chapters_enabled);
     setChaptersPerFolder(config.chapters_per_folder || 200);
     setFilenamePrefixFormat(config.filename_prefix_format || '0001-');
+    setManualOrganizeMode(config.manual_organize_mode || 'off');
     setTaskHistoryMaxKeep(config.task_history_max_keep || 100);
     setTaskHistoryMaxAgeDays(config.task_history_max_age_days || 30);
     setTaskDetailRetentionDays(config.task_detail_retention_days ?? 7);
@@ -2276,8 +2344,17 @@ export function SettingsPage({app}) {
             <option value="none">不添加序号前缀</option>
           </select>
         </div>
+        <div className="field-row">
+          <label className="field-label">手动下载后整理</label>
+          <select className="field-select" value={manualOrganizeMode} onChange={(e) => setManualOrganizeMode(e.target.value)}>
+            <option value="off">关闭</option>
+            <option value="review">自动生成完整计划并通知确认</option>
+            <option value="auto_safe">已确认过的同一专辑无风险时自动执行</option>
+          </select>
+          <div className="cookie-desc">只处理网页或企业微信手动下载；订阅检查、自动订阅及其重试不会进入整理流程。新专辑始终先确认书名、格式和特殊文件。</div>
+        </div>
         <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
-        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
+        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, manualOrganizeMode, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
       </div>
       <div className="glass glass-pad settings-card">
         <div className="panel-head"><h4>备份与恢复</h4></div>
