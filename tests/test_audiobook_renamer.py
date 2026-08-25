@@ -46,8 +46,8 @@ class AudiobookRenamerTests(unittest.TestCase):
         self.assertEqual(plan["configuration"]["album_title"], "桃花源没事儿")
         self.assertEqual(plan["configuration"]["chapter_unit"], "回")
         self.assertEqual(plan["items"][0]["target_name"], "0001-《桃花源没事儿》第001回 义务救援.m4a")
-        self.assertEqual(plan["items"][1]["target_name"], "0015-《桃花源没事儿》第015回 护法祖师（周末加更）.m4a")
-        self.assertEqual(plan["items"][1]["clean_title"], "护法祖师（周末加更）")
+        self.assertEqual(plan["items"][1]["target_name"], "0015-《桃花源没事儿》第015回 护法祖师.m4a")
+        self.assertEqual(plan["items"][1]["clean_title"], "护法祖师")
 
     def test_plan_requires_special_file_review_and_keeps_it_untouched_by_default(self):
         album_dir = self.tmp_path / "测试书"
@@ -89,6 +89,32 @@ class AudiobookRenamerTests(unittest.TestCase):
         )
         self.assertEqual(plan["status"], "pending_confirmation")
         self.assertEqual(plan["items"][0]["target_name"], "0001-《测试书》第001集 正文.m4a")
+
+    def test_common_ad_variants_are_removed_and_endings_are_preserved(self):
+        album_dir = self.tmp_path / "测试书"
+        names = [
+            "0001-第1集 春风（周末加更）.m4a",
+            "0002-第2集 夏雨 周末特别加更！.m4a",
+            "0003-第3集 秋霜周末加更.m4a",
+            "0004-第4集 冬雪 忘记点赞和评论的补一下嘿嘿！.m4a",
+            "0005-第5集 大结局（求订阅、分享、评论）.m4a",
+            "0006-第6集 求订阅：真正标题.m4a",
+        ]
+        for name in names:
+            _audio(album_dir, name)
+
+        plan = _manager(self.tmp_path).create_plan(
+            task_id="task-ad-variants",
+            album={"title": "测试书"},
+            chapters=[],
+            album_dir=album_dir,
+        )
+
+        self.assertEqual(
+            [item["clean_title"] for item in plan["items"]],
+            ["春风", "夏雨", "秋霜", "冬雪", "大结局", "真正标题"],
+        )
+        self.assertFalse(any("广告" in issue["message"] for issue in plan["issues"]))
 
     def test_ambiguous_ad_text_requires_review(self):
         album_dir = self.tmp_path / "测试书"

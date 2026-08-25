@@ -20,11 +20,33 @@ from pathlib import Path
 from typing import Any
 
 
-RULE_SCHEMA_VERSION = 1
+RULE_SCHEMA_VERSION = 2
 ALLOWED_TEMPLATE_FIELDS = {
     "prefix", "book", "chapter", "unit", "title", "title_sep",
     "quality", "quality_sep", "label", "ext",
 }
+
+MANDATORY_AD_KEYWORDS = [
+    "求赞", "点赞", "求评论", "求订阅", "订阅专辑", "求收藏", "收藏专辑",
+    "求分享", "求转发", "加群", "群号", "qq群", "qq 群", "听友群", "粉丝群",
+    "微信", "公众号", "联系方式", "私信", "客服", "新书", "搜新书", "搜：", "搜:",
+    "上架", "上线", "来咯", "听爆", "打赏", "冠名", "中奖", "抽奖", "直播回听",
+    "播放量", "评论区", "每天更新", "每日更新", "每周更新", "更新时间", "更新通知",
+    "停更", "断更", "暂停更新", "恢复更新", "加更", "补更", "爆更", "平台出品",
+    "求月票", "求推荐", "推荐票", "带货", "购买链接", "限时免费", "福利群",
+    "兄弟们", "宝子们", "老铁们", "家人们", "听友们",
+]
+
+# Ordered from specific long-form noise to shorter suffixes. These patterns are
+# built in so an older custom rule pack cannot accidentally re-introduce known
+# advertising text by replacing the default lists.
+MANDATORY_AD_PATTERNS = [
+    r"(?:忘记|记得|别忘|欢迎|麻烦|帮忙|跪求|请大家)[^，。！!；;]{0,40}(?:点赞|评论|订阅|收藏|分享|转发)[^，。！!；;]{0,30}[~～！!。.]*$",
+    r"(?:每天|每日|每周|周[一二三四五六日天末]|工作日)[^，。！!；;]{0,24}(?:更新|上新)[^，。！!；;]{0,20}$",
+    r"(?:新书|新专辑)[^，。！!；;]{0,60}(?:上线|上架|来袭|来啦|来咯|已发)[^，。！!；;]{0,30}$",
+    r"(?:搜|搜索|关注)[：:]?[^，。！!；;]{0,50}(?:新书|公众号|微信|QQ群|QQ 群|听友群|粉丝群)[^，。！!；;]{0,30}$",
+    r"(?:周末|今日|今天|本周|限时|节日|春节|国庆|中秋|元旦|新年)?(?:特别)?(?:加更|补更|爆更)(?:[^，。；;]{0,20})?[~～！!。.]*$",
+]
 
 DEFAULT_RULE_VALUES: dict[str, Any] = {
     "format": {
@@ -38,17 +60,11 @@ DEFAULT_RULE_VALUES: dict[str, Any] = {
         "smart_title_separator": True,
     },
     "cleanup": {
-        "ad_keywords": [
-            "求赞", "点赞", "求评论", "求订阅", "订阅专辑", "加群", "qq群", "qq 群",
-            "微信", "公众号", "联系方式", "新书", "上架", "打赏", "冠名", "中奖",
-            "直播回听", "播放量", "评论区", "每天更新", "停更", "恢复更新", "更新时间",
-            "更新通知", "加更提示", "下面是加更", "以下为加更", "平台出品", "求月票",
-            "求推荐", "带货", "购买链接", "福利群", "兄弟们", "宝子们",
-        ],
-        "ad_patterns": [],
+        "ad_keywords": MANDATORY_AD_KEYWORDS,
+        "ad_patterns": MANDATORY_AD_PATTERNS,
         "preserve_keywords": ["全书完", "大结局", "全书终", "完结", "全书完结"],
         "title_exceptions": [],
-        "split_ad_after_first_space": False,
+        "split_ad_after_first_space": True,
     },
     "special_files": {
         "content_labels": [
@@ -78,7 +94,7 @@ BUILTIN_RULE_PACK = {
     "description": "安全执行基础与 audiobook-renamer 默认业务规则",
     "scope": "builtin",
     "selector": "",
-    "version": 1,
+    "version": RULE_SCHEMA_VERSION,
     "status": "active",
     "schema_version": RULE_SCHEMA_VERSION,
     "rules": DEFAULT_RULE_VALUES,
@@ -161,10 +177,16 @@ def sanitize_rules(value: dict[str, Any] | None) -> dict[str, Any]:
     fmt["smart_title_separator"] = bool(fmt.get("smart_title_separator", True))
 
     cleanup = merged["cleanup"]
-    for key in ("ad_keywords", "preserve_keywords", "title_exceptions"):
-        cleanup[key] = _text_list(cleanup.get(key))
-    cleanup["ad_patterns"] = [_validate_pattern(item) for item in _text_list(cleanup.get("ad_patterns"), maximum=80)]
-    cleanup["split_ad_after_first_space"] = bool(cleanup.get("split_ad_after_first_space", False))
+    custom_keywords = _text_list(cleanup.get("ad_keywords"))
+    cleanup["ad_keywords"] = list(dict.fromkeys([*MANDATORY_AD_KEYWORDS, *custom_keywords]))
+    cleanup["preserve_keywords"] = _text_list(cleanup.get("preserve_keywords"))
+    cleanup["title_exceptions"] = _text_list(cleanup.get("title_exceptions"))
+    custom_patterns = _text_list(cleanup.get("ad_patterns"), maximum=80)
+    cleanup["ad_patterns"] = [
+        _validate_pattern(item)
+        for item in dict.fromkeys([*MANDATORY_AD_PATTERNS, *custom_patterns])
+    ]
+    cleanup["split_ad_after_first_space"] = bool(cleanup.get("split_ad_after_first_space", True))
 
     special = merged["special_files"]
     special["content_labels"] = _text_list(special.get("content_labels"))
@@ -178,8 +200,9 @@ def sanitize_rules(value: dict[str, Any] | None) -> dict[str, Any]:
             special[key] = default
 
     validation = merged["validation"]
-    for key in ("reserve_missing_prefixes", "special_files_keep_position", "require_confirmation", "scan_residual_ads"):
+    for key in ("reserve_missing_prefixes", "special_files_keep_position", "require_confirmation"):
         validation[key] = bool(validation.get(key, True))
+    validation["scan_residual_ads"] = True
     return merged
 
 
@@ -256,14 +279,26 @@ class RenameRuleStore:
     def effective(self, album: dict[str, Any] | None = None) -> dict[str, Any]:
         album = album or {}
         rules = copy.deepcopy(DEFAULT_RULE_VALUES)
-        applied = [{"id": BUILTIN_RULE_PACK["id"], "version": 1, "scope": "builtin"}]
+        applied = [{
+            "id": BUILTIN_RULE_PACK["id"],
+            "version": BUILTIN_RULE_PACK["version"],
+            "scope": "builtin",
+        }]
         with self._lock:
             packs = list(self._load_unlocked()["packs"].values())
         priority = {"global": 1, "platform": 2, "album": 3}
         active = [item for item in packs if item.get("status") == "active" and self._matches(item, album)]
         active.sort(key=lambda item: (priority.get(item.get("scope"), 99), int(item.get("activated_at") or 0)))
         for pack in active:
-            rules = _deep_merge(rules, pack.get("rules") or {})
+            override = copy.deepcopy(pack.get("rules") or {})
+            # Version 1 drafts copied the old false default even though the UI
+            # did not expose this switch. Let them inherit the stricter v2
+            # default instead of silently retaining the legacy behavior.
+            if int(pack.get("schema_version") or 1) < 2:
+                cleanup_override = override.get("cleanup")
+                if isinstance(cleanup_override, dict) and cleanup_override.get("split_ad_after_first_space") is False:
+                    cleanup_override.pop("split_ad_after_first_space", None)
+            rules = _deep_merge(rules, override)
             applied.append({
                 "id": pack.get("id"), "version": pack.get("version"),
                 "scope": pack.get("scope"), "selector": pack.get("selector") or "",
@@ -341,6 +376,7 @@ class RenameRuleStore:
 
 
 __all__ = [
-    "BUILTIN_RULE_PACK", "DEFAULT_RULE_VALUES", "RenameRuleStore",
+    "BUILTIN_RULE_PACK", "DEFAULT_RULE_VALUES", "MANDATORY_AD_KEYWORDS",
+    "MANDATORY_AD_PATTERNS", "RenameRuleStore",
     "RULE_SCHEMA_VERSION", "merge_rule_values", "sanitize_rule_override", "sanitize_rules",
 ]

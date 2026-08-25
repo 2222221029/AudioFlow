@@ -97,8 +97,32 @@ class RenameRuleStoreTests(unittest.TestCase):
         self.assertEqual(reviewed["items"][0]["target_name"], "0001-《测试书》第001集 正文.mp3")
 
     def test_rule_preview_cleans_ads_without_writing_files(self):
-        results = preview_rule_samples({}, ["0001-第1集 正文（求订阅）.m4a"], "测试书")
+        results = preview_rule_samples(
+            {},
+            [
+                "0001-第1集 正文（求订阅）.m4a",
+                "0002-第2集 正文周末加更.m4a",
+                "0015-第15回 护法祖师（周末加更）.m4a",
+            ],
+            "测试书",
+        )
         self.assertEqual(results[0]["target_name"], "0001-《测试书》第001集 正文.m4a")
+        self.assertEqual(results[1]["target_name"], "0002-《测试书》第002集 正文.m4a")
+        self.assertEqual(results[2]["target_name"], "0003-《测试书》第015回 护法祖师.m4a")
+
+    def test_legacy_rule_pack_cannot_replace_mandatory_ad_library(self):
+        rule = self.rules.save_draft({
+            "name": "旧广告规则",
+            "scope": "global",
+            "rules": {"cleanup": {"ad_keywords": ["自定义口播"]}},
+        })
+        self.rules.activate(rule["id"])
+
+        effective = self.rules.effective({"title": "测试书"})["rules"]["cleanup"]
+
+        self.assertIn("自定义口播", effective["ad_keywords"])
+        self.assertIn("加更", effective["ad_keywords"])
+        self.assertTrue(effective["ad_patterns"])
 
     def test_unsafe_regex_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "高风险"):

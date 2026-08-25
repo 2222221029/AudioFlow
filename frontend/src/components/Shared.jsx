@@ -2097,14 +2097,25 @@ function RenameRulesModal({rulesState, actions, busy, onClose}) {
   const [packs, setPacks] = useState(initialPacks);
   const [selectedId, setSelectedId] = useState(initialPacks.find((item) => item.status === 'draft')?.id || initialPacks.find((item) => item.status === 'active' && !item.readonly)?.id || initialPacks[0]?.id || '');
   const selected = selectedId === '__new__' ? null : (packs.find((item) => item.id === selectedId) || packs[0]);
-  const makeDraft = (pack) => ({
-    ...(pack?.status === 'draft' ? {id: pack.id} : {}),
-    name: pack?.readonly ? '我的全局重命名规则' : (pack?.name || '我的重命名规则'),
-    description: pack?.description || '',
-    scope: pack?.readonly ? 'global' : (pack?.scope || 'global'),
-    selector: pack?.readonly ? '' : (pack?.selector || ''),
-    rules: mergeRuleData(effectiveRules, pack?.rules || {}),
-  });
+  const makeDraft = (pack) => {
+    const rules = mergeRuleData(effectiveRules, pack?.rules || {});
+    const effectiveCleanup = effectiveRules?.cleanup || {};
+    const cleanup = rules.cleanup || {};
+    cleanup.ad_keywords = [...new Set([...(effectiveCleanup.ad_keywords || []), ...(cleanup.ad_keywords || [])])];
+    cleanup.ad_patterns = [...new Set([...(effectiveCleanup.ad_patterns || []), ...(cleanup.ad_patterns || [])])];
+    if (Number(pack?.schema_version || 1) < 2 && cleanup.split_ad_after_first_space === false) {
+      cleanup.split_ad_after_first_space = effectiveCleanup.split_ad_after_first_space !== false;
+    }
+    rules.cleanup = cleanup;
+    return {
+      ...(pack?.status === 'draft' ? {id: pack.id} : {}),
+      name: pack?.readonly ? '我的全局重命名规则' : (pack?.name || '我的重命名规则'),
+      description: pack?.description || '',
+      scope: pack?.readonly ? 'global' : (pack?.scope || 'global'),
+      selector: pack?.readonly ? '' : (pack?.selector || ''),
+      rules,
+    };
+  };
   const [draft, setDraft] = useState(makeDraft(selected));
   const [samples, setSamples] = useState('0001-第1集 正文（求订阅）.m4a\n0002-第2回 义务救援.m4a\n片花---每天更新.mp3');
   const [sampleAlbum, setSampleAlbum] = useState('示例书名');
@@ -2118,6 +2129,7 @@ function RenameRulesModal({rulesState, actions, busy, onClose}) {
   const format = draft.rules?.format || {};
   const cleanup = draft.rules?.cleanup || {};
   const special = draft.rules?.special_files || {};
+  const validation = draft.rules?.validation || {};
   const save = async () => {
     setError('');
     try {
@@ -2174,6 +2186,8 @@ function RenameRulesModal({rulesState, actions, busy, onClose}) {
       <section className="rule-section">
         <h3>标题清理</h3>
         <div className="rule-grid"><label className="field"><span>广告关键词，每行一个</span><textarea rows="7" value={joinRuleLines(cleanup.ad_keywords)} onChange={(event) => updateRule('cleanup', 'ad_keywords', splitRuleLines(event.target.value))} /></label><label className="field"><span>安全正则，按顺序执行</span><textarea rows="7" value={joinRuleLines(cleanup.ad_patterns)} onChange={(event) => updateRule('cleanup', 'ad_patterns', splitRuleLines(event.target.value))} placeholder="每行一个，只填写有明确边界的模式" /></label><label className="field"><span>必须保留的结尾标识</span><textarea rows="4" value={joinRuleLines(cleanup.preserve_keywords)} onChange={(event) => updateRule('cleanup', 'preserve_keywords', splitRuleLines(event.target.value))} /></label><label className="field"><span>多段真实标题例外</span><textarea rows="4" value={joinRuleLines(cleanup.title_exceptions)} onChange={(event) => updateRule('cleanup', 'title_exceptions', splitRuleLines(event.target.value))} /></label></div>
+        <div className="rule-grid"><label className="check-row"><input type="checkbox" checked={cleanup.split_ad_after_first_space !== false} onChange={(event) => updateRule('cleanup', 'split_ad_after_first_space', event.target.checked)} /><span>自动删除空格或标点后的广告尾注</span></label><label className="check-row"><input type="checkbox" checked={validation.scan_residual_ads !== false} disabled /><span>检测到残留广告时阻止执行（强制）</span></label></div>
+        <div className="cookie-desc">内置广告库始终生效；这里添加的关键词和正则用于补充新广告变体。真实多段标题可加入例外列表。</div>
       </section>
       <section className="rule-section">
         <h3>特殊文件</h3>

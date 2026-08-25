@@ -14,7 +14,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
-from core.rename_rules import DEFAULT_RULE_VALUES, RenameRuleStore, sanitize_rules
+from core.rename_rules import (
+    DEFAULT_RULE_VALUES,
+    MANDATORY_AD_KEYWORDS,
+    RenameRuleStore,
+    sanitize_rules,
+)
 
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav", ".ogg", ".caf"}
@@ -29,13 +34,7 @@ _ROMAN_SEQUENCE = tuple("ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ")
 _CN_CAP_SEQUENCE = tuple("壹贰叁肆伍陆柒捌玖拾")
 _ENDING_MARKERS = ("全书完", "大结局", "全书终", "完结", "全书完结")
 _QUALITY_MARKERS = ("[Audio Vivid]", "[杜比全景声]", "[无损]")
-_AD_KEYWORDS = (
-    "求赞", "点赞", "求评论", "求订阅", "订阅专辑", "加群", "qq群", "qq 群",
-    "微信", "公众号", "联系方式", "新书", "上架", "打赏", "冠名", "中奖",
-    "直播回听", "播放量", "评论区", "每天更新", "停更", "恢复更新", "更新时间",
-    "更新通知", "加更提示", "下面是加更", "以下为加更", "平台出品", "求月票",
-    "求推荐", "带货", "购买链接", "福利群", "兄弟们", "宝子们",
-)
+_AD_KEYWORDS = tuple(MANDATORY_AD_KEYWORDS)
 _SPECIAL_CONTENT_LABELS = (
     "片花", "预告", "主题曲", "剧情歌", "歌曲", "番外", "花絮", "楔子", "序章",
     "引子", "后记", "彩蛋", "调整说明", "制作特辑", "试听",
@@ -167,6 +166,10 @@ def _remove_ad_blocks(
     preserve_keywords = tuple(cleanup.get("preserve_keywords") or _ENDING_MARKERS)
     removed = []
 
+    def contains_ad(text: str) -> bool:
+        folded = str(text or "").casefold()
+        return any(keyword.casefold() in folded for keyword in ad_keywords if keyword)
+
     protected = {}
     text = str(value or "")
     for index, marker in enumerate(sorted(preserve_keywords, key=len, reverse=True)):
@@ -177,7 +180,7 @@ def _remove_ad_blocks(
 
     def replace_block(match: re.Match[str]) -> str:
         content = match.group(1).strip()
-        if any(keyword.casefold() in content.casefold() for keyword in ad_keywords):
+        if contains_ad(content):
             removed.append(content)
             return ""
         return match.group(0)
@@ -188,8 +191,19 @@ def _remove_ad_blocks(
             removed.append(match.group(0).strip())
             return ""
         text = re.sub(pattern, replace_pattern, text, flags=re.I)
+
+    # Remove leading operational notices when a clear punctuation boundary
+    # separates them from the actual chapter title, for example
+    # "求订阅：正文". Repeat to handle stacked notices.
+    for _ in range(3):
+        leading = re.match(r"^([^，。！!；;、:：~～|丨]{1,80})[，。！!；;、:：~～|丨]+(.+)$", text)
+        if not leading or not contains_ad(leading.group(1)):
+            break
+        removed.append(leading.group(1).strip())
+        text = leading.group(2).strip()
+
     for keyword in sorted(ad_keywords, key=len, reverse=True):
-        match = re.search(rf"(?:[，。！!；;、~\s-]+){re.escape(keyword)}.*$", text, re.I)
+        match = re.search(rf"(?:[，。！!；;、~～\s\-—|丨]+){re.escape(keyword)}.*$", text, re.I)
         if match:
             removed.append(text[match.start():].strip())
             text = text[:match.start()]
@@ -197,16 +211,16 @@ def _remove_ad_blocks(
     if cleanup.get("split_ad_after_first_space"):
         title = text.strip()
         if title not in set(cleanup.get("title_exceptions") or []):
-            boundary = re.search(r"[ \u3000]", title)
-            if boundary:
-                suffix = title[boundary.start():].strip()
-                if any(keyword.casefold() in suffix.casefold() for keyword in ad_keywords):
+            for boundary in re.finditer(r"[ \u00a0\u3000，。！!；;、~～\-—|丨]+", title):
+                suffix = title[boundary.end():].strip()
+                if suffix and contains_ad(suffix):
                     removed.append(suffix)
                     text = title[:boundary.start()]
+                    break
     text = re.sub(r"[（(]\s*[）)]", "", text).strip(" \t\u3000_-—~")
     for token, marker in protected.items():
         text = text.replace(token, marker)
-    residual = any(keyword.casefold() in text.casefold() for keyword in ad_keywords)
+    residual = contains_ad(text)
     return text, removed, residual
 
 
@@ -1238,7 +1252,10 @@ def preview_rule_samples(
                 "prefix": next_prefix, "chapter": parsed["number"], "clean_title": clean_title,
                 "quality": parsed.get("quality") or "", "extension": extension, "volume_index": 1,
             }
-            target = _format_chapter_name(config, item)
+            sample_config = config
+            if fmt["chapter_unit"] == "auto":
+                sample_config = {**config, "chapter_unit": parsed.get("unit") or "集"}
+            target = _format_chapter_name(sample_config, item)
             issues.extend(blocking)
             issues.extend(notes)
         else:
