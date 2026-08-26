@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import re
+import math
 import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -232,6 +233,60 @@ class EnhancedSearchManager:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _metric_value(value) -> int:
+        """Parse provider counters such as 123456, 1.2万, 3亿 or 25K."""
+        if value in (None, "") or isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+        text = unicodedata.normalize("NFKC", str(value)).strip().replace(",", "")
+        match = re.search(r"(\d+(?:\.\d+)?)", text)
+        if not match:
+            return 0
+        number = float(match.group(1))
+        suffix = text[match.end():].strip().lower()
+        if "亿" in suffix or suffix.startswith("b"):
+            number *= 100_000_000 if "亿" in suffix else 1_000_000_000
+        elif "万" in suffix or suffix.startswith("w"):
+            number *= 10_000
+        elif "千" in suffix or suffix.startswith("k"):
+            number *= 1_000
+        elif suffix.startswith("m"):
+            number *= 1_000_000
+        return max(0, int(number))
+
+    @classmethod
+    def _pick_popularity(cls, book: Dict) -> int:
+        """Pick the strongest play/search heat counter exposed by a provider."""
+        if not isinstance(book, dict):
+            return 0
+        play_keys = (
+            "plays", "play_count", "playCount", "playcount", "PLAYCNT",
+            "play_cnt", "playCnt", "listen_count", "listenCount",
+            "listening_count", "listeningCount", "listener_count", "listenerCount",
+            "view_count", "viewCount",
+        )
+        heat_keys = (
+            "popularity", "heat", "hot", "hot_score", "hotScore",
+            "search_heat", "searchHeat", "subscribe_count", "subscribeCount",
+            "subscriber_count", "subscriberCount", "favorite_count", "favoriteCount",
+        )
+
+        def collect(mapping, keys):
+            values = [cls._metric_value(mapping.get(key)) for key in keys if key in mapping]
+            for nested_key in ("album", "book", "item", "data", "detail", "raw", "raw_data"):
+                nested = mapping.get(nested_key)
+                if isinstance(nested, dict):
+                    values.extend(collect(nested, keys))
+            return values
+
+        play_values = collect(book, play_keys)
+        best_play = max(play_values, default=0)
+        if best_play > 0:
+            return best_play
+        return max(collect(book, heat_keys), default=0)
+
     def _pick_episode_count(self, book: Dict) -> int:
         return self._int_value(self._first_value(
             book,
@@ -257,8 +312,9 @@ class EnhancedSearchManager:
         author = self._pick_author_value(book)
         if author and (not book.get("author") or str(book.get("author")).strip() in ("未知", "未知作者")):
             book["author"] = author
-        if "plays" not in book:
-            book["plays"] = book.get("play_count", 0)
+        popularity = self._pick_popularity(book)
+        if popularity > 0 or "plays" not in book:
+            book["plays"] = popularity
         episodes = self._pick_episode_count(book)
         if episodes > 0:
             book["episodes"] = episodes
@@ -377,32 +433,49 @@ class EnhancedSearchManager:
 
     @classmethod
     def _rank_search_results(cls, keyword: str, books: List[Dict]) -> List[Dict]:
-        """Put exact names first, then prefixes/contains and fuzzy matches.
+        """Rank relevant albums by provider popularity, then title closeness.
 
-        The original result order is the final tie-breaker so provider ordering
-        remains stable. This runs only on the small in-memory result collection.
+        Clearly matching titles always stay ahead of unrelated popular albums.
+        The provider order remains the final tie-breaker when metrics are absent.
         """
         query = cls._normalize_search_title(keyword)
         if not query or len(books or []) < 2:
             return list(books or [])
 
+        popularities = [cls._pick_popularity(book or {}) for book in books or []]
+        max_popularity_log = max((math.log1p(value) for value in popularities), default=0.0)
+
         def sort_key(index_and_book):
             index, book = index_and_book
             title = cls._normalize_search_title((book or {}).get('title'))
             if not title:
-                return 5, 0.0, index
+                return 2, 0.0, index
             if title == query:
-                tier = 0
+                relevance = 1.0
+                group = 0
             elif title.startswith(query):
-                tier = 1
+                relevance = 0.95
+                group = 0
             elif query in title:
-                tier = 2
+                relevance = 0.90
+                group = 0
             elif title in query:
-                tier = 3
+                relevance = 0.85
+                group = 0
             else:
-                tier = 4
+                relevance = SequenceMatcher(None, query, title).ratio()
+                group = 1 if relevance >= 0.5 else 2
             similarity = SequenceMatcher(None, query, title).ratio()
-            return tier, -similarity, index
+            popularity = cls._pick_popularity(book or {})
+            popularity_score = (
+                math.log1p(popularity) / max_popularity_log
+                if popularity > 0 and max_popularity_log > 0
+                else 0.0
+            )
+            # Within genuinely relevant results, popularity is the stronger
+            # signal. Relevance groups prevent a viral unrelated album winning.
+            score = popularity_score * 0.65 + relevance * 0.25 + similarity * 0.10
+            return group, -score, index
 
         ranked = sorted(enumerate(books or []), key=sort_key)
         return [book for _index, book in ranked]

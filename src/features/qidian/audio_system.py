@@ -20,6 +20,72 @@ from core.platform_config import download_dir
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+_COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def normalize_qidian_cookies(cookie_data):
+    """Return safe Qidian cookie pairs from a Cookie string or captured headers."""
+    if isinstance(cookie_data, dict):
+        # Some importers represent a captured request as a header dictionary.
+        for key, value in cookie_data.items():
+            if str(key).strip().lower() == "cookie":
+                return normalize_qidian_cookies(value)
+        candidates = []
+        for key, value in cookie_data.items():
+            # Recover the first cookie from dictionaries produced by the old
+            # semicolon-only parser ("Host: ...\r\nCookie: QDH" => value).
+            embedded = re.search(
+                r"(?im)(?:^|\r?\n)\s*cookie\s*:\s*([!#$%&'*+\-.^_`|~0-9A-Za-z]+)\s*$",
+                str(key),
+            )
+            candidates.append((embedded.group(1) if embedded else key, value))
+    else:
+        text = str(cookie_data or "").strip()
+        if not text:
+            return {}
+
+        # Accept raw request headers and cURL exports. Only the Cookie header is
+        # cookie material; parsing the complete block by semicolon permits CRLF
+        # injection into requests' generated Cookie header.
+        header_matches = re.findall(
+            r"(?im)(?:^|(?:-H|--header)\s*['\"]?)\s*cookie\s*:\s*([^\r\n'\"]+)",
+            text,
+        )
+        if not header_matches:
+            header_matches = re.findall(r"(?im)^\s*cookie\s*:\s*([^\r\n]+)", text)
+        if header_matches:
+            text = header_matches[-1].strip()
+        candidates = []
+        for item in text.split(";"):
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            candidates.append((key.strip(), value.strip()))
+
+    result = {}
+    for key, value in candidates:
+        key = str(key or "").strip()
+        value = str(value or "").strip()
+        if not key or not _COOKIE_NAME_RE.fullmatch(key):
+            continue
+        if "\r" in value or "\n" in value:
+            continue
+        result[key] = value
+    return result
+
+
+def qidian_cookie_header(cookie_data):
+    return "; ".join(f"{key}={value}" for key, value in normalize_qidian_cookies(cookie_data).items())
+
+
+def _cookie_value(cookies, name):
+    wanted = name.lower()
+    for key, value in cookies.items():
+        if str(key).lower() == wanted:
+            return str(value)
+    return ""
+
+
 class QrcodeLogin:
     """起点二维码登录。"""
 
@@ -229,13 +295,13 @@ class QidianAudioSystem:
         self.session = requests.Session()
         self.base_url = "https://qdcg.qidian.com"
         self.session.verify = False
-        self.cookies_dict = cookies_dict or {}
+        self.cookies_dict = normalize_qidian_cookies(cookies_dict)
         self.headers = {
             "Platform": "10",
             "AppId": "50",
             "AreaId": "501000",
-            "YwGuid": self.cookies_dict.get("ywguid", ""),
-            "YwKey": self.cookies_dict.get("ywkey", ""),
+            "YwGuid": _cookie_value(self.cookies_dict, "ywguid"),
+            "YwKey": _cookie_value(self.cookies_dict, "ywkey"),
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 "
@@ -243,6 +309,8 @@ class QidianAudioSystem:
                 "MiniProgramEnv/Windows WindowsWechat/WMPF"
             ),
         }
+        self.session.cookies.update(self.cookies_dict)
+        self.session.headers.update(self.headers)
         self.download_dir = download_dir() / "起点听书"
 
     def search(self, keyword, site=3, page_index=1, page_size=50):
@@ -380,25 +448,27 @@ class QidianAudioSystem:
             return False
 
         try:
-            head_response = self.session.head(
-                audio_url,
-                timeout=10,
-                allow_redirects=False,
-                verify=True,
-            )
-            if head_response.status_code != 200:
-                print(f"❌ HEAD失败: {head_response.status_code}")
-                return False
-
             response = self.session.get(
                 audio_url,
                 timeout=60,
                 stream=True,
                 allow_redirects=True,
                 verify=True,
+                headers={
+                    "User-Agent": self.headers["User-Agent"],
+                    "Referer": f"{self.base_url}/",
+                    "Range": "bytes=0-",
+                },
             )
             if response.status_code not in (200, 206):
                 print(f"❌ 下载失败: {response.status_code}")
+                response.close()
+                return False
+
+            content_type = str(response.headers.get("content-type", "")).lower()
+            if "text/html" in content_type or "application/json" in content_type:
+                print(f"❌ 起点返回的不是音频内容: {content_type}")
+                response.close()
                 return False
 
             safe_name = "".join(c if c.isalnum() or c in ".-_" else "_" for c in chapter_name)

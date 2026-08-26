@@ -6,7 +6,7 @@ from .ximalaya_manager import XimalayaManager
 from .lrts_manager import LRTSManager
 from .fanqie_manager import FanqieManager
 from .qtfm_manager import QtfmManager
-from src.features.qidian.audio_system import QidianAudioSystem
+from src.features.qidian.audio_system import QidianAudioSystem, normalize_qidian_cookies
 
 
 class SearchManager:
@@ -93,26 +93,25 @@ class SearchManager:
     
     def set_qidian_cookie(self, cookie_data):
         """设置起点Cookie（支持字典或字符串格式）"""
-        if isinstance(cookie_data, dict):
-            self.qidian_cookies = cookie_data
-        elif isinstance(cookie_data, str):
-            # 解析Cookie字符串为字典
-            self.qidian_cookies = {}
-            for item in cookie_data.split(';'):
-                item = item.strip()
-                if '=' in item:
-                    key, value = item.split('=', 1)
-                    self.qidian_cookies[key.strip()] = value.strip()
+        self.qidian_cookies = normalize_qidian_cookies(cookie_data)
+
+        def cookie_value(name):
+            return next(
+                (str(value) for key, value in self.qidian_cookies.items() if key.lower() == name.lower()),
+                '',
+            )
         
         # 🔧 每次设置cookies时，更新headers
         self.qidian_headers = {
             'Platform': '10',
             'AppId': '50',
             'AreaId': '501000',
-            'YwGuid': self.qidian_cookies.get('ywguid', ''),
-            'YwKey': self.qidian_cookies.get('ywkey', ''),
+            'YwGuid': cookie_value('ywguid'),
+            'YwKey': cookie_value('ywkey'),
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
         }
+        self.qidian_session.cookies.clear()
+        self.qidian_session.cookies.update(self.qidian_cookies)
 
     def set_ximalaya_mobile_credentials(self, credentials):
         """Update premium mobile credentials independently from web Cookie."""
@@ -513,29 +512,29 @@ class SearchManager:
             save_path_obj = Path(save_path)
             save_path_obj.parent.mkdir(parents=True, exist_ok=True)
             
-            # 🔧 使用持久的session下载，参考参考文件的做法
-            # 先发送HEAD请求检查
-            head_resp = self.qidian_session.head(
-                url,
-                timeout=10,
-                verify=False,
-                allow_redirects=True
-            )
-            if head_resp.status_code != 200:
-                print(f"❌ HEAD请求失败: {head_resp.status_code}")
-                return False
-            
-            # 发送GET请求下载
+            # Signed CDN links frequently reject HEAD even when GET is valid.
             get_resp = self.qidian_session.get(
                 url,
                 timeout=60,
                 verify=False,
                 allow_redirects=True,
-                stream=True
+                stream=True,
+                headers={
+                    'User-Agent': self.qidian_headers.get('User-Agent', 'Mozilla/5.0'),
+                    'Referer': 'https://qdcg.qidian.com/',
+                    'Range': 'bytes=0-',
+                },
             )
             
             if get_resp.status_code not in [200, 206]:
                 print(f"❌ 下载失败，状态码: {get_resp.status_code}")
+                get_resp.close()
+                return False
+
+            content_type = str(get_resp.headers.get('content-type', '')).lower()
+            if 'text/html' in content_type or 'application/json' in content_type:
+                print(f"❌ 起点返回的不是音频内容: {content_type}")
+                get_resp.close()
                 return False
             
             # 获取文件大小

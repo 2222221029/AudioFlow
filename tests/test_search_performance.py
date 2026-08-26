@@ -73,6 +73,39 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in results], ["exact", "same-1", "same-2", "far"])
 
+    def test_popular_keyword_match_beats_unplayed_exact_title(self):
+        manager = self.manager()
+        manager._search_platform_cached = MethodType(
+            lambda _manager, _keyword, _platform: [
+                {"id": "exact-small", "title": "道诡异仙", "plays": 12},
+                {"id": "popular", "title": "道诡异仙 多人精品有声剧", "playCount": "1.8亿"},
+            ],
+            manager,
+        )
+
+        results = manager.search_books("道诡异仙", "喜马拉雅")
+
+        self.assertEqual([item["id"] for item in results], ["popular", "exact-small"])
+
+    def test_unrelated_popular_album_never_beats_keyword_match(self):
+        books = [
+            {"id": "viral", "title": "热门玄幻榜", "plays": 900_000_000},
+            {"id": "match", "title": "道诡异仙 有声剧", "plays": 0},
+        ]
+
+        results = EnhancedSearchManager._rank_search_results("道诡异仙", books)
+
+        self.assertEqual([item["id"] for item in results], ["match", "viral"])
+
+    def test_popularity_parser_supports_provider_units_and_aliases(self):
+        self.assertEqual(EnhancedSearchManager._metric_value("1.2万次播放"), 12_000)
+        self.assertEqual(EnhancedSearchManager._metric_value("3亿"), 300_000_000)
+        self.assertEqual(EnhancedSearchManager._metric_value("25K listeners"), 25_000)
+        self.assertEqual(
+            EnhancedSearchManager._pick_popularity({"plays": 0, "raw": {"PLAYCNT": "2.5万"}}),
+            25_000,
+        )
+
     def test_search_coverage_uses_larger_single_requests(self):
         manager = self.manager()
         manager.ximalaya_manager = mock.Mock()

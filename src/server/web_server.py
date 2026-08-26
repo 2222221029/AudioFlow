@@ -3890,7 +3890,10 @@ def api_proxy_audio():
         ck_key = None
     if ck_key:
         ck = cookie_manager.get_cookie(ck_key)
-        if isinstance(ck, dict):
+        if ck_key == "qidian":
+            from src.features.qidian.audio_system import qidian_cookie_header
+            ck = qidian_cookie_header(ck)
+        elif isinstance(ck, dict):
             ck = "; ".join(f"{k}={v}" for k, v in ck.items() if v)
         if ck:
             headers["Cookie"] = ck
@@ -5022,6 +5025,11 @@ def api_set_cookie():
         cookie = remove_ximalaya_mobile_ticket(cookie)
         if not cookie:
             return json_error("请输入喜马拉雅网页登录 Cookie；移动端请求头请保存到下方独立凭证")
+    elif platform in ("qidian", "起点", "起点听书"):
+        from src.features.qidian.audio_system import qidian_cookie_header
+        cookie = qidian_cookie_header(cookie)
+        if not cookie:
+            return json_error("未能从输入中提取起点 Cookie，请粘贴 Cookie 字符串或包含 Cookie: 的完整请求头")
     cookie_manager.set_cookie(platform, cookie)
     search_manager.set_cookie(platform, cookie)
     return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file))
