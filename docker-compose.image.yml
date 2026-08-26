@@ -1,27 +1,19 @@
 services:
   audioflow:
     image: ghcr.io/2222221029/audioflow:latest
+    pull_policy: always
     container_name: audioflow
+    ports:
+      - "8082:8082"
+    volumes:
+      - /vol1/1000/docker/audioflow/data:/app/data
+      - /vol1/1000/docker/audioflow/config:/app/config
+      - /vol1/1000/docker/audioflow/logs:/app/logs
+      - /vol1/1000/downloads/有声书:/app/downloads
+      - /vol1/1000/docker/audioflow/workspace:/workspace
     restart: unless-stopped
     environment:
-      AUDIOFLOW_DEFAULT_USERNAME: ${AUDIOFLOW_DEFAULT_USERNAME:-admin}
-      AUDIOFLOW_DEFAULT_PASSWORD: ${AUDIOFLOW_DEFAULT_PASSWORD:-admin}
-      AUDIOFLOW_COOKIE_SECRET: ${AUDIOFLOW_COOKIE_SECRET:-}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-      AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY: ${AUDIOFLOW_ALLOW_RAW_AUDIO_PROXY:-false}
-      XIMALAYA_WEB_V3_ATTEMPTS: ${XIMALAYA_WEB_V3_ATTEMPTS:-5}
-      XIMALAYA_WEB_V3_RETRY_BASE: ${XIMALAYA_WEB_V3_RETRY_BASE:-1}
-      XIMALAYA_WEB_V3_MAX_BACKOFF: ${XIMALAYA_WEB_V3_MAX_BACKOFF:-120}
-      XIMALAYA_WEB_V3_RATE_LIMIT_COOLDOWN: ${XIMALAYA_WEB_V3_RATE_LIMIT_COOLDOWN:-15}
-      XIMALAYA_WEB_V3_MIN_INTERVAL: ${XIMALAYA_WEB_V3_MIN_INTERVAL:-0.25}
-      XIMALAYA_WEB_V3_MAX_INTERVAL: ${XIMALAYA_WEB_V3_MAX_INTERVAL:-5}
-      XIMALAYA_WEB_V3_JITTER: ${XIMALAYA_WEB_V3_JITTER:-0.05}
-      XIMALAYA_WEB_V3_RECOVERY_SUCCESSES: ${XIMALAYA_WEB_V3_RECOVERY_SUCCESSES:-24}
-    volumes:
-      - ${AUDIOFLOW_DATA_DIR:-/vol1/1000/docker/audioflow/data}:/app/data
-      - ${AUDIOFLOW_CONFIG_DIR:-/vol1/1000/docker/audioflow/config}:/app/config
-      - ${AUDIOFLOW_LOG_DIR:-/vol1/1000/docker/audioflow/logs}:/app/logs
-      - ${AUDIOFLOW_DOWNLOAD_DIR:-/vol1/1000/downloads/有声书}:/app/downloads
-      - /vol1/1000/docker/audioflow/workspace:/workspace
-    ports:
-      - "${WEB_PORT:-8082}:8082"
+      - TZ=Asia/Shanghai
+      # 必须与旧容器保持一致，否则已加密 Cookie 无法读取。
+      - AUDIOFLOW_COOKIE_SECRET=${AUDIOFLOW_COOKIE_SECRET:?请设置 AUDIOFLOW_COOKIE_SECRET}
+      - XIMALAYA_TICKET_MODE=local

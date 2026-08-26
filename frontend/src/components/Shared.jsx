@@ -295,73 +295,39 @@ function formatCheckTime(value, fallback = '从未') {
   });
 }
 
-function ChapterPagePicker({page, totalPages, loading, onSelect}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef(null);
-  const triggerRef = useRef(null);
-  const activeRef = useRef(null);
+function ChapterPageJump({page, totalPages, loading, onSelect}) {
+  const [draft, setDraft] = useState(String(page));
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (event) => {
-      if (!wrapRef.current?.contains(event.target)) setOpen(false);
-    };
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', onKeyDown);
-    const frame = requestAnimationFrame(() => activeRef.current?.scrollIntoView({block: 'nearest'}));
-    return () => {
-      cancelAnimationFrame(frame);
-      document.removeEventListener('pointerdown', close);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
+  useEffect(() => setDraft(String(page)), [page, totalPages]);
 
-  useEffect(() => setOpen(false), [page, totalPages]);
+  const jump = () => {
+    const target = Math.min(totalPages, Math.max(1, Number.parseInt(draft, 10) || page));
+    setDraft(String(target));
+    if (target !== page) onSelect(target);
+  };
 
   return (
-    <div ref={wrapRef} className={`chapter-page-picker ${open ? 'open' : ''}`}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="chapter-page-trigger"
+    <form className="chapter-page-jump" onSubmit={(event) => { event.preventDefault(); jump(); }}>
+      <span>第</span>
+      <input
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        value={draft}
         disabled={loading}
-        onClick={() => setOpen((value) => !value)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={`当前第 ${page} 页，选择页码`}
-      >
-        <span>第 {page} 页</span>
-        <Icon id="i-arrow-right" className="icon icon-sm" />
-      </button>
-      {open && (
-        <div className="chapter-page-menu" role="listbox" aria-label="章节页码">
-          <div className="chapter-page-menu-head">选择页码 <span>共 {totalPages} 页</span></div>
-          <div className="chapter-page-grid">
-            {Array.from({length: totalPages}, (_, index) => index + 1).map((pageNumber) => (
-              <button
-                key={pageNumber}
-                ref={pageNumber === page ? activeRef : null}
-                type="button"
-                role="option"
-                aria-selected={pageNumber === page}
-                className={pageNumber === page ? 'active' : ''}
-                onClick={() => {
-                  setOpen(false);
-                  if (pageNumber !== page) onSelect(pageNumber);
-                }}
-              >
-                {pageNumber}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+        aria-label={`当前第 ${page} 页，输入目标页码`}
+        onFocus={(event) => event.currentTarget.select()}
+        onChange={(event) => setDraft(event.target.value.replace(/\D/g, ''))}
+        onBlur={jump}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            setDraft(String(page));
+            event.currentTarget.select();
+          }
+        }}
+      />
+      <span>页</span>
+    </form>
   );
 }
 
@@ -393,7 +359,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
           <button className="icon-btn" disabled={loading || pg.page <= 1} onClick={() => actions.loadChapterPage(pg.page - 1)} title="上一页" aria-label="上一页"><Icon id="i-arrow-left" /></button>
           {totalKnown ? (
             <>
-              <ChapterPagePicker page={pg.page} totalPages={totalPages} loading={loading} onSelect={actions.loadChapterPage} />
+              <ChapterPageJump page={pg.page} totalPages={totalPages} loading={loading} onSelect={actions.loadChapterPage} />
               <span className="chapter-page-total">/ {totalPages}</span>
             </>
           ) : <span className="chapter-page-unknown">第 {pg.page} 页 / 更多</span>}
@@ -2496,58 +2462,50 @@ export function SettingsPage({app}) {
   return (
     <>
       <div className="glass glass-pad settings-card">
-        <div className="field-row"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
-        <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option></select></div>
-        <div className="field-row">
-          <label className="field-label">自动重命名（仅手动下载）</label>
-          <select className="field-select" value={manualOrganizeMode} onChange={(e) => setManualOrganizeMode(e.target.value)}>
-            <option value="off">关闭</option>
-            <option value="review">下载完成后生成计划并通知确认（推荐）</option>
-            <option value="auto_safe">已确认过的同一专辑无风险时自动执行</option>
-          </select>
-          <div className="cookie-desc">默认开启安全确认模式。只处理网页或企业微信手动下载；订阅检查、自动订阅及其重试不会进入整理流程。新专辑始终先确认书名、格式和特殊文件。</div>
-        </div>
-        <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64，默认16" style={{maxWidth:'120px'}} /></div>
-        <div className="field-row"><label className="check-row"><input type="checkbox" checked={organizeByPlatformEnabled} onChange={(e) => setOrganizeByPlatformEnabled(e.target.checked)} /><span>按专辑平台创建文件夹</span></label><div className="cookie-desc">开启后下载路径为“下载目录/平台/专辑”；关闭后为“下载目录/专辑”。</div></div>
-        <div className="field-row">
-          <label className="check-row"><input type="checkbox" checked={splitChaptersEnabled} onChange={(e) => setSplitChaptersEnabled(e.target.checked)} /><span>按文件数量分文件夹保存</span></label>
-          <div className="field-row-inline">
-            <input className="field-input" type="number" min="1" max="10000" value={chaptersPerFolder} disabled={!splitChaptersEnabled} onChange={(e) => setChaptersPerFolder(Math.max(1, Math.min(10000, parseInt(e.target.value) || 200)))} />
-            <span className="field-suffix">个文件/文件夹</span>
+        <div className="settings-section">
+          <div className="settings-section-head"><div><h4>下载设置</h4><span>常用的保存位置、音质与下载性能</span></div></div>
+          <div className="settings-grid">
+            <div className="field-row settings-span-2"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
+            <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option></select></div>
+            <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64" /></div>
+            <div className="field-row settings-span-2">
+              <label className="field-label">自动整理（仅手动下载）</label>
+              <select className="field-select" value={manualOrganizeMode} onChange={(e) => setManualOrganizeMode(e.target.value)}>
+                <option value="off">关闭</option>
+                <option value="review">完成后生成计划并等待确认（推荐）</option>
+                <option value="auto_safe">已确认的同一专辑无风险时自动执行</option>
+              </select>
+              <div className="settings-help">自动任务不会进入整理流程，新专辑仍会先确认书名、格式和特殊文件。</div>
+            </div>
           </div>
         </div>
-        <div className="field-row">
-          <label className="field-label">下载记录保留</label>
-          <div className="field-row-inline">
-            <input className="field-input" type="number" min="10" max="10000" value={taskHistoryMaxKeep} onChange={(e) => setTaskHistoryMaxKeep(Math.max(10, Math.min(10000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span>
-            <input className="field-input" type="number" min="1" max="3650" value={taskHistoryMaxAgeDays} onChange={(e) => setTaskHistoryMaxAgeDays(Math.max(1, Math.min(3650, parseInt(e.target.value) || 1)))} /><span className="field-suffix">天</span>
+
+        <details className="settings-advanced">
+          <summary><span><Icon id="i-settings" className="icon icon-sm" />高级设置</span><small>目录规则、文件名与记录维护</small><Icon id="i-arrow-right" className="icon settings-advanced-arrow" /></summary>
+          <div className="settings-section">
+            <div className="settings-section-head"><div><h4>目录与文件名</h4><span>控制下载后的文件夹结构</span></div></div>
+            <div className="settings-grid">
+              <div className="settings-toggle-row"><label className="check-row"><input type="checkbox" checked={organizeByPlatformEnabled} onChange={(e) => setOrganizeByPlatformEnabled(e.target.checked)} /><span>按平台创建文件夹</span></label><small>下载目录 / 平台 / 专辑</small></div>
+              <div className="settings-toggle-row"><label className="check-row"><input type="checkbox" checked={splitChaptersEnabled} onChange={(e) => setSplitChaptersEnabled(e.target.checked)} /><span>按数量拆分文件夹</span></label><small>适合章节很多的专辑</small></div>
+              <div className="field-row"><label className="field-label">每个文件夹</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="10000" value={chaptersPerFolder} disabled={!splitChaptersEnabled} onChange={(e) => setChaptersPerFolder(Math.max(1, Math.min(10000, parseInt(e.target.value) || 200)))} /><span className="field-suffix">个文件</span></div></div>
+              <div className="field-row"><label className="field-label">文件名前缀</label><select className="field-select" value={filenamePrefixFormat} onChange={(e) => setFilenamePrefixFormat(e.target.value)}><option value="0001-">0001-章节名</option><option value="001-">001-章节名</option><option value="01-">01-章节名</option><option value="1-">1-章节名</option><option value="0001.">0001.章节名</option><option value="001.">001.章节名</option><option value="01.">01.章节名</option><option value="1.">1.章节名</option><option value="none">不添加序号前缀</option></select></div>
+            </div>
           </div>
-        </div>
-        <div className="field-row">
-          <label className="field-label">记录详情压缩</label>
-          <div className="field-row-inline">
-            <input className="field-input" type="number" min="0" max="3650" value={taskDetailRetentionDays} onChange={(e) => setTaskDetailRetentionDays(Math.max(0, Math.min(3650, parseInt(e.target.value) || 0)))} /><span className="field-suffix">天后压缩</span>
-            <input className="field-input" type="number" min="1" max="1000" value={taskFailureChapterLimit} onChange={(e) => setTaskFailureChapterLimit(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))} /><span className="field-suffix">条失败章节</span>
+          <div className="settings-section settings-maintenance">
+            <div className="settings-section-head"><div><h4>记录维护</h4><span>限制历史记录占用的空间</span></div></div>
+            <div className="settings-grid">
+              <div className="field-row"><label className="field-label">下载记录保留</label><div className="field-row-inline"><input className="field-input" type="number" min="10" max="10000" value={taskHistoryMaxKeep} onChange={(e) => setTaskHistoryMaxKeep(Math.max(10, Math.min(10000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span><input className="field-input" type="number" min="1" max="3650" value={taskHistoryMaxAgeDays} onChange={(e) => setTaskHistoryMaxAgeDays(Math.max(1, Math.min(3650, parseInt(e.target.value) || 1)))} /><span className="field-suffix">天</span></div></div>
+              <div className="field-row"><label className="field-label">详情压缩</label><div className="field-row-inline"><input className="field-input" type="number" min="0" max="3650" value={taskDetailRetentionDays} onChange={(e) => setTaskDetailRetentionDays(Math.max(0, Math.min(3650, parseInt(e.target.value) || 0)))} /><span className="field-suffix">天后</span><input className="field-input" type="number" min="1" max="1000" value={taskFailureChapterLimit} onChange={(e) => setTaskFailureChapterLimit(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))} /><span className="field-suffix">条失败</span></div></div>
+              <div className="field-row"><label className="field-label">记录文件上限</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="1024" value={taskHistoryMaxMB} onChange={(e) => setTaskHistoryMaxMB(Math.max(1, Math.min(1024, parseInt(e.target.value) || 1)))} /><span className="field-suffix">MB</span></div></div>
+              <div className="field-row"><label className="field-label">后台任务记录</label><div className="field-row-inline"><input className="field-input" type="number" min="10" max="5000" value={backgroundEventsMaxKeep} onChange={(e) => setBackgroundEventsMaxKeep(Math.max(10, Math.min(5000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span></div></div>
+            </div>
           </div>
+        </details>
+
+        <div className="settings-footer">
+          <div><strong>账号与安全</strong><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
+          <button className="btn btn-primary settings-save" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, manualOrganizeMode, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
         </div>
-        <div className="field-row"><label className="field-label">记录文件上限</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="1024" value={taskHistoryMaxMB} onChange={(e) => setTaskHistoryMaxMB(Math.max(1, Math.min(1024, parseInt(e.target.value) || 1)))} /><span className="field-suffix">MB（超出时优先压缩旧记录）</span></div></div>
-        <div className="field-row"><label className="field-label">后台任务记录保留</label><div className="field-row-inline"><input className="field-input" type="number" min="10" max="5000" value={backgroundEventsMaxKeep} onChange={(e) => setBackgroundEventsMaxKeep(Math.max(10, Math.min(5000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span></div></div>
-        <div className="field-row">
-          <label className="field-label">下载文件名前缀</label>
-          <select className="field-select" value={filenamePrefixFormat} onChange={(e) => setFilenamePrefixFormat(e.target.value)}>
-            <option value="0001-">0001-章节名</option>
-            <option value="001-">001-章节名</option>
-            <option value="01-">01-章节名</option>
-            <option value="1-">1-章节名</option>
-            <option value="0001.">0001.章节名</option>
-            <option value="001.">001.章节名</option>
-            <option value="01.">01.章节名</option>
-            <option value="1.">1.章节名</option>
-            <option value="none">不添加序号前缀</option>
-          </select>
-        </div>
-        <div className="field-row"><label className="field-label">登录账号</label><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
-        <button className="btn btn-primary" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, manualOrganizeMode, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
       </div>
       <div className="glass glass-pad settings-card">
         <div className="panel-head"><h4>备份与恢复</h4></div>
