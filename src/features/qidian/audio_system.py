@@ -94,6 +94,8 @@ class QrcodeLogin:
         self.session = requests.Session()
         self.uuid = str(uuid.uuid4())
         self.session_key = None
+        self.qr_image = ""
+        self.last_error = ""
         self.user_agent = (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"
@@ -105,7 +107,6 @@ class QrcodeLogin:
             "User-Agent": self.user_agent,
             "Accept": "*/*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
             "Referer": "https://passport.qidian.com/",
@@ -125,11 +126,17 @@ class QrcodeLogin:
     @staticmethod
     def _unwrap_jsonp(text, callback_name):
         text = text.strip()
+        if text.startswith(("{", "[")):
+            return text
+        # Yuewen has used both the method name and the requested jQuery name
+        # as its JSONP callback. Accept either instead of coupling parsing to
+        # one wrapper spelling.
+        match = re.match(r"^[^(]+\((.*)\)\s*;?$", text, flags=re.DOTALL)
+        if match:
+            return match.group(1)
         prefix = f"{callback_name}("
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-        if text.endswith(")"):
-            text = text[:-1]
+        if text.startswith(prefix) and text.endswith(")"):
+            return text[len(prefix):-1]
         return text
 
     def get_qrcode(self):
@@ -167,6 +174,7 @@ class QrcodeLogin:
                 timeout=15,
                 verify=True,
             )
+            response.raise_for_status()
             response.encoding = "utf-8"
             data = json.loads(self._unwrap_jsonp(response.text, "LoginV1.qrCodeCallback"))
 
@@ -175,18 +183,24 @@ class QrcodeLogin:
                 if "," in image_base64:
                     image_base64 = image_base64.split(",", 1)[1]
 
-                image_data = base64.b64decode(image_base64)
-                Path("qrcode.png").write_bytes(image_data)
+                base64.b64decode(image_base64, validate=True)
+                self.qr_image = f"data:image/png;base64,{image_base64}"
                 self.session_key = data["data"].get("sessionKey")
+                if not self.session_key:
+                    self.last_error = "二维码响应缺少 sessionKey"
+                    print(f"[-] 获取二维码失败: {self.last_error}")
+                    return None
 
-                print("[+] ✅ 二维码已保存到 qrcode.png")
+                print("[+] ✅ 二维码已在内存中生成")
                 print("[+] SessionKey 已获取")
                 print("[+] ⏰ 二维码有效期: 30秒，请立即用手机扫码!")
                 return self.uuid
 
-            print(f"[-] 获取二维码失败: {data}")
+            self.last_error = str(data.get("message") or data.get("msg") or f"code={data.get('code')}")
+            print(f"[-] 获取二维码失败: {self.last_error}")
             return None
         except Exception as exc:
+            self.last_error = str(exc)
             print(f"[-] 异常: {exc}")
             return None
 
@@ -231,6 +245,7 @@ class QrcodeLogin:
                     timeout=15,
                     verify=True,
                 )
+                response.raise_for_status()
                 response.encoding = "utf-8"
                 data = json.loads(self._unwrap_jsonp(response.text, "LoginV1.qrCodeLoginCallback"))
 

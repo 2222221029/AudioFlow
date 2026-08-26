@@ -144,16 +144,17 @@ def _drive_qidian(session: QRSession) -> None:
     login = QrcodeLogin()
     uuid_val = login.get_qrcode()
     if not uuid_val:
-        session.update(status="failed", message="获取二维码失败")
+        detail = str(getattr(login, "last_error", "") or "").strip()
+        session.update(status="failed", message=f"获取二维码失败：{detail}" if detail else "获取二维码失败")
         return
 
-    qr_path = Path("qrcode.png")
-    if not qr_path.exists():
-        session.update(status="failed", message="二维码文件未找到")
+    qr_image = str(getattr(login, "qr_image", "") or "").strip()
+    if not qr_image:
+        session.update(status="failed", message="二维码响应中没有图片")
         return
 
     session.update(
-        qr_image=_file_to_data_url(qr_path),
+        qr_image=_base64_image_to_data_url(qr_image),
         status="waiting",
         message="请用起点读书 APP 扫描二维码（30 秒有效）",
         extra={"uuid": str(uuid_val)},

@@ -1,7 +1,10 @@
+import base64
+from unittest import mock
 from unittest.mock import Mock
 
+from core.qr_login import QRSession, _drive_qidian
 from core.search_manager import SearchManager
-from src.features.qidian.audio_system import normalize_qidian_cookies
+from src.features.qidian.audio_system import QrcodeLogin, normalize_qidian_cookies
 
 
 CAPTURED_HEADERS = """Host: unitelogreport.reader.qq.com\r
@@ -67,3 +70,41 @@ def test_qidian_download_does_not_preflight_signed_url_with_head(tmp_path):
     assert output.read_bytes() == b"abc"
     manager.qidian_session.head.assert_not_called()
     manager.qidian_session.get.assert_called_once()
+
+
+def test_qidian_qr_accepts_dynamic_jsonp_and_keeps_image_in_memory():
+    encoded = base64.b64encode(b"fake-png").decode("ascii")
+    response = Mock()
+    response.text = (
+        'jQuery123_456({"code":0,"data":{"sessionKey":"qr-session",'
+        f'"image":"data:image/png;base64,{encoded}"}});'
+    )
+    login = QrcodeLogin()
+    login.session.get = Mock(return_value=response)
+
+    assert login.get_qrcode() == login.uuid
+    assert login.session_key == "qr-session"
+    assert login.qr_image == f"data:image/png;base64,{encoded}"
+    response.raise_for_status.assert_called_once()
+
+
+def test_qidian_qr_driver_does_not_require_a_writable_working_directory():
+    encoded = base64.b64encode(b"fake-png").decode("ascii")
+
+    class FakeLogin:
+        last_error = ""
+        qr_image = f"data:image/png;base64,{encoded}"
+
+        def get_qrcode(self):
+            return "uuid"
+
+        def get_ck(self, max_wait=120):
+            return {"ywguid": "guid", "ywkey": "key"}
+
+    session = QRSession("qidian")
+    with mock.patch("src.features.qidian.audio_system.QrcodeLogin", FakeLogin):
+        _drive_qidian(session)
+
+    assert session.status == "success"
+    assert session.qr_image == FakeLogin.qr_image
+    assert session.cookies == {"ywguid": "guid", "ywkey": "key"}
