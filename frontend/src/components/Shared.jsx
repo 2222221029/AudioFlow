@@ -900,10 +900,23 @@ function TaskCard({task, actions, busy, onDelete, onDetails}) {
     }
   };
   return (
-    <div className="task-card">
-      <div className="task-head"><div className="task-title" title={task.title || task.id}>{task.title || task.id}</div><span className={`task-state state-${status}`}>{taskStatusText(status)}</span></div>
-      <div className="progress-bar"><div className="progress-fill" style={{width: `${pct}%`}} /></div>
-      <div className="task-meta task-counts"><span className="ok">成功 {successCount}</span><span className="danger">失败 {failedCount}</span>{downloadingCount > 0 && <span>下载中 {downloadingCount}</span>}<span>待下载 {pendingCount}</span><span>{pct}%</span></div>
+    <div className={`task-card task-card-${status}`}>
+      <div className="task-head">
+        <div className="task-heading">
+          <div className="task-title" title={task.title || task.id}>{task.title || task.id}</div>
+          <div className="task-meta task-counts">
+            <span className="ok">成功 <strong>{successCount}</strong></span>
+            <span className="danger">失败 <strong>{failedCount}</strong></span>
+            {downloadingCount > 0 && <span>下载中 <strong>{downloadingCount}</strong></span>}
+            <span>待下载 <strong>{pendingCount}</strong></span>
+          </div>
+        </div>
+        <div className="task-status-group">
+          <strong className="task-progress-value">{pct}%</strong>
+          <span className={`task-state state-${status}`}>{taskStatusText(status)}</span>
+        </div>
+      </div>
+      <div className="progress-bar" aria-label={`下载进度 ${pct}%`}><div className="progress-fill" style={{width: `${pct}%`}} /></div>
       {hasDiagnostics && (
         <details className="task-error-details">
           <summary><Icon id="i-alert" className="icon icon-sm" />查看失败详情</summary>
@@ -922,7 +935,7 @@ function TaskCard({task, actions, busy, onDelete, onDetails}) {
         {canResume && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}resume`]} onClick={() => actions.controlDownload(task.id, 'resume')}><BusyIcon busy={busy[`${busyPrefix}resume`]} icon="i-play" />继续</button>}
         {canStop && <button className="btn btn-danger btn-tiny" disabled={busy[`${busyPrefix}stop`]} onClick={() => actions.controlDownload(task.id, 'stop')}><BusyIcon busy={busy[`${busyPrefix}stop`]} icon="i-close" />停止</button>}
         {canRetry && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}retry-failed`]} onClick={() => actions.controlDownload(task.id, 'retry-failed')}><BusyIcon busy={busy[`${busyPrefix}retry-failed`]} icon="i-refresh" />重试失败</button>}
-        {canDelete && <button className="btn btn-ghost btn-tiny task-record-action" onClick={() => onDelete(task.id)}><Icon id="i-trash" className="icon icon-sm" />清除记录</button>}
+        {canDelete && <button className="btn btn-ghost btn-tiny task-record-action icon-action" title="清除记录" aria-label={`清除《${task.title || task.id}》任务记录`} onClick={() => onDelete(task.id)}><Icon id="i-trash" className="icon icon-sm" /></button>}
       </div>
     </div>
   );
@@ -1082,9 +1095,9 @@ export function SubscriptionsPage({app, onNavigate}) {
                     <span>上次检测 {lastCheck}</span>
                     <span>下次检测 {nextCheck}</span>
                   </div>
-                  {platform === '喜马拉雅' && (
-                    <label className="sub-quality-control">
-                      <span>自动下载方式</span>
+                  <div className="sub-download-method">
+                    <span className="sub-download-method-label">自动下载</span>
+                    {platform === '喜马拉雅' ? (
                       <select
                         value={subscriptionQuality}
                         disabled={jobBusy || busy[`subscription:${sub.id}:quality`]}
@@ -1095,13 +1108,15 @@ export function SubscriptionsPage({app, onNavigate}) {
                           <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
-                    </label>
-                  )}
+                    ) : (
+                      <span className="sub-download-method-default">平台默认接口</span>
+                    )}
+                  </div>
                 </div>
                 <div className="sub-actions">
-                  <button className="btn btn-ghost btn-sm" disabled={checkBusy} onClick={() => actions.checkSubscription(sub.id, false)}><BusyIcon busy={checkBusy} icon="i-refresh" />立即检测</button>
+                  <button className="btn btn-ghost btn-sm" disabled={checkBusy} onClick={() => actions.checkSubscription(sub.id, false)}><BusyIcon busy={checkBusy} icon="i-refresh" />检测</button>
                   <button className="btn btn-primary btn-sm" disabled={completeBusy} onClick={() => actions.checkSubscription(sub.id, true)}><BusyIcon busy={completeBusy} icon="i-download" />补全缺失</button>
-                  <button className="btn btn-ghost btn-sm" disabled={jobBusy} onClick={() => cancel(sub.id)}><Icon id="i-trash" className="icon icon-sm" />取消订阅</button>
+                  <button className="btn btn-ghost btn-sm sub-cancel-action icon-action" title="取消订阅" aria-label={`取消订阅《${title}》`} disabled={jobBusy} onClick={() => cancel(sub.id)}><Icon id="i-trash" className="icon icon-sm" /></button>
                 </div>
               </div>
             </div>

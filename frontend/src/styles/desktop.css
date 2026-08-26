@@ -894,11 +894,25 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-shadow:0 18px 38px -18px rgba(60,30,70,.28)}
 .chapter-row .icon-btn{width:28px;height:28px;box-shadow:none}
 
-.task-card{min-width:0}
+.task-card{position:relative;min-width:0;margin-bottom:8px;padding:13px 14px 12px;border-radius:10px;overflow:hidden}
+.task-card::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--text-faint);opacity:.75}
+.task-card-running::before{background:var(--primary)}
+.task-card-completed::before{background:var(--success)}
+.task-card-failed::before,.task-card-partial::before{background:var(--danger)}
+.task-card-queued::before{background:var(--warning)}
+.task-head{align-items:flex-start;margin-bottom:0}
+.task-heading{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}
+.task-title{font-size:13.5px;font-weight:750;line-height:1.35}
+.task-status-group{display:flex;align-items:center;gap:9px;flex:0 0 auto}
+.task-progress-value{color:var(--text-mute);font-size:12px;font-variant-numeric:tabular-nums}
 .task-state{flex:0 0 auto;text-transform:none;letter-spacing:0;max-width:128px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.task-meta{min-width:0;flex-wrap:wrap;row-gap:4px}
+.task-meta{min-width:0;flex-wrap:wrap;gap:5px 13px;margin:0;font-size:11px}
 .task-meta span{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-meta strong{font-weight:750;font-variant-numeric:tabular-nums}
+.task-card>.progress-bar{height:4px;margin:9px 0 0}
+.task-actions{align-items:center;margin-top:9px;padding-top:9px;border-top:1px solid var(--border)}
 .task-actions .btn{white-space:nowrap}
+.icon-action{width:32px;min-width:32px;padding:0;justify-content:center}
 .compact-tools{border-radius:16px}
 
 .subscription-controls{margin-bottom:14px;display:flex;flex-direction:column;align-items:stretch;gap:12px}
@@ -916,7 +930,8 @@ html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-s
   color:var(--text-mute);font-size:11.5px;white-space:nowrap}
 .subscription-scheduler span.ok{color:var(--success)}
 .subscription-scheduler span.muted{color:var(--text-faint)}
-.sub-card{min-width:0;align-items:flex-start}
+.sub-grid{grid-template-columns:repeat(auto-fill,minmax(470px,1fr));gap:12px}
+.sub-card{min-width:0;min-height:246px;align-items:stretch;padding:14px;gap:13px;border-radius:12px}
 .sub-cover-wrap{position:relative;flex:0 0 92px}
 .sub-cover{width:92px;height:92px;border-radius:15px;box-shadow:0 12px 28px -18px rgba(0,0,0,.55)}
 .sub-cover-button{position:relative;padding:0;border:0;overflow:hidden;cursor:pointer;color:var(--primary);display:flex;align-items:center;justify-content:center;transition:transform var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) ease}
@@ -927,9 +942,9 @@ html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-s
 .sub-live{position:absolute;left:6px;right:6px;bottom:6px;height:24px;border-radius:999px;background:rgba(0,0,0,.62);color:#fff;
   display:flex;align-items:center;justify-content:center;gap:5px;font-size:11px;font-weight:700;backdrop-filter:blur(8px)}
 .sub-live .loading{width:11px;height:11px;border-width:2px}
-.sub-info{display:flex;flex-direction:column;min-height:92px;gap:10px}
-.sub-main{min-width:0}
-.sub-title{font-size:15px;line-height:1.35;margin-bottom:5px}
+.sub-info{display:flex;flex-direction:column;min-height:100%;gap:0}
+.sub-main{display:flex;flex:1;flex-direction:column;min-width:0}
+.sub-title{min-height:40px;font-size:14px;line-height:1.4;margin-bottom:4px}
 .sub-meta{display:flex;align-items:center;gap:6px;min-width:0;color:var(--text-mute);font-size:12px;margin-bottom:9px}
 .sub-meta>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sub-progress{height:6px;background:var(--panel-hi);border-radius:999px;overflow:hidden;margin:0 0 8px}
@@ -939,14 +954,18 @@ html[data-theme-mode="light"] .chapter-page-menu{background:var(--panel-2);box-s
   color:var(--text-mute);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sub-stats span.ok{color:var(--success)}
 .sub-stats span.warn{color:var(--warning)}
-.sub-times{display:flex;gap:14px;flex-wrap:wrap;margin-top:7px;font-size:11px;color:var(--text-faint)}
-.sub-quality-control{display:flex;align-items:center;gap:9px;margin-top:9px;color:var(--text-mute);font-size:11.5px}
-.sub-quality-control>span{flex:0 0 auto}
-.sub-quality-control select{min-width:230px;max-width:100%;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi);color:var(--text);font:inherit;outline:none}
-.sub-quality-control select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
-.sub-quality-control select:disabled{opacity:.6;cursor:not-allowed}
-.sub-actions{margin-top:auto}
+.sub-times{display:flex;gap:14px;flex-wrap:wrap;min-height:16px;margin-top:7px;font-size:11px;color:var(--text-faint)}
+.sub-download-method{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:8px;min-height:32px;margin-top:auto;padding-top:10px;color:var(--text-mute);font-size:11.5px}
+.sub-download-method-label{font-weight:650;white-space:nowrap}
+.sub-download-method select,.sub-download-method-default{width:100%;min-width:0;height:32px;border:1px solid var(--border);border-radius:8px;background:var(--panel-hi);color:var(--text);font:inherit}
+.sub-download-method select{padding:0 10px;outline:none}
+.sub-download-method select:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px var(--primary-soft)}
+.sub-download-method select:disabled{opacity:.6;cursor:not-allowed}
+.sub-download-method-default{display:flex;align-items:center;padding:0 10px;color:var(--text-faint)}
+.sub-actions{align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 .sub-actions .btn{white-space:nowrap}
+.sub-cancel-action{margin-left:auto;color:var(--text-faint)}
+.sub-cancel-action:hover{color:var(--danger)}
 
 /* 详情页右栏：聚焦简介 + 扩展信息（不再重复左栏的标题/作者/章节） */
 .album-aside-panel{font-size:13px}
@@ -1351,7 +1370,8 @@ html[data-theme-mode="light"],html[data-theme-mode="dark"]{
 .empty-action{gap:12px}
 .empty-action span{line-height:1.6}
 
-.download-controls{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;border-radius:16px}
+.download-controls{position:relative;z-index:30;overflow:visible;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;border-radius:16px}
+#downloadList{position:relative;z-index:1}
 .download-controls-main{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:1;min-width:0}
 .download-primary-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .secondary-actions{position:relative;flex:0 0 auto}
