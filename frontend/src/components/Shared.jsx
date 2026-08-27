@@ -2186,8 +2186,11 @@ function RenameRulesModal({rulesState, actions, busy, onClose}) {
   </div>;
 }
 
-function RenamePlansModal({plans, actions, busy, onClose}) {
+function RenamePlansModal({plans, renameFolders, agentStatus, actions, busy, onClose}) {
   const [planList, setPlanList] = useState(plans || []);
+  const [folderList, setFolderList] = useState(renameFolders || []);
+  const [showFolders, setShowFolders] = useState(false);
+  const [onlyChanged, setOnlyChanged] = useState(false);
   const visiblePlans = planList;
   const [selectedId, setSelectedId] = useState(visiblePlans[0]?.id || '');
   const selected = visiblePlans.find((item) => item.id === selectedId) || visiblePlans[0];
@@ -2200,6 +2203,15 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
   const [operationError, setOperationError] = useState('');
   const operationRef = useRef(false);
   const contentRef = useRef(null);
+  const loadRenameFolders = actions.loadRenameFolders;
+  useEffect(() => {
+    setFolderList(renameFolders || []);
+  }, [renameFolders]);
+  useEffect(() => {
+    let active = true;
+    if (loadRenameFolders) loadRenameFolders().then((folders) => active && setFolderList(folders || [])).catch(() => {});
+    return () => { active = false; };
+  }, [loadRenameFolders]);
   useEffect(() => {
     setConfiguration(selected?.configuration || {});
     setSpecialActions(Object.fromEntries((selected?.items || []).filter((item) => item.kind === 'special').map((item) => {
@@ -2212,6 +2224,10 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
     setOperationError('');
     contentRef.current?.scrollTo({top: 0});
   }, [selected?.id]);
+  useEffect(() => {
+    const suggestions = selected?.ai_analysis?.suggestions || [];
+    setSelectedSuggestionIds(suggestions.filter((item) => item.action === 'rename').map((item) => item.id));
+  }, [selected?.id, selected?.ai_analysis?.created_at]);
   const run = async (name, fn, closeAfter = true) => {
     if (operationRef.current) return;
     operationRef.current = true;
@@ -2228,18 +2244,47 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
       setOperation('');
     }
   };
-  if (!selected) return <><div className="modal-title"><Icon id="i-edit" />有声书整理计划</div><div className="empty small">暂无计划</div></>;
+  const activeFolderPlan = (relativePath) => planList.find((plan) => plan.task_id === `folder:${relativePath}` && !['cancelled', 'expired', 'failed', 'completed'].includes(plan.status));
+  const organizeFolder = (folder) => run('folder:' + folder.relative_path, async () => {
+    const plan = await actions.analyzeRenameFolder(folder.relative_path);
+    if (plan?.id) {
+      setPlanList((prev) => [plan, ...prev.filter((item) => item.id !== plan.id)]);
+      setSelectedId(plan.id);
+      setShowFolders(false);
+    }
+    return plan;
+  }, false);
+  const folderPanel = showFolders && <section className="rename-folder-panel">
+    <div className="rename-review-heading"><label className="field-label">下载目录中的专辑文件夹</label><button className="icon-btn" title="刷新文件夹列表" aria-label="刷新文件夹列表" onClick={() => loadRenameFolders && loadRenameFolders().then((folders) => setFolderList(folders || [])).catch((error) => setOperationError(error.message))}><Icon id="i-refresh" /></button></div>
+    {!folderList.length ? <div className="empty small">没有找到含音频文件的专辑文件夹</div> : <div className="rename-folder-list">{folderList.map((folder) => {
+      const active = activeFolderPlan(folder.relative_path);
+      const key = folder.relative_path;
+      return <div className="rename-folder-row" key={key}><div><strong>{folder.name}</strong><span>{folder.relative_path}</span></div><span className="rename-folder-count">{folder.audio_count} 个音频</span><button className="btn btn-ghost btn-sm" disabled={!!active || !!operation} onClick={() => organizeFolder(folder)}><Icon id="i-edit" className="icon icon-sm" />{active ? '已有计划' : '生成计划'}</button></div>;
+    })}</div>}
+  </section>;
+  const planHeader = <div className="rename-plans-head">
+    <div className="rename-review-heading"><div className="modal-title"><Icon id="i-edit" />有声书整理计划</div><button className="btn btn-ghost btn-sm" onClick={() => setShowFolders((value) => !value)}><Icon id="i-folder" className="icon icon-sm" />整理本地文件夹</button></div>
+    {!!visiblePlans.length && <><div className="field-row"><label className="field-label">计划</label><select className="field-select" value={selected?.id || ''} onChange={(event) => setSelectedId(event.target.value)}>{visiblePlans.map((plan) => <option value={plan.id} key={plan.id}>{(plan.album || {}).title || plan.id} · {RENAME_STATUS_TEXT[plan.status] || plan.status}</option>)}</select></div><div className="modal-sub">{selected?.id} · 章节 {selected?.summary?.chapters || 0} · 特殊文件 {selected?.summary?.special_files || 0} · 缺号 {selected?.summary?.missing_chapters || 0} · 待处理 {selected?.summary?.planned || 0}</div></>}
+  </div>;
+  if (!selected) return <div className="rename-plans-modal"><>{planHeader}{folderPanel}<div className="empty small">暂无计划</div></></div>;
   const summary = selected.summary || {};
   const unresolved = (selected.issues || []).filter((issue) => issue.blocking !== false && !issue.resolved);
   const riskyItems = (selected.items || []).filter((item) => item.kind === 'chapter' && unresolved.some((issue) => (issue.relative_source || issue.file) === (item.relative_source || item.source_name) || issue.file === item.source_name));
   const aiSuggestions = selected.ai_analysis?.suggestions || [];
+  const aiMode = selected.ai_analysis?.mode === 'full_clean' ? '全量清洗' : '风险复核';
+  const aiState = selected.ai_clean || {};
+  const provider = agentStatus?.config?.providers?.[agentStatus?.config?.provider] || {};
+  const aiConfigured = Boolean(agentStatus?.config?.enabled && (provider.configured || provider.api_key || provider.base_url));
+  const fullCleanRows = (selected.items || []).filter((item) => item.kind === 'chapter').map((item) => ({
+    item,
+    suggestion: aiSuggestions.find((entry) => entry.relative_source === (item.relative_source || item.source_name)),
+  })).filter(({suggestion}) => suggestion && (!onlyChanged || suggestion.action === 'rename'));
+  const fullCleanIds = fullCleanRows.map(({suggestion}) => suggestion.id).filter(Boolean);
+  const allFullSelected = fullCleanIds.length > 0 && fullCleanIds.every((id) => selectedSuggestionIds.includes(id));
   return (
     <div className="rename-plans-modal">
-      <div className="rename-plans-head">
-        <div className="modal-title"><Icon id="i-edit" />有声书整理计划</div>
-        <div className="field-row"><label className="field-label">计划</label><select className="field-select" value={selected.id} onChange={(event) => setSelectedId(event.target.value)}>{visiblePlans.map((plan) => <option value={plan.id} key={plan.id}>{(plan.album || {}).title || plan.id} · {RENAME_STATUS_TEXT[plan.status] || plan.status}</option>)}</select></div>
-        <div className="modal-sub">{selected.id} · 章节 {summary.chapters || 0} · 特殊文件 {summary.special_files || 0} · 缺号 {summary.missing_chapters || 0} · 待处理 {summary.planned || 0}</div>
-      </div>
+      {planHeader}
+      {folderPanel}
       <div className="rename-plans-content" ref={contentRef}>
         {['needs_review', 'pending_confirmation'].includes(selected.status) && <>
           <div className="field-row"><label className="field-label">书名</label><input className="field-input" value={configuration.album_title || ''} onChange={(event) => setConfiguration((prev) => ({...prev, album_title: event.target.value}))} /></div>
@@ -2249,6 +2294,8 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
           {selected.volume_count > 1 && Object.entries(configuration.volumes || {}).map(([index, name]) => <div className="field-row" key={index}><label className="field-label">第 {index} 册书名</label><input className="field-input" value={name} onChange={(event) => setConfiguration((prev) => ({...prev, volumes: {...(prev.volumes || {}), [index]: event.target.value}}))} placeholder="总书名·分册名" /></div>)}
         </>}
         {!!unresolved.length && <div className="field-row"><div className="rename-review-heading"><label className="field-label">待确认问题（{unresolved.length}）</label><button className="btn btn-ghost btn-sm" disabled={!!operation || busy['renameAI:' + selected.id]} onClick={() => run('ai', () => actions.analyzeRenamePlanAI(selected.id), false)}><BusyIcon busy={operation === 'ai'} icon="i-agent" />{operation === 'ai' ? 'AI 正在复核' : 'AI 复核风险项'}</button></div><div className="event-list">{unresolved.map((issue) => <div className="event-row" key={issue.id}><strong>{issue.file || issue.type}</strong><span>{issue.message}</span></div>)}</div></div>}
+        {['needs_review', 'pending_confirmation'].includes(selected.status) && <div className="ai-review-summary rename-full-clean"><div className="rename-review-heading"><strong>AI 全量清洗</strong><span className="rename-ai-mode">{aiMode}</span></div><span>{aiState.status === 'running' ? `正在处理 ${aiState.done || 0}/${aiState.total || summary.chapters || 0}` : aiState.status === 'failed' ? `处理失败：${aiState.error || '请重试'}` : aiState.status === 'completed' ? `已完成 ${aiState.done || aiState.total || 0} 条建议，可逐项勾选应用` : '对全部章节标题进行第二轮清洗，结果只作为建议，不会自动执行。'}</span><button className="btn btn-ghost btn-sm" disabled={!aiConfigured || !!operation || aiState.status === 'running'} title={aiConfigured ? '启动全量 AI 清洗' : '请先在 Agent 设置配置模型'} onClick={() => run('aiClean', () => actions.startRenameAIClean(selected.id), false)}><BusyIcon busy={operation === 'aiClean' || aiState.status === 'running'} icon="i-agent" />{aiState.status === 'running' ? 'AI 清洗中' : aiConfigured ? '全量 AI 清洗' : '未配置模型'}</button>{aiState.status === 'running' && <div className="rename-progress"><span style={{width: `${Math.min(100, Math.round(100 * Number(aiState.done || 0) / Math.max(1, Number(aiState.total || 1)) ))}%`}} /></div>}</div>}
+        {selected.ai_analysis?.mode === 'full_clean' && !!aiSuggestions.length && <div className="rename-ai-table-wrap"><div className="rename-review-heading"><label className="field-label">全量清洗建议（{fullCleanRows.length}{onlyChanged ? `/${aiSuggestions.length}` : ''}）</label><div className="field-row-inline"><label className="ai-table-toggle"><input type="checkbox" checked={onlyChanged} onChange={(event) => setOnlyChanged(event.target.checked)} />仅看有改动</label><button className="btn btn-ghost btn-sm" onClick={() => setSelectedSuggestionIds((prev) => allFullSelected ? prev.filter((id) => !fullCleanIds.includes(id)) : [...new Set([...prev, ...fullCleanIds])])}>全选</button><button className="btn btn-primary btn-sm" disabled={!selectedSuggestionIds.length || !!operation} onClick={() => run('aiApply', () => actions.applyAIRenameSuggestions(selected.id, selectedSuggestionIds), false)}><Icon id="i-check" className="icon icon-sm" />应用所选</button></div></div><div className="rename-ai-table"><div className="rename-ai-row rename-ai-head"><span>原始文件名</span><span>规则清洗标题</span><span>AI 建议标题</span><span>理由 / 置信度</span><span>选择</span></div>{fullCleanRows.map(({item, suggestion}) => <label className="rename-ai-row" key={suggestion.id}><span title={item.source_name}>{item.source_name}</span><span>{item.clean_title || '（空）'}</span><span className={suggestion.action === 'rename' ? 'changed' : ''}>{suggestion.clean_title || item.clean_title || '（保留）'}</span><span>{suggestion.reason || '未提供理由'}<em>{Math.round(Number(suggestion.confidence || 0) * 100)}%</em></span><span><input type="checkbox" checked={selectedSuggestionIds.includes(suggestion.id)} onChange={(event) => setSelectedSuggestionIds((prev) => event.target.checked ? [...new Set([...prev, suggestion.id])] : prev.filter((id) => id !== suggestion.id))} /></span></label>)}</div></div>}
         {!!aiSuggestions.length && <div className="ai-review-summary"><strong>AI 建议 {aiSuggestions.length} 条</strong><span>{selected.ai_analysis?.summary || 'AI 建议不会自动执行，请逐项选择。'}</span><div className="field-row-inline"><button className="btn btn-ghost btn-sm" disabled={!selectedSuggestionIds.length || !!operation} onClick={() => run('aiApply', () => actions.applyAIRenameSuggestions(selected.id, selectedSuggestionIds), false)}>应用选中建议</button><button className="btn btn-ghost btn-sm" disabled={!!operation} onClick={() => run('aiRule', () => actions.createAIRenameRuleDraft(selected.id), false)}>生成规则草稿</button></div></div>}
         {(selected.items || []).filter((item) => item.kind === 'special').map((item) => {
           const key = item.relative_source || item.source_name;
@@ -2268,6 +2315,7 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
             <select className="field-select" aria-label={`${item.source_name} 的处理方式`} value={itemActions[key] || 'keep'} onChange={(event) => setItemActions((prev) => ({...prev, [key]: event.target.value}))}><option value="keep">保持原名不动</option><option value="accept">按上方建议重命名</option></select>
           </div>;
         })}
+        {selected.status === 'completed' && selected.verification && <section className="rename-verification"><div className="rename-review-heading"><strong>收尾验证</strong><span className={selected.verification.passed ? 'ok' : 'warning'}>{selected.verification.passed ? '通过' : '发现问题'}</span></div>{(selected.verification.checks || []).map((check) => <div className="rename-verification-check" key={check.name}><span>{check.passed ? '✓' : '!'}</span><strong>{check.name}</strong><em>{check.passed ? '通过' : `${(check.details || []).length} 项`}</em>{!check.passed && <small>{(check.details || []).slice(0, 5).join('；')}</small>}</div>)}</section>}
         <details><summary>查看完整映射（{(selected.items || []).length}）</summary><pre className="code log-code rename-full-mapping">{(selected.items || []).map((item) => `${item.source_name} -> ${item.target_name}`).join('\n') || '无变更'}</pre></details>
         {operation === 'confirm' && <div className="cookie-desc" role="status">正在校验并执行 {summary.planned || 0} 个文件...</div>}
         {!!operationError && <div className="login-error" role="alert">{operationError}</div>}
@@ -2285,7 +2333,7 @@ function RenamePlansModal({plans, actions, busy, onClose}) {
 }
 
 export function AgentPage({app, mobile = false}) {
-  const {agentStatus, agentSessions, agentSession, renamePlans, renameRules, busy, actions, setModal, closeModal} = app;
+  const {agentStatus, agentSessions, agentSession, renamePlans, renameFolders, renameRules, busy, actions, setModal, closeModal} = app;
   const remote = agentStatus.config || {};
   const [draft, setDraft] = useState(remote);
   const [message, setMessage] = useState('');
@@ -2339,7 +2387,7 @@ export function AgentPage({app, mobile = false}) {
         <div className="agent-chat-head">
           <div className="agent-avatar"><AppLogo title="AudioFlow Agent" /></div>
           <div><strong>AudioFlow Agent</strong><span>{remote.enabled && configured ? `${provider.name || providerId} · ${provider.model || '未选择模型'}${agentSession?.last_latency_ms != null ? ` · ${(agentSession.last_latency_ms / 1000).toFixed(1)} 秒` : ''}` : '等待模型配置'}</span></div>
-          <button className="btn btn-ghost btn-sm" onClick={() => setModal({className: 'modal-wide', content: <RenamePlansModal plans={renamePlans} actions={actions} busy={busy} onClose={closeModal} />})}><Icon id="i-edit" className="icon icon-sm" />整理计划{renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length ? ` (${renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length})` : ''}</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setModal({className: 'modal-wide', content: <RenamePlansModal plans={renamePlans} renameFolders={renameFolders} agentStatus={agentStatus} actions={actions} busy={busy} onClose={closeModal} />})}><Icon id="i-edit" className="icon icon-sm" />整理计划{renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length ? ` (${renamePlans.filter((plan) => ['needs_review', 'pending_confirmation'].includes(plan.status)).length})` : ''}</button>
           <button className="btn btn-ghost btn-sm" title="管理重命名规则" onClick={() => setModal({className: 'modal-wide', content: <RenameRulesModal rulesState={renameRules} actions={actions} busy={busy} onClose={closeModal} />})}><Icon id="i-settings" className="icon icon-sm" />规则</button>
           <details className="agent-config">
             <summary className="btn btn-ghost btn-sm"><Icon id="i-settings" className="icon icon-sm" />模型设置</summary>

@@ -50,11 +50,32 @@ SYSTEM_PROMPT = """你是 AudioFlow 的有声书管理助手。你可以帮助�
 7. AI 对风险文件只能提出结构化建议；建议必须经过 AudioFlow 校验和用户确认。
 """
 
+RENAME_REVIEW_RULES = """你是中文有声书文件名复核器。逐条分析提供的风险项，判断真实章节名，不得编造文件、不得输出路径、不得决定最终执行。规则：
+1. 广告/运营废话必须去除：求赞求评论求订阅求收藏求分享、卖货（微信号/QQ群/公众号/联系方式）、新书推广（搜：xxx、新书上架）、更新通知与日期排期（每天中午12点更新）、加更补更爆更、冠名打赏、节日祝福、平台出品、中奖名单、带货。
+2. 全书完/大结局/全书终/完结是正文结束标识，必须保留；标识周围的广告照常去除（例：第250章 大结局（求订阅、分享、评论）→ 大结局）。
+3. 多段式真标题是完整标题，不要因空格切分（例：「朝里 楼里 七国」「真真假假 假假真真」）。
+4. 整段都是演播者吐槽、无法切出章节名的（例：「唉呀妈呀！川哥又可以出来领盒饭了！」）选 keep，在 reason 说明，交用户决定。
+5. 分集标记是标题一部分，保留：（上）（中）（下）（一）（1）（Ⅰ）（壹）等尾部标记。
+6. 「无题」标题保留为「无题」，只去广告。
+7. 非章节文件：片花/预告/主题曲/剧情歌/番外/花絮/楔子/序章/彩蛋=专辑内容，建议 accept 且保留原标签（片花就叫「片花」）；更新通知/直播回听/求赞/带货/作者节目（如「小川有话说」）=运营内容，建议 quarantine。
+8. 疑似其他书籍的文件（文件名含与本书无关的书名号）选 keep。
+9. 不确定时一律 keep；只有能从文件名和相邻章节明确判断时才 rename。
+只输出 JSON，不要 Markdown。"""
+
+RENAME_CLEAN_RULES = """你是中文有声书文件名全量清洗器。对每条输入只返回纯标题，不含章节号、序号或扩展名。规则：
+1. 去除广告/运营废话：求赞求评论求订阅求收藏求分享、卖货（微信号/QQ群/公众号/联系方式）、新书推广（搜：xxx、新书上架）、更新通知与日期排期、加更补更爆更、冠名打赏、节日祝福、平台出品、中奖名单、带货。
+2. 全书完/大结局/全书终/完结是正文结束标识，必须保留；标识周围的广告照常去除。
+3. 多段式真标题是完整标题，不要因空格切分；不确定时保留完整标题。
+4. 整段都是演播者吐槽且无法切出章节名时，保留规则引擎标题并说明原因。
+5. 分集标记是标题的一部分，保留：（上）（中）（下）（一）（1）（Ⅰ）（壹）等尾部标记。
+6. 「无题」保留为「无题」，只去广告。
+只处理输入条目，不得编造文件，不得输出路径。只输出 JSON，不要 Markdown。"""
+
 TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "list_downloads", "description": "列出最近的下载任务及状态", "parameters": {"type": "object", "properties": {"status": {"type": "string", "enum": ["all", "active", "completed", "failed"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}}}},
     {"type": "function", "function": {"name": "list_rename_plans", "description": "列出有声书重命名计划", "parameters": {"type": "object", "properties": {"status": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "get_rename_plan", "description": "读取一个重命名计划的详情", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
-    {"type": "function", "function": {"name": "create_rename_plan", "description": "为已完成的下载任务分析文件并生成待确认的重命名计划；不会执行重命名", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}},
+    {"type": "function", "function": {"name": "create_rename_plan", "description": "为已完成下载任务或下载目录内的文件夹分析文件并生成待确认的重命名计划；不会执行重命名", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}, "folder": {"type": "string"}, "album_title": {"type": "string"}}}}},
     {"type": "function", "function": {"name": "analyze_rename_plan_with_ai", "description": "使用当前 AI 模型分析计划中的风险文件并保存建议；不会执行重命名", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
     {"type": "function", "function": {"name": "apply_ai_rename_suggestions", "description": "应用用户明确接受的 AI 建议到计划；仍需最终确认才会执行", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}, "suggestion_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["plan_id", "suggestion_ids"]}}},
     {"type": "function", "function": {"name": "create_rename_rule_draft", "description": "根据计划和已接受的修正生成重命名规则草稿；草稿不会自动启用", "parameters": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}}},
@@ -388,9 +409,7 @@ class AgentManager:
             },
         }
         prompt = (
-            "你是中文有声书文件名复核器。只分析提供的风险项，不得编造文件，不得输出路径，"
-            "不得决定最终执行。广告或跨书籍不确定时选择 keep；只有能从文件名和相邻章节明确判断时才 rename。"
-            "保留全书完、大结局、全书终、完结等正文标识。只输出 JSON，不要 Markdown。\n"
+            RENAME_REVIEW_RULES + "\n"
             + json.dumps(contract, ensure_ascii=False)
         )
         result = self._complete(spec, config, [
@@ -400,6 +419,75 @@ class AgentManager:
         data = self._json_object(result.get("content"))
         data["model"] = config["model"]
         return data
+
+    def clean_titles_batch(self, album, rules, entries, max_tokens=4096):
+        """Clean one ordered batch of chapter titles with bounded retries."""
+        _provider_id, spec, config = self._validate_ready()
+        batch = [dict(entry) for entry in (entries or []) if isinstance(entry, dict)]
+        if not batch:
+            return {"suggestions": [], "summary": "没有需要清洗的章节。", "model": config["model"]}
+        contract = {
+            "album": album or {},
+            "rules": rules or {},
+            "entries": batch,
+            "response_schema": {
+                "suggestions": [{
+                    "relative_source": "必须完全复制输入值",
+                    "clean_title": "清洗后纯标题（不含章节号/序号）",
+                    "changed": True,
+                    "reason": "中文理由",
+                    "confidence": 0,
+                }],
+            },
+        }
+        prompt = RENAME_CLEAN_RULES + "\n" + json.dumps(contract, ensure_ascii=False)
+        errors = []
+        for attempt in range(3):
+            try:
+                result = self._complete(spec, config, [
+                    {"role": "system", "content": "严格输出符合约定的 JSON 对象。"},
+                    {"role": "user", "content": prompt},
+                ], tools=[], max_tokens=max(1024, int(max_tokens or 4096)))
+                data = self._json_object(result.get("content"))
+                raw_suggestions = data.get("suggestions")
+                if not isinstance(raw_suggestions, list):
+                    raise ValueError("AI 全量清洗结果缺少 suggestions 数组")
+                known = {str(entry.get("relative_source") or "") for entry in batch}
+                suggestions = []
+                for raw in raw_suggestions:
+                    if not isinstance(raw, dict):
+                        continue
+                    key = str(raw.get("relative_source") or "")
+                    if key not in known:
+                        continue
+                    clean_title = str(raw.get("clean_title") or "").strip()[:220]
+                    changed = bool(raw.get("changed"))
+                    if "changed" not in raw:
+                        current = next((entry.get("current_title") for entry in batch
+                                        if str(entry.get("relative_source") or "") == key), "")
+                        changed = clean_title != str(current or "").strip()
+                    try:
+                        confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0)))
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                    suggestions.append({
+                        "relative_source": key,
+                        "clean_title": clean_title,
+                        "changed": changed,
+                        "action": "rename" if changed else "keep",
+                        "reason": str(raw.get("reason") or "AI 未提供理由").strip()[:500],
+                        "confidence": confidence,
+                    })
+                return {
+                    "suggestions": suggestions,
+                    "summary": str(data.get("summary") or "全量清洗建议已生成").strip()[:1000],
+                    "model": config["model"],
+                }
+            except (TypeError, ValueError, requests.RequestException) as exc:
+                errors.append(str(exc))
+                if attempt < 2:
+                    time.sleep((2, 5)[attempt])
+        raise ValueError("全量 AI 清洗失败：" + (errors[-1] if errors else "未知错误"))
 
     def propose_rename_rule_draft(self, plan):
         """Generate a constrained partial rule pack from reviewed plan evidence."""
@@ -566,16 +654,16 @@ class AgentManager:
             "latency_ms": int((time.monotonic() - started) * 1000), "mode": "model",
         }
 
-    def _complete(self, spec, config, messages, tools):
+    def _complete(self, spec, config, messages, tools, max_tokens=1024):
         if self.store.config.get("runner") == "deepseek-harness":
-            return self._harness(config, messages, tools)
+            return self._harness(config, messages, tools, max_tokens=max_tokens)
         if spec["kind"] == "anthropic":
-            return self._anthropic(config, messages, tools)
+            return self._anthropic(config, messages, tools, max_tokens=max_tokens)
         if spec["kind"] == "gemini":
-            return self._gemini(config, messages, tools)
-        return self._openai(config, messages, tools)
+            return self._gemini(config, messages, tools, max_tokens=max_tokens)
+        return self._openai(config, messages, tools, max_tokens=max_tokens)
 
-    def _harness(self, config, messages, tools):
+    def _harness(self, config, messages, tools, max_tokens=1024):
         """Run Harness without shell/filesystem plugins.
 
         Harness returns a validated tool proposal; AudioFlow itself executes the
@@ -609,7 +697,7 @@ class AgentManager:
                 with DeepSeekHarness(
                     provider="deepseek-official",
                     model=config["model"],
-                    max_tokens=1536,
+                    max_tokens=max(1024, int(max_tokens or 1024)),
                     cwd=str(workspace),
                     session_root=str(runtime_root),
                     cordis=str(cordis),
@@ -653,7 +741,7 @@ class AgentManager:
             raise ValueError(str(detail or f"模型服务返回 HTTP {response.status_code}"))
         return data
 
-    def _openai(self, config, messages, tools):
+    def _openai(self, config, messages, tools, max_tokens=1024):
         headers = {"Content-Type": "application/json"}
         if config["api_key"]:
             headers["Authorization"] = "Bearer " + config["api_key"]
@@ -677,7 +765,7 @@ class AgentManager:
                 })
             else:
                 converted.append(item)
-        payload = {"model": config["model"], "messages": converted, "temperature": 0.2, "max_tokens": 1024}
+        payload = {"model": config["model"], "messages": converted, "temperature": 0.2, "max_tokens": max(1, int(max_tokens or 1024))}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -693,7 +781,7 @@ class AgentManager:
             calls.append({"id": item.get("id") or secrets.token_hex(6), "name": fn.get("name"), "arguments": arguments})
         return {"content": message.get("content") or "", "tool_calls": calls}
 
-    def _anthropic(self, config, messages, tools):
+    def _anthropic(self, config, messages, tools, max_tokens=1024):
         system = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
         converted = []
         for item in messages:
@@ -709,7 +797,7 @@ class AgentManager:
             else:
                 converted.append({"role": role, "content": item.get("content") or ""})
         anthropic_tools = [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in tools]
-        payload = {"model": config["model"], "system": system, "messages": converted, "max_tokens": 1024, "temperature": 0.2}
+        payload = {"model": config["model"], "system": system, "messages": converted, "max_tokens": max(1, int(max_tokens or 1024)), "temperature": 0.2}
         if anthropic_tools:
             payload["tools"] = anthropic_tools
         data = self._request("POST", config["base_url"] + "/messages", headers={"x-api-key": config["api_key"], "anthropic-version": "2023-06-01", "content-type": "application/json"}, json=payload)
@@ -717,7 +805,7 @@ class AgentManager:
         calls = [{"id": item.get("id"), "name": item.get("name"), "arguments": item.get("input") or {}} for item in data.get("content") or [] if item.get("type") == "tool_use"]
         return {"content": text, "tool_calls": calls}
 
-    def _gemini(self, config, messages, tools):
+    def _gemini(self, config, messages, tools, max_tokens=1024):
         system = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
         contents = []
         for item in messages:
@@ -734,7 +822,7 @@ class AgentManager:
             else:
                 contents.append({"role": "model" if role == "assistant" else "user", "parts": [{"text": item.get("content") or ""}]})
         declarations = [{"name": t["function"]["name"], "description": t["function"]["description"], "parameters": t["function"]["parameters"]} for t in tools]
-        payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}}
+        payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": {"temperature": 0.2, "maxOutputTokens": max(1, int(max_tokens or 1024))}}
         if declarations:
             payload["tools"] = [{"functionDeclarations": declarations}]
         url = f"{config['base_url']}/models/{config['model']}:generateContent?key={config['api_key']}"

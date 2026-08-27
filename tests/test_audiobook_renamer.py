@@ -130,6 +130,23 @@ class AudiobookRenamerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不能确认"):
             manager.confirm(plan["id"])
 
+    def test_spoken_rant_title_requires_manual_review(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 唉呀妈呀！川哥又可以出来领盒饭了！.mp3")
+        plan = _manager(self.tmp_path).create_plan(
+            task_id="task-spoken-rant",
+            album={"title": "测试书"},
+            chapters=[],
+            album_dir=album_dir,
+        )
+
+        self.assertEqual(plan["status"], "needs_review")
+        self.assertEqual(plan["items"][0]["clean_title"], "唉呀妈呀！川哥又可以出来领盒饭了！")
+        self.assertTrue(any(
+            issue["type"] == "title_review" and "吐槽" in issue["message"]
+            for issue in plan["issues"]
+        ))
+
     def test_confirm_renames_and_is_idempotent(self):
         album_dir = self.tmp_path / "测试书"
         source = _audio(album_dir, "0001-第1集 开始.mp3")
@@ -188,6 +205,32 @@ class AudiobookRenamerTests(unittest.TestCase):
         self.assertEqual(plan["missing_chapters"], [2])
         self.assertEqual([item["prefix"] for item in plan["items"]], [1, 3])
         self.assertEqual(plan["items"][1]["target_name"], "0003-《测试书》第003集 继续.mp3")
+
+    def test_verification_accounts_for_special_file_before_missing_chapter(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 开始.mp3")
+        _audio(album_dir, "0002-第2集 继续.mp3")
+        special = _audio(album_dir, "0003-小川有话说.mp3")
+        _audio(album_dir, "0004-第4集 结尾.mp3")
+        manager = _manager(self.tmp_path)
+
+        plan = manager.create_plan(
+            task_id="task-missing-after-special",
+            album={"title": "测试书"},
+            chapters=[],
+            album_dir=album_dir,
+        )
+        self.assertEqual(plan["missing_chapters"], [3])
+        self.assertEqual([item["prefix"] for item in plan["items"]], [1, 2, 3, 5])
+
+        configured = manager.configure(plan["id"], {
+            "configuration": plan["configuration"],
+            "special_actions": {special.name: "keep"},
+        })
+        completed = manager.confirm(configured["id"])
+        reserved = next(check for check in completed["verification"]["checks"]
+                        if check["name"] == "预留空号")
+        self.assertTrue(reserved["passed"], reserved["details"])
 
     def test_special_file_keeps_position_and_does_not_consume_chapter_number(self):
         album_dir = self.tmp_path / "测试书"
@@ -355,6 +398,87 @@ class AudiobookRenamerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不能确认"):
             manager.confirm(plan["id"])
         self.assertTrue(source.exists())
+
+    def test_square_bracket_ad_is_removed_without_losing_ending_marker(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 红狼群（上）【新年快乐】.m4a")
+        _audio(album_dir, "0002-第2集 来生我爱你（五）【全书完丨感谢所有小伙伴的支持】.m4a")
+        manager = _manager(self.tmp_path)
+        plan = manager.create_plan(task_id="task-square", album={"title": "测试书"}, chapters=[], album_dir=album_dir)
+        self.assertEqual([item["clean_title"] for item in plan["items"]], ["红狼群（上）", "来生我爱你（五）全书完"])
+        configured = manager.configure(plan["id"], {"configuration": plan["configuration"]})
+        completed = manager.confirm(configured["id"])
+        ending = next(check for check in completed["verification"]["checks"] if check["name"] == "结尾标识")
+        self.assertTrue(ending["passed"])
+
+    def test_marker_space_is_absorbed_after_punctuation_normalization(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 准备 （上）.m4a")
+        _audio(album_dir, "0002-第2集 娶个媳妇 (上).m4a")
+        plan = _manager(self.tmp_path).create_plan(task_id="task-marker-space", album={"title": "测试书"}, chapters=[], album_dir=album_dir)
+        self.assertEqual([item["clean_title"] for item in plan["items"]], ["准备（上）", "娶个媳妇（上）"])
+
+    def test_double_part_markers_are_normalized_only_for_four_item_runs(self):
+        album_dir = self.tmp_path / "测试书"
+        for number, part in enumerate(("上", "中", "下", "上"), start=1):
+            _audio(album_dir, f"{number:04d}-第{number}集 标题（{number}）（{part}）.m4a")
+        plan = _manager(self.tmp_path).create_plan(task_id="task-double-marker", album={"title": "测试书"}, chapters=[], album_dir=album_dir)
+        self.assertEqual(
+            [item["clean_title"] for item in plan["items"]],
+            ["标题（1）（一）", "标题（2）（二）", "标题（3）（三）", "标题（4）（一）"],
+        )
+
+    def test_isolated_numeric_part_marker_drops_leading_zero(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 嫁衣（02）.m4a")
+        plan = _manager(self.tmp_path).create_plan(
+            task_id="task-isolated-numeric-marker",
+            album={"title": "测试书"},
+            chapters=[],
+            album_dir=album_dir,
+        )
+
+        self.assertEqual(plan["items"][0]["clean_title"], "嫁衣（2）")
+        self.assertEqual(plan["items"][0]["target_name"], "0001-《测试书》第001集 嫁衣（2）.m4a")
+
+    def test_quality_marker_is_restored_after_contact_and_search_ads_are_removed(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 菩提-有任何问题，请咨询主播V_xxx [无损].m4a")
+        _audio(album_dir, "0002-第2集 五色祭坛-（搜：盗门祖尸） [无损].m4a")
+        plan = _manager(self.tmp_path).create_plan(task_id="task-quality", album={"title": "测试书"}, chapters=[], album_dir=album_dir)
+        self.assertEqual([item["clean_title"] for item in plan["items"]], ["菩提", "五色祭坛"])
+        self.assertTrue(all(item["quality"] == "[无损]" for item in plan["items"]))
+        self.assertTrue(all("[无损]" in item["target_name"] for item in plan["items"]))
+
+    def test_long_update_notice_is_removed_as_one_ad_block(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 过年回老家暂停更新，下月一号恢复，大家新年快乐.m4a")
+        plan = _manager(self.tmp_path).create_plan(task_id="task-long-ad", album={"title": "测试书"}, chapters=[], album_dir=album_dir)
+        self.assertEqual(plan["items"][0]["clean_title"], "")
+        self.assertTrue(any("标题为空" in issue["message"] for issue in plan["issues"]))
+
+    def test_volume_suggestions_use_full_width_part_markers(self):
+        album_dir = self.tmp_path / "系列"
+        _audio(album_dir, "0001-大结局上 第1集 开始.m4a")
+        _audio(album_dir, "0002-大结局上 第2集 继续.m4a")
+        _audio(album_dir, "0003-大结局下 第1集 结束.m4a")
+        plan = _manager(self.tmp_path).create_plan(task_id="task-volume-marker", album={"title": "盗墓笔记"}, chapters=[], album_dir=album_dir)
+        self.assertEqual(plan["configuration"]["volumes"], {
+            "1": "盗墓笔记·大结局（上）", "2": "盗墓笔记·大结局（下）",
+        })
+
+    def test_verification_reports_residual_advertising_file(self):
+        album_dir = self.tmp_path / "测试书"
+        _audio(album_dir, "0001-第1集 开始.m4a")
+        manager = _manager(self.tmp_path)
+        plan = manager.create_plan(task_id="task-verification", album={"title": "测试书"}, chapters=[], album_dir=album_dir)
+        configured = manager.configure(plan["id"], {"configuration": plan["configuration"]})
+        completed = manager.confirm(configured["id"])
+        _audio(album_dir, "残留求订阅.m4a")
+        verification = manager.verify_completed_plan(completed)
+        residual = next(check for check in verification["checks"] if check["name"] == "残留广告")
+        self.assertFalse(residual["passed"])
+        self.assertTrue(any("残留求订阅" in detail for detail in residual["details"]))
 
 
 if __name__ == "__main__":

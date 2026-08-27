@@ -10,10 +10,17 @@ from unittest.mock import Mock, patch
 try:
     import requests  # noqa: F401
 except ModuleNotFoundError:
+    class _RequestException(Exception):
+        pass
+
     sys.modules["requests"] = types.SimpleNamespace(
+        RequestException=_RequestException,
         request=lambda *args, **kwargs: None,
         post=lambda *args, **kwargs: None,
     )
+
+if not hasattr(sys.modules["requests"], "RequestException"):
+    sys.modules["requests"].RequestException = Exception
 
 from core.agent_manager import AgentManager, AgentStore, PROVIDERS
 from core.developer_agent_manager import DeveloperAgentManager

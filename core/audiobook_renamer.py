@@ -11,6 +11,7 @@ import re
 import threading
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -35,6 +36,7 @@ _CN_CAP_SEQUENCE = tuple("壹贰叁肆伍陆柒捌玖拾")
 _ENDING_MARKERS = ("全书完", "大结局", "全书终", "完结", "全书完结")
 _QUALITY_MARKERS = ("[Audio Vivid]", "[杜比全景声]", "[无损]")
 _AD_KEYWORDS = tuple(MANDATORY_AD_KEYWORDS)
+_SPOKEN_RANT_TOKENS = ("唉", "哎", "啊", "呀", "哇", "哈哈", "嘿", "妈呀", "天哪", "我的天", "笑死", "领盒饭")
 _SPECIAL_CONTENT_LABELS = (
     "片花", "预告", "主题曲", "剧情歌", "歌曲", "番外", "花絮", "楔子", "序章",
     "引子", "后记", "彩蛋", "调整说明", "制作特辑", "试听",
@@ -50,14 +52,21 @@ _CHAPTER_RE = re.compile(
     r"(?P<unit>章|节|集|回)(?:\s*[-:：._、]\s*|\s*)"
 )
 _LEADING_NUMBER_RE = re.compile(
-    r"^\s*第?\s*(?:\d+|[零〇一二两三四五六七八九十百千万]+)\s*"
-    r"(?:章|节|集|回)*\s*[-:：._、]?\s*"
+    r"^\s*(?:(?:第\s*)?(?:\d+|[零〇一二两三四五六七八九十百千万]+)\s*"
+    r"(?:章|节|集|回)(?:\s*[-:：._、]?\s*)?|"
+    r"第\s*(?:\d+|[零〇一二两三四五六七八九十百千万]+)\s*[-:：._、]\s*)"
 )
 _LEADING_BOOK_TITLE_RE = re.compile(r"^\s*《(?P<title>[^《》]{1,100})》")
 _PAREN_BLOCK_RE = re.compile(r"[（(]([^（）()]*)[）)]")
+_SQUARE_BLOCK_RE = re.compile(r"【([^【】]*)】")
+_MARKER_ABSORB_RE = re.compile(
+    r"\s+（(上|中|下|[0-9]+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[壹贰叁肆伍陆柒捌玖拾]+|"
+    r"[一二三四五六七八九十]+|完)）$"
+)
 _WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _TRAILING_VARIANTS = (
+    ("double_ud", re.compile(r"^(.*?)[（(](\d+)[）)]\s*[（(]([上中下])[）)]$")),
     ("ud", re.compile(r"^(.*?)[（(]([上中下])[）)]$")),
     ("ar", re.compile(r"^(.*?)[（(](\d+)[）)]$")),
     ("rm", re.compile(r"^(.*?)[（(]([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ])[）)]$")),
@@ -141,7 +150,7 @@ def _strip_existing_chapter_prefix(title: str) -> str:
     )
 
 
-def _normalize_punctuation(value: str) -> tuple[str, list[str]]:
+def _normalize_punctuation(value: str, *, absorb_marker_space: bool = True) -> tuple[str, list[str]]:
     text = _WHITESPACE_RE.sub(" ", str(value or "").replace("\u3000", " ")).strip()
     issues = []
     if _CJK_RE.search(text):
@@ -155,6 +164,8 @@ def _normalize_punctuation(value: str) -> tuple[str, list[str]]:
         if text.count(opening) != text.count(closing):
             issues.append(f"符号不成对：{opening}{closing}")
     text = re.sub(r" {2,}", " ", text).strip(" \t\u3000_-—~")
+    if absorb_marker_space:
+        text = _MARKER_ABSORB_RE.sub(lambda match: f"（{match.group(1)}）", text)
     return text, issues
 
 
@@ -180,12 +191,17 @@ def _remove_ad_blocks(
 
     def replace_block(match: re.Match[str]) -> str:
         content = match.group(1).strip()
+        protected_in_block = [token for token in protected if token in content]
+        if protected_in_block:
+            removed.append(content)
+            return "".join(protected_in_block)
         if contains_ad(content):
             removed.append(content)
             return ""
         return match.group(0)
 
     text = _PAREN_BLOCK_RE.sub(replace_block, text)
+    text = _SQUARE_BLOCK_RE.sub(replace_block, text)
     for pattern in cleanup.get("ad_patterns") or []:
         def replace_pattern(match: re.Match[str]) -> str:
             removed.append(match.group(0).strip())
@@ -217,11 +233,24 @@ def _remove_ad_blocks(
                     removed.append(suffix)
                     text = title[:boundary.start()]
                     break
-    text = re.sub(r"[（(]\s*[）)]", "", text).strip(" \t\u3000_-—~")
+    text = re.sub(r"[（(]\s*[）)]|【\s*】", "", text).strip(" \t\u3000_-—~")
     for token, marker in protected.items():
         text = text.replace(token, marker)
     residual = contains_ad(text)
     return text, removed, residual
+
+
+def _looks_like_spoken_rant(value: str) -> bool:
+    """Flag dense, punctuation-heavy spoken asides for manual review."""
+    text = str(value or "").strip()
+    if len(text) < 12 or re.search(r"\s", text):
+        return False
+    punctuation_count = len(re.findall(r"[！!?？]", text))
+    if punctuation_count < 2:
+        return False
+    token_count = sum(text.count(token) for token in _SPOKEN_RANT_TOKENS)
+    density = punctuation_count / max(1, len(text))
+    return token_count > 0 or density >= 0.08
 
 
 def _clean_title(
@@ -232,8 +261,11 @@ def _clean_title(
     for variant in sorted({book, f"《{book}》"}, key=len, reverse=True):
         if variant and text.startswith(variant):
             text = text[len(variant):].strip(" \t\u3000_-—:：、")
-    text, removed, residual = _remove_ad_blocks(text, (rules or {}).get("cleanup"))
-    text, punctuation_issues = _normalize_punctuation(text)
+    cleanup_rules = (rules or {}).get("cleanup") or DEFAULT_RULE_VALUES["cleanup"]
+    text, removed, residual = _remove_ad_blocks(text, cleanup_rules)
+    text, punctuation_issues = _normalize_punctuation(
+        text, absorb_marker_space=cleanup_rules.get("absorb_marker_space", True)
+    )
     blocking = list(punctuation_issues)
     notes = []
     if residual:
@@ -242,6 +274,8 @@ def _clean_title(
         blocking.append("标题为空，无法确定真实章节名")
     elif text == "无题":
         notes.append("标题为“无题”，按技能默认规则保留，不联网查找")
+    elif _looks_like_spoken_rant(text):
+        blocking.append("疑似整段演播者吐槽，请确认是否保留完整标题")
     if removed:
         notes.append("建议移除明确广告文案：" + "；".join(removed[:3]))
     # Ending markers are never removed. Residual advertising around them still
@@ -318,6 +352,8 @@ def _variant(value: str) -> tuple[str, str, str]:
     for style, pattern in _TRAILING_VARIANTS:
         match = pattern.match(text)
         if match and match.group(1).strip():
+            if style == "double_ud":
+                return match.group(1).strip(), style, f"{match.group(2)}|{match.group(3)}"
             return match.group(1).strip(), style, match.group(2)
     return text, "none", ""
 
@@ -359,7 +395,21 @@ def _normalize_repeated_titles(items: list[dict[str, Any]]) -> list[dict[str, An
             grouped.update(id(item) for item in run)
             parsed = [_variant(item.get("clean_title") or "") for item in run]
             styles = {style for _base, style, _suffix in parsed if style != "none"}
-            if "ud" in styles and len(run) <= 3 and styles <= {"ud"}:
+            if "double_ud" in styles:
+                if len(run) < 4 or any(style != "double_ud" for _base, style, _suffix in parsed):
+                    for item in run:
+                        issues.append({
+                            "type": "sequence_review", "file": item["source_name"],
+                            "message": "双分集标记的归一化方式不明确，请确认后再改名",
+                        })
+                else:
+                    part_map = {"上": "一", "中": "二", "下": "三"}
+                    for item, (base, _style, suffix) in zip(run, parsed):
+                        number, part = suffix.split("|", 1)
+                        item["clean_title"] = (
+                            f"{base}（{int(number)}）（{part_map.get(part, part)}）"
+                        )
+            elif "ud" in styles and len(run) <= 3 and styles <= {"ud"}:
                 labels = ["上", "下"] if len(run) == 2 else ["上", "中", "下"]
                 for position, (item, (base, _style, suffix)) in enumerate(zip(run, parsed)):
                     if suffix and suffix != labels[position]:
@@ -392,6 +442,15 @@ def _normalize_repeated_titles(items: list[dict[str, Any]]) -> list[dict[str, An
         index = cursor if cursor > index + 1 else index + 1
     for item in ordered:
         _base, style, suffix = _variant(item.get("clean_title") or "")
+        numeric_marker = re.match(
+            r"^(.*?)[（(](\d+)[）)]$", str(item.get("clean_title") or "").strip()
+        )
+        if (numeric_marker and numeric_marker.group(1).strip()
+                and numeric_marker.group(2).startswith("0")):
+            item["clean_title"] = (
+                f"{numeric_marker.group(1).strip()}（{int(numeric_marker.group(2))}）"
+            )
+            _base, style, suffix = _variant(item.get("clean_title") or "")
         if style == "ud" and suffix and id(item) not in grouped:
             issues.append({
                 "type": "sequence_review", "file": item["source_name"],
@@ -457,8 +516,12 @@ def _format_special_name(
 ) -> str:
     book = _book_for_item(config, item)
     prefix = str(item["prefix"]).zfill(int(config.get("prefix_width") or 4))
-    label, _issues = _normalize_punctuation(item.get("special_label") or "特殊文件")
-    label, _removed, _residual = _remove_ad_blocks(label, (rules or {}).get("cleanup"))
+    cleanup_rules = (rules or {}).get("cleanup") or DEFAULT_RULE_VALUES["cleanup"]
+    label, _issues = _normalize_punctuation(
+        item.get("special_label") or "特殊文件",
+        absorb_marker_space=cleanup_rules.get("absorb_marker_space", True),
+    )
+    label, _removed, _residual = _remove_ad_blocks(label, cleanup_rules)
     label = label or item.get("special_type") or "特殊文件"
     values = {
         "prefix": prefix, "book": book, "chapter": "", "unit": "", "title": "",
@@ -607,6 +670,7 @@ class RenamePlanManager:
             "smart_title_separator": bool((profile or {}).get("smart_title_separator", format_rules.get("smart_title_separator", True))),
             "reserve_missing_prefixes": bool(validation_rules.get("reserve_missing_prefixes", True)),
             "special_files_keep_position": bool(validation_rules.get("special_files_keep_position", True)),
+            "verify_after_execute": bool(validation_rules.get("verify_after_execute", True)),
             "profile_reused": bool(profile),
             "profile_rule_outdated": profile_outdated,
             "rule_version": rule_version,
@@ -734,7 +798,11 @@ class RenamePlanManager:
                         prelude_counts[item_prelude] = prelude_counts.get(item_prelude, 0) + 1
                 prelude = max(prelude_counts, key=prelude_counts.get) if prelude_counts else ""
                 if prelude and prelude not in title and title not in prelude:
-                    suggested = f"{title}·{prelude}"
+                    volume_match = re.match(r"^(.+?)([上下])$", prelude)
+                    if volume_match:
+                        suggested = f"{title}·{volume_match.group(1)}（{volume_match.group(2)}）"
+                    else:
+                        suggested = f"{title}·{prelude}"
                 elif prelude:
                     suggested = prelude
                 else:
@@ -996,6 +1064,10 @@ class RenamePlanManager:
                     confidence = max(0.0, min(1.0, float(raw.get("confidence") or 0)))
                 except (TypeError, ValueError):
                     confidence = 0.0
+                mode = str((analysis or {}).get("mode") or "risk_review")
+                changed = bool(raw.get("changed"))
+                if mode == "full_clean" and "action" not in raw:
+                    action = "rename" if changed else "keep"
                 suggestions.append({
                     "id": str(raw.get("id") or uuid.uuid4().hex[:12]),
                     "relative_source": key,
@@ -1003,14 +1075,193 @@ class RenamePlanManager:
                     "clean_title": str(raw.get("clean_title") or "").strip()[:220],
                     "reason": str(raw.get("reason") or "AI 未提供理由").strip()[:500],
                     "confidence": confidence,
+                    **({"changed": changed} if mode == "full_clean" else {}),
                 })
             plan["ai_analysis"] = {
                 "status": "completed", "suggestions": suggestions,
                 "summary": str((analysis or {}).get("summary") or "").strip()[:1000],
-                "model": str((analysis or {}).get("model") or ""), "created_at": _now(),
+                "model": str((analysis or {}).get("model") or ""),
+                "mode": str((analysis or {}).get("mode") or "risk_review"),
+                "created_at": _now(),
             }
             self._save_payload_unlocked(payload)
             return dict(plan)
+
+    def update_ai_clean(self, plan_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        """Atomically persist full-clean progress so a failed run can resume."""
+        with self._lock:
+            payload = self._load_payload_unlocked()
+            plan = payload["plans"].get(str(plan_id or ""))
+            if not plan:
+                raise KeyError("重命名计划不存在")
+            state = dict(plan.get("ai_clean") or {})
+            state.update(dict(updates or {}))
+            plan["ai_clean"] = state
+            self._save_payload_unlocked(payload)
+            return dict(plan)
+
+    def verify_completed_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """Inspect the on-disk result without changing files or rolling back."""
+        root = Path(plan.get("album_dir") or "").resolve()
+        items = plan.get("items") or []
+        audio_files = _audio_files(root)
+        cleanup = ((plan.get("rule_snapshot") or {}).get("rules") or {}).get("cleanup") or DEFAULT_RULE_VALUES["cleanup"]
+        ad_keywords = tuple(cleanup.get("ad_keywords") or _AD_KEYWORDS)
+        ad_patterns = tuple(cleanup.get("ad_patterns") or ())
+
+        def check(name: str, details: list[Any]) -> dict[str, Any]:
+            return {"name": name, "passed": not details, "details": details}
+
+        target_details = []
+        for item in items:
+            action = item.get("action") or "keep"
+            if action == "quarantine":
+                actual = Path(item.get("quarantine") or "")
+                expected = actual.name
+            elif action == "rename":
+                actual = Path(item.get("target") or "")
+                expected = item.get("target_name") or ""
+            else:
+                actual = Path(item.get("source") or "")
+                expected = item.get("source_name") or ""
+            if not actual.exists():
+                target_details.append(f"{item.get('source_name')}: 目标文件不存在")
+            elif action != "quarantine" and actual.name != expected:
+                target_details.append(f"{item.get('source_name')}: 实际为 {actual.name}，期望 {expected}")
+
+        residual_details = []
+        for path in audio_files:
+            stem = path.stem
+            hits = [keyword for keyword in ad_keywords if keyword and keyword.casefold() in stem.casefold()]
+            for pattern in ad_patterns:
+                try:
+                    if re.search(pattern, stem, re.I):
+                        hits.append(f"正则:{pattern}")
+                except re.error:
+                    continue
+            if hits:
+                residual_details.append(f"{path.name}: {', '.join(dict.fromkeys(hits))}")
+
+        ending_files = [path.name for path in audio_files if any(marker in path.stem for marker in _ENDING_MARKERS)]
+        ending_details = [] if len(ending_files) == 1 else [
+            f"结尾标识文件数为 {len(ending_files)}（期望 1）：{', '.join(ending_files)}"
+        ]
+
+        missing_details = []
+        missing = plan.get("missing_chapters") or []
+        config = plan.get("configuration") or {}
+        prefix_width = int(config.get("prefix_width") or 4)
+        items_by_volume: dict[int, list[dict[str, Any]]] = {}
+        for item in items:
+            volume_index = int(item.get("volume_index") or 1)
+            items_by_volume.setdefault(volume_index, []).append(item)
+
+        def chapter_value(item: dict[str, Any]) -> int:
+            try:
+                return int(item.get("chapter") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        for raw in missing:
+            if isinstance(raw, dict):
+                volume = int(raw.get("volume") or 1)
+                chapter = int(raw.get("chapter") or 0)
+            else:
+                volume = 1
+                chapter = int(raw or 0)
+            if not chapter:
+                missing_details.append(f"第{chapter}集（第{volume}册）无法计算预留前缀")
+                continue
+
+            volume_items = items_by_volume.get(volume, [])
+            before_missing = []
+            for item in volume_items:
+                if item.get("kind") == "chapter" and chapter_value(item) >= chapter:
+                    break
+                before_missing.append(item)
+            anchor = before_missing[-1] if before_missing else None
+
+            if anchor:
+                try:
+                    expected_prefix = int(anchor.get("prefix") or 0) + 1
+                except (TypeError, ValueError):
+                    expected_prefix = 0
+                prior_chapter = next(
+                    (chapter_value(item) for item in reversed(before_missing)
+                     if item.get("kind") == "chapter" and chapter_value(item) > 0),
+                    0,
+                )
+                expected_prefix += max(0, chapter - prior_chapter - 1)
+            else:
+                first = next(
+                    (item for item in volume_items
+                     if item.get("kind") == "chapter" and chapter_value(item) >= chapter),
+                    None,
+                )
+                if not first:
+                    missing_details.append(f"第{chapter}集（第{volume}册）无法计算预留前缀")
+                    continue
+                try:
+                    expected_prefix = int(first.get("prefix") or 0) - (
+                        chapter_value(first) - chapter
+                    )
+                except (TypeError, ValueError):
+                    expected_prefix = 0
+            if expected_prefix <= 0:
+                missing_details.append(f"第{chapter}集（第{volume}册）无法计算预留前缀")
+                continue
+            expected_prefix = str(expected_prefix).zfill(prefix_width)
+            occupied = [path.name for path in audio_files
+                        if re.match(rf"^{re.escape(expected_prefix)}(?:[-._\s]|$)", path.name)]
+            if occupied:
+                missing_details.append(
+                    f"第{chapter}集（第{volume}册）预留前缀 {expected_prefix} 被占用：{', '.join(occupied)}"
+                )
+
+        whitespace_details = [
+            path.name for path in audio_files
+            if re.search(r"\s+\.(?:mp3|m4a|aac|flac|wav|ogg|caf)$", path.name, re.I)
+        ]
+
+        separator_details = []
+        for item in items:
+            if item.get("kind") != "chapter" or not str(item.get("clean_title") or "").strip():
+                continue
+            name = str(item.get("target_name") or item.get("source_name") or "")
+            stem = Path(name).stem
+            match = re.search(r"第\d+(?:章|集|回)(.*)$", stem)
+            if not match:
+                separator_details.append(f"{name}: 未找到章节号")
+                continue
+            tail = match.group(1)
+            if tail.startswith(("《", "“", "「", "『")):
+                continue
+            if tail.startswith(" ") and not tail[1:2].isspace():
+                continue
+            separator_details.append(f"{name}: 章节号与标题分隔不符合规范")
+
+        name_counts = Counter(
+            (str(path.parent.relative_to(root)).casefold(), path.name.casefold())
+            for path in audio_files
+        )
+        duplicate_details = [
+            f"{parent or '.'}/{name} 出现 {count} 次"
+            for (parent, name), count in name_counts.items() if count > 1
+        ]
+        checks = [
+            check("目标格式", target_details),
+            check("残留广告", residual_details),
+            check("结尾标识", ending_details),
+            check("预留空号", missing_details),
+            check("扩展名前空格", whitespace_details),
+            check("章节号标题分隔", separator_details),
+            check("无重名", duplicate_details),
+        ]
+        return {
+            "passed": all(entry["passed"] for entry in checks),
+            "checked_at": _now(),
+            "checks": checks,
+        }
 
     def apply_ai_suggestions(
         self, plan_id: str, suggestion_ids: Iterable[str] | None = None
@@ -1179,6 +1430,12 @@ class RenamePlanManager:
                         raise OSError(f"整理结果校验失败：{destination.name}")
                 plan["status"] = "completed"
                 plan["completed_at"] = _now()
+                if plan.get("configuration", {}).get("verify_after_execute", True):
+                    plan["verification"] = self.verify_completed_plan(plan)
+                else:
+                    plan["verification"] = {
+                        "passed": True, "skipped": True, "checked_at": _now(), "checks": []
+                    }
                 profile = dict(plan.get("configuration") or {})
                 profile["confirmed_at"] = _now()
                 payload["profiles"][plan["profile_key"]] = profile

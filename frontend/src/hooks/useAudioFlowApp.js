@@ -183,6 +183,7 @@ export function useAudioFlowApp() {
   const [agentSessions, setAgentSessions] = useState([]);
   const [agentSession, setAgentSession] = useState(null);
   const [renamePlans, setRenamePlans] = useState([]);
+  const [renameFolders, setRenameFolders] = useState([]);
   const [renameRules, setRenameRules] = useState({packs: [], effective: {rules: {}, applied: []}});
   const [cookies, setCookies] = useState({});
   const [config, setConfig] = useState({});
@@ -204,6 +205,7 @@ export function useAudioFlowApp() {
   const foregroundRefreshRef = useRef(0);
   const searchRequestRef = useRef(0);
   const albumRequestRef = useRef(0);
+  const renameAiPollersRef = useRef({});
   const hasCachedDataRef = useRef(downloads.length > 0 || subscriptions.length > 0);
   const initializedRef = useRef(false);
 
@@ -1062,6 +1064,23 @@ export function useAudioFlowApp() {
     return data.plans || [];
   }, []);
 
+  const loadRenameFolders = useCallback(async () => {
+    const data = await api('/api/rename-plans/folders');
+    const folders = data.folders || [];
+    setRenameFolders(folders);
+    return folders;
+  }, []);
+
+  const analyzeRenameFolder = useCallback(async (relativePath, albumTitle) => runBusy('renameFolder:' + relativePath, async () => {
+    const data = await api('/api/rename-plans/analyze-folder', {
+      method: 'POST',
+      body: {relative_path: relativePath, album_title: albumTitle || undefined},
+    });
+    await reloadRenamePlans();
+    showToast('本地文件夹整理计划已生成', 'ok');
+    return data.plan;
+  }), [reloadRenamePlans, runBusy, showToast]);
+
   const regenerateRenamePlan = useCallback(async (plan) => runBusy('renamePlan:' + plan.id, async () => {
     const data = await api('/api/rename-plans/analyze', {
       method: 'POST',
@@ -1141,6 +1160,34 @@ export function useAudioFlowApp() {
     showToast(`AI 复核完成：${data.plan?.ai_analysis?.suggestions?.length || 0} 条建议`, 'ok');
     return data.plan;
   }), [runBusy, showToast]);
+
+  const startRenameAIClean = useCallback(async (planId) => {
+    try {
+      const data = await runBusy('renameAI:' + planId, async () => api(`/api/rename-plans/${encodeURIComponent(planId)}/ai-clean`, {method: 'POST', body: {}}));
+      if (data.plan) setRenamePlans((prev) => prev.map((plan) => plan.id === planId ? data.plan : plan));
+      if (renameAiPollersRef.current[planId]) clearInterval(renameAiPollersRef.current[planId]);
+      if (['completed', 'failed'].includes(data.plan?.ai_clean?.status)) {
+        showToast(data.plan?.ai_clean?.status === 'failed' ? '全量 AI 清洗失败' : '全量 AI 清洗已完成', data.plan?.ai_clean?.status === 'failed' ? 'err' : 'ok');
+        return data.plan;
+      }
+      const poll = window.setInterval(async () => {
+        const current = await api(`/api/rename-plans/${encodeURIComponent(planId)}`).catch(() => null);
+        if (!current?.plan) return;
+        setRenamePlans((prev) => prev.map((plan) => plan.id === planId ? current.plan : plan));
+        const status = current.plan.ai_clean?.status;
+        if (['completed', 'failed'].includes(status)) {
+          clearInterval(poll);
+          delete renameAiPollersRef.current[planId];
+          showToast(status === 'failed' ? `全量 AI 清洗失败：${current.plan.ai_clean?.error || ''}` : '全量 AI 清洗已完成', status === 'failed' ? 'err' : 'ok');
+        }
+      }, 3000);
+      renameAiPollersRef.current[planId] = poll;
+      return data.plan;
+    } catch (error) {
+      showToast(error.message, 'err');
+      return null;
+    }
+  }, [runBusy, showToast]);
 
   const applyAIRenameSuggestions = useCallback(async (planId, suggestionIds) => runBusy('renameAI:' + planId, async () => {
     const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/ai-apply`, {method: 'POST', body: {suggestion_ids: suggestionIds}});
@@ -1409,6 +1456,10 @@ export function useAudioFlowApp() {
     return () => timers.forEach(clearTimeout);
   }, [loadDownloads, loadSubscriptions, showToast, subscriptionJobs]);
 
+  useEffect(() => () => {
+    Object.values(renameAiPollersRef.current).forEach((timer) => clearInterval(timer));
+  }, []);
+
   return {
     page,
     setPage,
@@ -1449,6 +1500,7 @@ export function useAudioFlowApp() {
     agentSessions,
     agentSession,
     renamePlans,
+    renameFolders,
     renameRules,
     cookies,
     config,
@@ -1542,6 +1594,8 @@ export function useAudioFlowApp() {
       loadAgent,
       loadAgentSession,
       reloadRenamePlans,
+      loadRenameFolders,
+      analyzeRenameFolder,
       reloadRenameRules,
       regenerateRenamePlan,
       reviewRenamePlan,
@@ -1553,6 +1607,7 @@ export function useAudioFlowApp() {
       deleteRenameRuleDraft,
       testRenameRules,
       analyzeRenamePlanAI,
+      startRenameAIClean,
       applyAIRenameSuggestions,
       createAIRenameRuleDraft,
       saveAgentConfig,

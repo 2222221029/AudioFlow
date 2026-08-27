@@ -5,6 +5,8 @@ web_server.py          Server entrypoint
 src/server/            Flask Web/PWA API and SPA fallback
 src/features/          Shared feature code used by the server
 core/                  Search, download, cookies, subscriptions, platform adapters
+core/audiobook_renamer.py  Confirmation-gated rename plans, AI review, and completion verification
+core/agent_manager.py      Configured model access and risk/full-clean title suggestions
 core/vendor/           Portable reference scripts used by platform adapters
 frontend/              React + Vite Web/PWA frontend
 frontend/src/          Componentized UI source
@@ -38,4 +40,7 @@ Key backend endpoints:
 GET  /api/diagnostics          Runtime, path, frontend and ffmpeg diagnostics
 POST /api/downloads/cleanup    Batch clean completed/failed task records
 POST /api/auth/login           Password login with failure rate limiting
+GET  /api/rename-plans/folders List audio folders under the mounted download directory
+POST /api/rename-plans/analyze-folder Create a confirmation-gated manual folder plan
+POST /api/rename-plans/<id>/ai-clean Start resumable full-clean AI suggestions
 ```

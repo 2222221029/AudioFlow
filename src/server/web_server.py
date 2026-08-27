@@ -21,7 +21,7 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 
 from core.auth_manager import AuthManager
 from core.agent_manager import AgentManager
-from core.audiobook_renamer import RenamePlanManager, preview_rule_samples
+from core.audiobook_renamer import AUDIO_EXTENSIONS, RenamePlanManager, preview_rule_samples
 from core.cookie_manager import CookieManager
 from core.download_worker import DownloadWorker
 from core.developer_agent_manager import DeveloperAgentManager
@@ -432,6 +432,47 @@ def _task_album_dir(task):
     return root / _rename_safe_name(album.get("title") or task.get("title") or "未知专辑")
 
 
+def _notify_rename_plan(plan, task_id=""):
+    if not plan or plan.get("status") not in {"pending_confirmation", "needs_review"}:
+        return
+    summary = plan.get("summary") or {}
+    samples = [
+        f"{item.get('source_name')} -> {item.get('target_name')}"
+        for item in (plan.get("items") or [])[:3]
+    ]
+    lines = [
+        f"专辑：{(plan.get('album') or {}).get('title') or '-'}",
+        f"计划 ID：{plan.get('id')}",
+        f"格式：{plan.get('suggested_format')}",
+        f"待重命名：{summary.get('planned', 0)} 个",
+        f"需复核问题：{summary.get('issues', 0)} 个",
+        f"特殊文件：{summary.get('special_files', summary.get('unmatched', 0))} 个",
+        f"缺失章节（已预留空号）：{summary.get('missing_chapters', 0)} 个",
+    ]
+    if samples:
+        lines.extend(["示例：", *samples])
+    if plan.get("status") == "pending_confirmation":
+        lines.append(f"企业微信回复：确认重命名 {plan.get('id')} / 取消重命名 {plan.get('id')}")
+    else:
+        lines.append("计划存在歧义或特殊文件，已阻止执行；可逐项复核，或选择保留风险文件并整理其余文件。")
+    base_url = str(os.getenv("PUBLIC_BASE_URL", "")).strip().rstrip("/")
+    if base_url:
+        lines.append(f"详情：{base_url}/api/rename-plans/{plan.get('id')}")
+    notification_manager.notify(
+        "rename_confirmation",
+        f"待确认重命名：{(plan.get('album') or {}).get('title') or task_id}",
+        "\n".join(lines),
+        {
+            "title": (plan.get("album") or {}).get("title") or "",
+            "plan_id": plan.get("id"),
+            "plan_status": plan.get("status"),
+            "planned": summary.get("planned", 0),
+            "issues": summary.get("issues", 0),
+            "task_id": task_id or plan.get("task_id") or "",
+        },
+    )
+
+
 def create_rename_plan_for_task(task_id, *, notify=True, replace=False):
     task = task_snapshot(task_id)
     if not task:
@@ -458,43 +499,8 @@ def create_rename_plan_for_task(task_id, *, notify=True, replace=False):
         album_dir=_task_album_dir(task),
         origin_source=task.get("origin_source") or task.get("source") or "",
     )
-    if notify and plan.get("status") in {"pending_confirmation", "needs_review"}:
-        summary = plan.get("summary") or {}
-        samples = [
-            f"{item.get('source_name')} -> {item.get('target_name')}"
-            for item in (plan.get("items") or [])[:3]
-        ]
-        lines = [
-            f"专辑：{(plan.get('album') or {}).get('title') or '-'}",
-            f"计划 ID：{plan.get('id')}",
-            f"格式：{plan.get('suggested_format')}",
-            f"待重命名：{summary.get('planned', 0)} 个",
-            f"需复核问题：{summary.get('issues', 0)} 个",
-            f"特殊文件：{summary.get('special_files', summary.get('unmatched', 0))} 个",
-            f"缺失章节（已预留空号）：{summary.get('missing_chapters', 0)} 个",
-        ]
-        if samples:
-            lines.extend(["示例：", *samples])
-        if plan.get("status") == "pending_confirmation":
-            lines.append(f"企业微信回复：确认重命名 {plan.get('id')} / 取消重命名 {plan.get('id')}")
-        else:
-            lines.append("计划存在歧义或特殊文件，已阻止执行；可逐项复核，或选择保留风险文件并整理其余文件。")
-        base_url = str(os.getenv("PUBLIC_BASE_URL", "")).strip().rstrip("/")
-        if base_url:
-            lines.append(f"详情：{base_url}/api/rename-plans/{plan.get('id')}")
-        notification_manager.notify(
-            "rename_confirmation",
-            f"待确认重命名：{(plan.get('album') or {}).get('title') or task_id}",
-            "\n".join(lines),
-            {
-                "title": (plan.get("album") or {}).get("title") or "",
-                "plan_id": plan.get("id"),
-                "plan_status": plan.get("status"),
-                "planned": summary.get("planned", 0),
-                "issues": summary.get("issues", 0),
-                "task_id": task_id,
-            },
-        )
+    if notify:
+        _notify_rename_plan(plan, task_id)
     return plan
 
 
@@ -511,10 +517,15 @@ def schedule_rename_plan(task_id):
                     and not plan.get("configuration_confirmation_required")):
                 completed = rename_plan_manager.confirm(plan.get("id"))
                 summary = completed.get("summary") or {}
+                verification = completed.get("verification") or {}
+                verification_text = (
+                    f"验证：{'通过' if verification.get('passed') else '发现问题'}"
+                    if verification else "验证：未启用"
+                )
                 notification_manager.notify(
                     "rename_confirmation",
                     f"整理完成：{(completed.get('album') or {}).get('title') or task_id}",
-                    f"已按该专辑确认过的规则自动整理 {summary.get('planned', 0)} 个文件。",
+                    f"已按该专辑确认过的规则自动整理 {summary.get('planned', 0)} 个文件。\n{verification_text}",
                     {
                         "title": (completed.get("album") or {}).get("title") or "",
                         "plan_id": completed.get("id"),
@@ -2589,6 +2600,97 @@ def api_rename_plans():
     return json_ok(plans=rename_plan_manager.list(request.args.get("status") or None))
 
 
+def _rename_folder_entries():
+    root = Path(resolve_download_dir()).resolve()
+    folders = []
+    if not root.exists() or not root.is_dir():
+        return folders
+    for path in root.rglob("*"):
+        if not path.is_dir() or path.is_symlink():
+            continue
+        try:
+            relative = path.resolve().relative_to(root)
+        except ValueError:
+            continue
+        if not relative.parts or len(relative.parts) > 3:
+            continue
+        if any(part == ".audioflow-trash" or part.startswith(".") for part in relative.parts):
+            continue
+        count = sum(
+            1 for child in path.iterdir()
+            if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS
+        )
+        if count:
+            folders.append({
+                "relative_path": relative.as_posix(),
+                "name": path.name,
+                "audio_count": count,
+            })
+        if len(folders) >= 500:
+            break
+    return sorted(folders, key=lambda item: item["relative_path"].casefold())[:500]
+
+
+def create_rename_plan_for_folder(relative_path, album_title=None, *, notify=True, replace=False):
+    raw_path = str(relative_path or "").strip().replace("\\", "/")
+    if not raw_path or Path(raw_path).is_absolute():
+        raise ValueError("请提供下载目录内的相对文件夹路径")
+    root = Path(resolve_download_dir()).resolve()
+    target = (root / Path(raw_path)).resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("整理路径必须位于下载目录内") from exc
+    if not relative.parts or any(part == ".audioflow-trash" or part.startswith(".") for part in relative.parts):
+        raise ValueError("不能整理隐藏目录或隔离目录")
+    if not target.exists() or not target.is_dir():
+        raise ValueError("目标文件夹不存在")
+    task_id = f"folder:{relative.as_posix()}"
+    existing = next((
+        item for item in rename_plan_manager.list()
+        if (item.get("task_id") == task_id
+            or Path(item.get("album_dir") or "").resolve() == target)
+        and item.get("status") not in {"cancelled", "expired", "failed"}
+    ), None)
+    if existing:
+        if not replace:
+            return existing
+        if existing.get("status") in {"executing", "completed"}:
+            raise ValueError("该文件夹已有已执行或正在执行的整理计划")
+        rename_plan_manager.cancel(existing.get("id"))
+    title = str(album_title or target.name).strip() or target.name
+    plan = rename_plan_manager.create_plan(
+        task_id=task_id,
+        album={"title": title, "platform": "", "id": ""},
+        chapters=[],
+        album_dir=target,
+        origin_source="manual",
+    )
+    if notify:
+        _notify_rename_plan(plan, task_id)
+    return plan
+
+
+@app.get("/api/rename-plans/folders")
+def api_rename_plan_folders():
+    return json_ok(folders=_rename_folder_entries())
+
+
+@app.post("/api/rename-plans/analyze-folder")
+def api_analyze_rename_folder():
+    payload = request.get_json(silent=True) or {}
+    try:
+        plan = create_rename_plan_for_folder(
+            payload.get("relative_path") or payload.get("relativePath"),
+            payload.get("album_title") or payload.get("albumTitle"),
+            notify=True,
+            replace=bool(payload.get("replace")),
+        )
+        return json_ok(plan=plan)
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc), 400)
+
+
 @app.get("/api/rename-rules")
 def api_rename_rules():
     return json_ok(
@@ -2696,6 +2798,144 @@ def api_ai_analyze_rename_plan(plan_id):
         return json_error(str(exc), 400)
 
 
+def _full_clean_entries(plan):
+    chapters = sorted(
+        [item for item in (plan.get("items") or []) if item.get("kind") == "chapter"],
+        key=lambda item: (item.get("sequence", 0), item.get("chapter", 0)),
+    )
+    entries = []
+    for index, item in enumerate(chapters):
+        neighbors = []
+        if index:
+            neighbors.append(chapters[index - 1].get("source_name") or "")
+        if index + 1 < len(chapters):
+            neighbors.append(chapters[index + 1].get("source_name") or "")
+        entries.append({
+            "relative_source": item.get("relative_source") or item.get("source_name") or "",
+            "source_name": item.get("source_name") or "",
+            "current_title": item.get("clean_title") or "",
+            "chapter": item.get("chapter"),
+            "unit": item.get("original_unit") or (plan.get("configuration") or {}).get("chapter_unit") or "集",
+            "neighbors": neighbors,
+        })
+    return entries
+
+
+def _run_full_clean(plan_id):
+    try:
+        plan = rename_plan_manager.get(plan_id)
+        if not plan:
+            return
+        entries = _full_clean_entries(plan)
+        total = len(entries)
+        _provider_id, _spec, model_config = agent_manager._validate_ready()
+        existing_state = plan.get("ai_clean") or {}
+        existing = {
+            str(item.get("relative_source") or ""): dict(item)
+            for item in existing_state.get("suggestions") or []
+            if isinstance(item, dict) and item.get("relative_source")
+        }
+        keys = {entry["relative_source"] for entry in entries}
+        existing = {key: value for key, value in existing.items() if key in keys}
+        started_at = int(existing_state.get("started_at") or time.time())
+        rename_plan_manager.update_ai_clean(plan_id, {
+            "status": "running", "done": len(existing), "total": total,
+            "model": model_config["model"], "started_at": started_at,
+        })
+        remaining = [entry for entry in entries if entry["relative_source"] not in existing]
+        for offset in range(0, len(remaining), 40):
+            batch = remaining[offset:offset + 40]
+            result = agent_manager.clean_titles_batch(
+                plan.get("album") or {},
+                (plan.get("rule_snapshot") or {}).get("rules") or {},
+                batch,
+                max_tokens=4096,
+            )
+            returned = {
+                str(item.get("relative_source") or ""): dict(item)
+                for item in result.get("suggestions") or []
+                if isinstance(item, dict) and item.get("relative_source")
+            }
+            for entry in batch:
+                key = entry["relative_source"]
+                suggestion = returned.get(key) or {
+                    "relative_source": key,
+                    "clean_title": entry.get("current_title") or "",
+                    "changed": False,
+                    "action": "keep",
+                    "reason": "AI 未返回该条建议，保留规则引擎结果",
+                    "confidence": 0,
+                }
+                suggestion["relative_source"] = key
+                suggestion.setdefault("action", "rename" if suggestion.get("changed") else "keep")
+                existing[key] = suggestion
+            rename_plan_manager.update_ai_clean(plan_id, {
+                "status": "running", "done": len(existing), "total": total,
+                "model": model_config["model"], "suggestions": list(existing.values()),
+            })
+        ordered_suggestions = [existing[entry["relative_source"]] for entry in entries]
+        saved = rename_plan_manager.save_ai_analysis(plan_id, {
+            "mode": "full_clean",
+            "suggestions": ordered_suggestions,
+            "summary": "已完成全部章节的 AI 清洗建议，建议仍需逐项勾选并最终确认。",
+            "model": model_config["model"],
+        })
+        completed = rename_plan_manager.update_ai_clean(plan_id, {
+            "status": "completed", "done": total, "total": total,
+            "model": model_config["model"], "suggestions": ordered_suggestions,
+            "completed_at": int(time.time()),
+        })
+        notification_manager.notify(
+            "rename_confirmation",
+            f"全量 AI 清洗完成：{(saved.get('album') or {}).get('title') or plan_id}",
+            f"计划 {plan_id} 已生成 {total} 条全量清洗建议，请在 AudioFlow 中勾选并应用后再确认执行。",
+            {"title": (saved.get("album") or {}).get("title") or "", "plan_id": plan_id,
+             "plan_status": saved.get("status"), "planned": total, "issues": 0,
+             "task_id": saved.get("task_id") or ""},
+        )
+        return completed
+    except Exception as exc:
+        logging.exception("full audiobook AI cleaning failed: %s", plan_id)
+        try:
+            current = rename_plan_manager.get(plan_id) or {}
+            state = current.get("ai_clean") or {}
+            rename_plan_manager.update_ai_clean(plan_id, {
+                "status": "failed", "done": int(state.get("done") or 0),
+                "total": int(state.get("total") or 0), "error": str(exc),
+                "failed_at": int(time.time()),
+            })
+        except Exception:
+            logging.exception("failed to persist full audiobook AI cleaning error: %s", plan_id)
+
+
+@app.post("/api/rename-plans/<plan_id>/ai-clean")
+def api_ai_clean_rename_plan(plan_id):
+    plan = rename_plan_manager.get(plan_id)
+    if not plan:
+        return json_error("重命名计划不存在", 404)
+    if plan.get("status") not in {"needs_review", "pending_confirmation"}:
+        return json_error("只有待复核或待确认计划可以进行全量 AI 清洗", 400)
+    state = plan.get("ai_clean") or {}
+    if state.get("status") == "running":
+        return json_ok(plan=plan)
+    if state.get("status") == "completed":
+        return json_ok(plan=plan)
+    try:
+        _provider_id, _spec, model_config = agent_manager._validate_ready()
+    except (TypeError, ValueError, requests.RequestException) as exc:
+        return json_error(f"请先去 Agent 设置配置模型密钥：{exc}", 400)
+    entries = _full_clean_entries(plan)
+    started_at = int(state.get("started_at") or time.time())
+    plan = rename_plan_manager.update_ai_clean(plan_id, {
+        "status": "running", "done": int(state.get("done") or 0),
+        "total": len(entries), "model": model_config["model"], "started_at": started_at,
+    })
+    threading.Thread(
+        target=_run_full_clean, args=(plan_id,), name=f"rename-ai-clean-{plan_id}", daemon=True
+    ).start()
+    return json_ok(plan=plan)
+
+
 @app.post("/api/rename-plans/<plan_id>/ai-apply")
 def api_apply_ai_rename_suggestions(plan_id):
     payload = request.get_json(silent=True) or {}
@@ -2794,8 +3034,11 @@ def _agent_get_rename_plan(plan_id):
     return plan
 
 
-def _agent_create_rename_plan(task_id):
-    plan = create_rename_plan_for_task(str(task_id or ""), notify=True)
+def _agent_create_rename_plan(task_id="", folder="", album_title=""):
+    if folder:
+        plan = create_rename_plan_for_folder(folder, album_title or None, notify=True)
+    else:
+        plan = create_rename_plan_for_task(str(task_id or ""), notify=True)
     return {
         "id": plan.get("id"),
         "task_id": plan.get("task_id"),

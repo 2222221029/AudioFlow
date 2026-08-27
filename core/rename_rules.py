@@ -34,7 +34,7 @@ MANDATORY_AD_KEYWORDS = [
     "播放量", "评论区", "每天更新", "每日更新", "每周更新", "更新时间", "更新通知",
     "停更", "断更", "暂停更新", "恢复更新", "加更", "补更", "爆更", "平台出品",
     "求月票", "求推荐", "推荐票", "带货", "购买链接", "限时免费", "福利群",
-    "兄弟们", "宝子们", "老铁们", "家人们", "听友们",
+    "兄弟们", "宝子们", "老铁们", "家人们", "听友们", "新年快乐", "有任何问题", "咨询主播",
 ]
 
 # Ordered from specific long-form noise to shorter suffixes. These patterns are
@@ -42,6 +42,8 @@ MANDATORY_AD_KEYWORDS = [
 # advertising text by replacing the default lists.
 MANDATORY_AD_PATTERNS = [
     r"(?:忘记|记得|别忘|欢迎|麻烦|帮忙|跪求|请大家)[^，。！!；;]{0,40}(?:点赞|评论|订阅|收藏|分享|转发)[^，。！!；;]{0,30}[~～！!。.]*$",
+    r"[-—]?(?:有任何问题|如有问题).*?(?:咨询|联系).*$",
+    r"^(?:过年|回老家|暂停更新|恢复更新|下月|大家)[^。！？!?]{0,100}(?:暂停更新|恢复更新|新年快乐)[^。！？!?]{0,50}$",
     r"(?:每天|每日|每周|周[一二三四五六日天末]|工作日)[^，。！!；;]{0,24}(?:更新|上新)[^，。！!；;]{0,20}$",
     r"(?:新书|新专辑)[^，。！!；;]{0,60}(?:上线|上架|来袭|来啦|来咯|已发)[^，。！!；;]{0,30}$",
     r"(?:搜|搜索|关注)[：:]?[^，。！!；;]{0,50}(?:新书|公众号|微信|QQ群|QQ 群|听友群|粉丝群)[^，。！!；;]{0,30}$",
@@ -65,6 +67,7 @@ DEFAULT_RULE_VALUES: dict[str, Any] = {
         "preserve_keywords": ["全书完", "大结局", "全书终", "完结", "全书完结"],
         "title_exceptions": [],
         "split_ad_after_first_space": True,
+        "absorb_marker_space": True,
     },
     "special_files": {
         "content_labels": [
@@ -85,6 +88,7 @@ DEFAULT_RULE_VALUES: dict[str, Any] = {
         "special_files_keep_position": True,
         "require_confirmation": True,
         "scan_residual_ads": True,
+        "verify_after_execute": True,
     },
 }
 
@@ -187,6 +191,7 @@ def sanitize_rules(value: dict[str, Any] | None) -> dict[str, Any]:
         for item in dict.fromkeys([*MANDATORY_AD_PATTERNS, *custom_patterns])
     ]
     cleanup["split_ad_after_first_space"] = bool(cleanup.get("split_ad_after_first_space", True))
+    cleanup["absorb_marker_space"] = bool(cleanup.get("absorb_marker_space", True))
 
     special = merged["special_files"]
     special["content_labels"] = _text_list(special.get("content_labels"))
@@ -200,7 +205,7 @@ def sanitize_rules(value: dict[str, Any] | None) -> dict[str, Any]:
             special[key] = default
 
     validation = merged["validation"]
-    for key in ("reserve_missing_prefixes", "special_files_keep_position", "require_confirmation"):
+    for key in ("reserve_missing_prefixes", "special_files_keep_position", "require_confirmation", "verify_after_execute"):
         validation[key] = bool(validation.get(key, True))
     validation["scan_residual_ads"] = True
     return merged
