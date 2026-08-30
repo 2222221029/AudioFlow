@@ -240,6 +240,7 @@ class QimaoManager:
                 "qimao_kind": "album",
                 "book_id": bid,
                 "album_id": primary,
+                "raw_data": raw,
             }
         return {
             "id": bid,
@@ -256,6 +257,7 @@ class QimaoManager:
             "qimao_kind": "book",
             "book_id": bid,
             "album_id": aid,
+            "raw_data": raw,
         }
 
     def _interleave(self, book_items: List[Dict], listen_items: List[Dict]) -> List[Dict]:

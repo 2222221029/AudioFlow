@@ -214,6 +214,13 @@ class SearchManager:
                     'author': author_name,
                     'cover': cover_url,  # ✅ 现在有了cover
                     'category': item.get('categoryName', ''),
+                    'plays': (
+                        item.get('playCount')
+                        or item.get('play_count')
+                        or item.get('readCount')
+                        or item.get('popularity')
+                        or 0
+                    ),
                     'raw_data': item
                 })
             

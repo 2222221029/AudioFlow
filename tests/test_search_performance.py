@@ -5,7 +5,7 @@ from unittest import mock
 
 from core.enhanced_search_manager import EnhancedSearchManager
 from core.kuwo_manager import KuwoManager
-from core.ximalaya_manager import parse_ximalaya_album_id
+from core.ximalaya_manager import XimalayaManager, parse_ximalaya_album_id
 
 
 class EnhancedSearchPerformanceTest(unittest.TestCase):
@@ -105,6 +105,76 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
             EnhancedSearchManager._pick_popularity({"plays": 0, "raw": {"PLAYCNT": "2.5万"}}),
             25_000,
         )
+        self.assertEqual(
+            EnhancedSearchManager._pick_popularity({"raw_data": {"read_count": "86.4万"}}),
+            864_000,
+        )
+
+    def test_duplicate_provider_rows_keep_the_strongest_popularity(self):
+        results = EnhancedSearchManager._rank_search_results("三体", [
+            {"id": "same", "title": "三体", "platform": "喜马拉雅", "plays": 10},
+            {
+                "id": "same",
+                "title": "三体",
+                "platform": "喜马拉雅",
+                "playCount": "2.6亿",
+                "cover": "https://example.test/cover.jpg",
+            },
+        ])
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["plays"], 260_000_000)
+        self.assertEqual(results[0]["cover"], "https://example.test/cover.jpg")
+
+    def test_ximalaya_mobile_h5_album_shape_keeps_play_and_track_counts(self):
+        manager = XimalayaManager()
+        payload = {
+            "ret": 0,
+            "data": {
+                "albumViews": {
+                    "albums": [{
+                        "albumInfo": {
+                            "albumId": 123,
+                            "albumTitle": "道诡异仙 多人有声剧",
+                            "coverPath": "/group/test.jpg",
+                            "playCount": "1.8亿",
+                            "trackCount": 456,
+                            "anchorName": "测试主播",
+                            "isFinished": 2,
+                        }
+                    }]
+                }
+            },
+        }
+
+        results = manager._parse_search_results(payload)
+
+        self.assertEqual(results[0]["id"], "123")
+        self.assertEqual(results[0]["plays"], "1.8亿")
+        self.assertEqual(results[0]["episodes"], 456)
+        self.assertEqual(results[0]["status"], "已完结")
+        self.assertEqual(results[0]["author"], "测试主播")
+
+    def test_ximalaya_cookie_search_prefers_reference_h5_endpoint(self):
+        manager = XimalayaManager()
+        manager.cookie_string = "test_cookie=1"
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "ret": 0,
+            "data": {"albumViews": {"albums": [{
+                "albumInfo": {"id": 7, "title": "目标书名", "playCount": 9000}
+            }]}},
+        }
+        manager.session.get = mock.Mock(return_value=response)
+
+        results = manager._search_with_cookie("目标书名", page=1, page_size=60)
+
+        self.assertEqual(results[0]["plays"], 9000)
+        request = manager.session.get.call_args
+        self.assertEqual(request.args[0], "https://m.ximalaya.com/m-revision/page/search")
+        self.assertEqual(request.kwargs["params"]["core"], "album")
+        self.assertEqual(request.kwargs["params"]["rows"], 60)
+        self.assertEqual(request.kwargs["headers"]["Cookie"], "test_cookie=1")
 
     def test_search_coverage_uses_larger_single_requests(self):
         manager = self.manager()
@@ -136,6 +206,24 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
             "目标书名", page_size=50, enrich_details=False
         )
         manager.netease_manager.search_books.assert_called_once_with("目标书名", limit=60)
+
+    def test_search_coverage_expands_paginated_provider_candidates(self):
+        manager = self.manager()
+        manager.fanqie_manager = mock.Mock()
+        manager.fanqie_tingshu_manager = mock.Mock()
+        manager.qtfm_manager = mock.Mock()
+        manager.fanqie_manager.search_books.return_value = []
+        manager.fanqie_tingshu_manager.search_books.return_value = []
+        manager.qtfm_manager.search_books.return_value = []
+
+        for platform in EnhancedSearchManager.SEARCH_PAGE_LIMITS:
+            manager._search_platform_impl("目标书名", platform)
+
+        manager.fanqie_manager.search_books.assert_called_once_with("目标书名", max_pages=2)
+        manager.fanqie_tingshu_manager.search_books.assert_called_once_with(
+            "目标书名", max_pages=2, enrich_covers=False
+        )
+        manager.qtfm_manager.search_books.assert_called_once_with("目标书名", max_pages=3)
 
     def test_kuwo_large_page_deduplicates_without_losing_result_slots(self):
         manager = KuwoManager.__new__(KuwoManager)

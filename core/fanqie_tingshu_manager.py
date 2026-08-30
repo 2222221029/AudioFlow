@@ -386,7 +386,14 @@ class FanqieTingshuManager:
             "author": row.get("author") or "未知作者",
             "platform": PLATFORM_NAME,
             "cover": cover,
-            "plays": 0,
+            "plays": (
+                row.get("play_count")
+                or row.get("play_num")
+                or row.get("read_count")
+                or row.get("read_count_text")
+                or row.get("popularity")
+                or 0
+            ),
             "episodes": 0,
             "status": "连载中",
             "description": f"番茄{label} · 正文走听书 API",
@@ -396,6 +403,7 @@ class FanqieTingshuManager:
             "updated_at": "",
             "tingshu_kind": kind,
             "use_tingshu_content_api": True,
+            "raw_data": row.get("raw_data") or row,
         }
 
     def _fetch_cover_from_page(self, book_id: str) -> str:

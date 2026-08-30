@@ -2057,6 +2057,10 @@ class FanqieClient:
                         "book_name": (b.get("book_name") or b.get("title") or "?").strip(),
                         "author": (b.get("author") or b.get("author_name") or "").strip(),
                         "tab_title": tab_title,
+                        "play_count": b.get("play_count") or b.get("play_num"),
+                        "read_count": b.get("read_count") or b.get("read_count_text"),
+                        "popularity": b.get("popularity") or b.get("hot_score"),
+                        "raw_data": b,
                     })
                 for sub in c.get("cell_data") or []:
                     if isinstance(sub, dict):

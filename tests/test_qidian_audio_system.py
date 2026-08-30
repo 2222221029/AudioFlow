@@ -1,4 +1,5 @@
 import base64
+import json
 from unittest import mock
 from unittest.mock import Mock
 
@@ -75,10 +76,14 @@ def test_qidian_download_does_not_preflight_signed_url_with_head(tmp_path):
 def test_qidian_qr_accepts_dynamic_jsonp_and_keeps_image_in_memory():
     encoded = base64.b64encode(b"fake-png").decode("ascii")
     response = Mock()
-    response.text = (
-        'jQuery123_456({"code":0,"data":{"sessionKey":"qr-session",'
-        f'"image":"data:image/png;base64,{encoded}"}});'
-    )
+    payload = {
+        "code": 0,
+        "data": {
+            "sessionKey": "qr-session",
+            "image": f"data:image/png;base64,{encoded}",
+        },
+    }
+    response.text = f"jQuery123_456({json.dumps(payload)});"
     login = QrcodeLogin()
     login.session.get = Mock(return_value=response)
 
@@ -86,6 +91,17 @@ def test_qidian_qr_accepts_dynamic_jsonp_and_keeps_image_in_memory():
     assert login.session_key == "qr-session"
     assert login.qr_image == f"data:image/png;base64,{encoded}"
     response.raise_for_status.assert_called_once()
+
+
+def test_qidian_qr_rejects_malformed_jsonp_without_repairing_it():
+    response = Mock()
+    response.text = 'jQuery123_456({"code":0,"data":{"sessionKey":"qr-session"});'
+    login = QrcodeLogin()
+    login.session.get = Mock(return_value=response)
+
+    assert login.get_qrcode() is None
+    assert login.last_error
+    assert login.session_key is None
 
 
 def test_qidian_qr_driver_does_not_require_a_writable_working_directory():

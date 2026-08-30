@@ -196,6 +196,93 @@ class XimalayaManager:
                 if value:
                     return value
         return ""
+
+    @staticmethod
+    def _first_search_value(item: Dict, *keys):
+        for key in keys:
+            value = item.get(key)
+            if value not in (None, ""):
+                return value
+        return ""
+
+    def _normalize_search_album(self, item: Dict) -> Optional[Dict]:
+        """Normalize album rows returned by Ximalaya's Web and mobile H5 APIs."""
+        if not isinstance(item, dict):
+            return None
+        nested = item.get("albumInfo")
+        raw = dict(item)
+        if isinstance(nested, dict):
+            raw.update(nested)
+
+        album_id = self._first_search_value(raw, "id", "albumId", "album_id")
+        title = self._first_search_value(raw, "title", "albumTitle", "album_title", "name")
+        if album_id in (None, "") or not title:
+            return None
+
+        finished = self._first_search_value(
+            raw, "is_finished", "isFinished", "finishState", "finish_state", "status"
+        )
+        if isinstance(finished, (int, float)) and not isinstance(finished, bool):
+            is_finished = finished > 0
+        else:
+            is_finished = finished is True or str(finished).strip().lower() in {
+                "1", "2", "true", "finished", "complete", "completed", "已完结", "完结",
+            }
+        plays = self._first_search_value(
+            raw,
+            "playCount", "play_count", "plays", "play", "listenCount", "listen_count",
+        )
+        episodes = self._first_search_value(
+            raw,
+            "trackCount", "track_count", "tracks", "episodes", "itemCount", "item_count",
+        )
+        return {
+            "id": str(album_id),
+            "title": str(title),
+            "author": self._extract_author_name(raw),
+            "platform": "喜马拉雅",
+            "cover": self._extract_cover_url(raw),
+            "plays": plays or 0,
+            "episodes": episodes or 0,
+            "status": "已完结" if is_finished else "连载中",
+            "description": self._first_search_value(raw, "intro", "albumIntro", "description", "desc"),
+            "category": self._first_search_value(raw, "category_title", "categoryTitle", "category"),
+            "tags": raw.get("tags") or [],
+            "created_at": self._first_search_value(raw, "created_at", "createdAt"),
+            "updated_at": self._first_search_value(raw, "updated_at", "updatedAt"),
+            "raw_data": raw,
+        }
+
+    @staticmethod
+    def _extract_search_result_items(data: Dict) -> List[Dict]:
+        """Extract album rows from the known Ximalaya search response shapes."""
+        if not isinstance(data, dict):
+            return []
+        payload = data.get("data") if isinstance(data.get("data"), dict) else data
+
+        album_views = payload.get("albumViews") if isinstance(payload, dict) else None
+        if isinstance(album_views, dict) and isinstance(album_views.get("albums"), list):
+            return album_views["albums"]
+
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if isinstance(result, dict):
+            response = result.get("response")
+            if isinstance(response, dict) and isinstance(response.get("docs"), list):
+                return response["docs"]
+        if isinstance(result, list):
+            return result
+
+        direct_result = data.get("result")
+        if isinstance(direct_result, list):
+            return direct_result
+        for mapping in (payload, data):
+            if not isinstance(mapping, dict):
+                continue
+            for value in mapping.values():
+                if isinstance(value, list) and value and isinstance(value[0], dict):
+                    if any(key in value[0] for key in ("title", "albumTitle", "albumInfo")):
+                        return value
+        return []
     
     def set_cookie(self, cookie_string: str, is_server_cookie: bool = False):
         """设置Cookie
@@ -635,33 +722,13 @@ class XimalayaManager:
                                             print(f"   播放量字段: play_count={item.get('play_count', 'N/A')}, plays={item.get('plays', 'N/A')}, play_count_unit={item.get('play_count_unit', 'N/A')}")
                                             print(f"   章节字段: track_count={item.get('track_count', 'N/A')}, episodes={item.get('episodes', 'N/A')}, include_track_count={item.get('include_track_count', 'N/A')}")
                                             
-                                            # 判断连载状态
-                                            status = "连载中"
-                                            if item.get('is_finished', False) or item.get('status') == 'finished':
-                                                status = "已完结"
-                                            
-                                            # 获取播放量和集数（API返回的是 'play' 和 'tracks' 字段）
-                                            play_count = item.get('play', item.get('play_count', item.get('plays', 0)))
-                                            track_count = item.get('tracks', item.get('track_count', item.get('episodes', 0)))
-                                            
-                                            cover_url = self._extract_cover_url(item)
-                                            album = {
-                                                'id': str(item.get('id', item.get('album_id', ''))),
-                                                'title': item.get('title', ''),
-                                                'author': self._extract_author_name(item),
-                                                'platform': '喜马拉雅',
-                                                'cover': cover_url,
-                                                'plays': play_count,
-                                                'episodes': track_count,
-                                                'status': status,
-                                                'description': item.get('intro', item.get('description', '')),
-                                                'category': item.get('category_title', item.get('category', '')),
-                                                'tags': item.get('tags', []),
-                                                'created_at': item.get('created_at', ''),
-                                                'updated_at': item.get('updated_at', '')
-                                            }
-                                            albums.append(album)
-                                            print(f"   ✅ 添加专辑: {album['title']}, 播放量: {album['plays']}, 集数: {album['episodes']}")
+                                            album = self._normalize_search_album(item)
+                                            if album:
+                                                albums.append(album)
+                                                print(
+                                                    f"   ✅ 添加专辑: {album['title']}, "
+                                                    f"播放量: {album['plays']}, 集数: {album['episodes']}"
+                                                )
                             
                             if albums:
                                 print(f"📋 第 {page_num} 页找到 {len(albums)} 个专辑")
@@ -1706,6 +1773,29 @@ class XimalayaManager:
             
             # 主要搜索配置 (只保留Web端和移动端)
             search_configs = [
+                # 喜马拉雅移动 H5 专辑搜索。参考程序使用该接口，结果里的
+                # albumViews.albums[].albumInfo 直接包含播放量和节目数。
+                {
+                    'url': f"{self.mobile_url}/m-revision/page/search",
+                    'params': {
+                        'kw': keyword,
+                        'core': 'album',
+                        'page': page,
+                        'rows': page_size,
+                    },
+                    'headers': {
+                        'User-Agent': (
+                            'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) '
+                            'AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'
+                        ),
+                        'Accept': 'application/json, text/plain, */*',
+                        'Accept-Language': 'zh-CN,zh;q=0.9',
+                        'Referer': 'https://m.ximalaya.com/',
+                        'Sec-Fetch-Dest': 'empty',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'same-origin',
+                    }
+                },
                 # Web端搜索
                 {
                     'url': f"{self.base_url}/revision/search/main",
@@ -1829,69 +1919,15 @@ class XimalayaManager:
                     print(f"❌ API返回错误: {msg}")
                     # 但某些错误消息可能是正常的，继续处理
             
-            # 尝试多种数据结构
-            results = []
-            
-            if isinstance(data, dict):
-                # 方式1: data.data.result.response.docs (移动端)
-                if 'data' in data and isinstance(data['data'], dict):
-                    data_content = data['data']
-                    if 'result' in data_content and isinstance(data_content['result'], dict):
-                        result_content = data_content['result']
-                        if 'response' in result_content and isinstance(result_content['response'], dict):
-                            response_content = result_content['response']
-                            if 'docs' in response_content and isinstance(response_content['docs'], list):
-                                results = response_content['docs']
-                                print(f"📱 移动端数据结构，找到 {len(results)} 个结果")
-                
-                # 方式2: data.data.result (Web端)
-                if not results and 'data' in data and isinstance(data['data'], dict):
-                    data_content = data['data']
-                    if 'result' in data_content and isinstance(data_content['result'], list):
-                        results = data_content['result']
-                        print(f"🖥️ Web端数据结构，找到 {len(results)} 个结果")
-                
-                # 方式3: data.result (直接在data中)
-                if not results and 'result' in data and isinstance(data['result'], list):
-                    results = data['result']
-                    print(f"📄 直接数据结构，找到 {len(results)} 个结果")
-                
-                # 方式4: 查找任何包含结果的字段
-                if not results:
-                    for key, value in data.items():
-                        if isinstance(value, list) and len(value) > 0:
-                            if isinstance(value[0], dict) and 'title' in value[0]:
-                                results = value
-                                print(f"🔍 通用搜索数据结构，找到 {len(results)} 个结果")
-                                break
+            results = self._extract_search_result_items(data)
             
             print(f"📝 解析到 {len(results)} 个结果项")
             
             for item in results:
-                if isinstance(item, dict):
-                    # 检查是否是专辑类型
-                    model_type = item.get('model_type', '')
-                    if model_type == 'album' or 'title' in item:
-                        # 处理封面URL
-                        cover_url = self._extract_cover_url(item)
-                        
-                        album = {
-                            'id': str(item.get('id', item.get('album_id', ''))),
-                            'title': item.get('title', ''),
-                            'author': self._extract_author_name(item),
-                            'platform': '喜马拉雅',
-                            'cover': cover_url,
-                            'plays': item.get('play_count', item.get('plays', 0)),
-                            'episodes': item.get('track_count', item.get('episodes', 0)),
-                            'description': item.get('intro', item.get('description', '')),
-                            'category': item.get('category_title', item.get('category', '')),
-                            'tags': item.get('tags', []),
-                            'created_at': item.get('created_at', ''),
-                            'updated_at': item.get('updated_at', ''),
-                            'status': '已完结' if item.get('is_finished', False) else '连载中'
-                        }
-                        albums.append(album)
-                        print(f"   ✅ 解析专辑: {album['title']}")
+                album = self._normalize_search_album(item)
+                if album:
+                    albums.append(album)
+                    print(f"   ✅ 解析专辑: {album['title']}")
             
         except Exception as e:
             print(f"❌ 解析搜索结果失败: {e}")

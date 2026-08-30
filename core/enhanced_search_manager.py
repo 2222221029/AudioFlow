@@ -53,6 +53,11 @@ class EnhancedSearchManager:
         '起点听书': 50,
         '网易云听书': 60,
     }
+    SEARCH_PAGE_LIMITS = {
+        '番茄畅听': 2,
+        '番茄听书': 2,
+        '蜻蜓FM': 3,
+    }
     
     def __init__(self, cookie_manager=None):
         """初始化搜索管理器"""
@@ -265,17 +270,23 @@ class EnhancedSearchManager:
             "plays", "play_count", "playCount", "playcount", "PLAYCNT",
             "play_cnt", "playCnt", "listen_count", "listenCount",
             "listening_count", "listeningCount", "listener_count", "listenerCount",
-            "view_count", "viewCount",
+            "view_count", "viewCount", "replayCount", "replay_count",
+            "play_num", "playNum", "listen_num", "listenNum",
+            "read_count", "readCount", "read_num", "readNum",
         )
         heat_keys = (
             "popularity", "heat", "hot", "hot_score", "hotScore",
             "search_heat", "searchHeat", "subscribe_count", "subscribeCount",
             "subscriber_count", "subscriberCount", "favorite_count", "favoriteCount",
+            "collect_count", "collectCount", "follow_count", "followCount",
+            "fans_count", "fansCount", "rank_score", "rankScore", "static_score",
         )
 
         def collect(mapping, keys):
             values = [cls._metric_value(mapping.get(key)) for key in keys if key in mapping]
-            for nested_key in ("album", "book", "item", "data", "detail", "raw", "raw_data"):
+            for nested_key in (
+                "album", "book", "item", "data", "detail", "raw", "raw_data", "_raw",
+            ):
                 nested = mapping.get(nested_key)
                 if isinstance(nested, dict):
                     values.extend(collect(nested, keys))
@@ -432,12 +443,44 @@ class EnhancedSearchManager:
         return re.sub(r'[\W_]+', '', text, flags=re.UNICODE)
 
     @classmethod
+    def _dedupe_search_results(cls, books: List[Dict]) -> List[Dict]:
+        """Deduplicate provider rows while retaining the strongest metrics."""
+        deduped = []
+        positions = {}
+        for book in books or []:
+            if not isinstance(book, dict):
+                continue
+            platform = str(book.get("platform") or "")
+            item_id = str(book.get("id") or book.get("album_id") or book.get("book_id") or "")
+            fallback = (
+                cls._normalize_search_title(book.get("title")),
+                cls._normalize_search_title(book.get("author")),
+            )
+            key = (platform, "id", item_id) if item_id else (platform, "title", *fallback)
+            if key not in positions:
+                positions[key] = len(deduped)
+                deduped.append(book)
+                continue
+
+            existing = deduped[positions[key]]
+            candidate_popularity = cls._pick_popularity(book)
+            if candidate_popularity > cls._pick_popularity(existing):
+                existing["plays"] = candidate_popularity
+            for field in (
+                "author", "cover", "episodes", "status", "description", "category", "tags",
+            ):
+                if existing.get(field) in (None, "", 0, [], "未知", "未知作者") and book.get(field):
+                    existing[field] = book[field]
+        return deduped
+
+    @classmethod
     def _rank_search_results(cls, keyword: str, books: List[Dict]) -> List[Dict]:
         """Rank relevant albums by provider popularity, then title closeness.
 
         Clearly matching titles always stay ahead of unrelated popular albums.
         The provider order remains the final tie-breaker when metrics are absent.
         """
+        books = cls._dedupe_search_results(list(books or []))
         query = cls._normalize_search_title(keyword)
         if not query or len(books or []) < 2:
             return list(books or [])
@@ -502,9 +545,13 @@ class EnhancedSearchManager:
             elif platform == '懒人听书':
                 books = self.lrts_manager.search_books(keyword, limit=self.SEARCH_RESULT_LIMITS[platform])
             elif platform == '番茄畅听':
-                books = self.fanqie_manager.search_books(keyword, max_pages=1)
+                books = self.fanqie_manager.search_books(
+                    keyword, max_pages=self.SEARCH_PAGE_LIMITS[platform]
+                )
             elif platform == '番茄听书':
-                books = self.fanqie_tingshu_manager.search_books(keyword, max_pages=1, enrich_covers=False)
+                books = self.fanqie_tingshu_manager.search_books(
+                    keyword, max_pages=self.SEARCH_PAGE_LIMITS[platform], enrich_covers=False
+                )
             elif platform == '七猫听书':
                 books = self.qimao_manager.search_books(keyword, max_pages=1)
             elif platform == '酷我听书':
@@ -514,7 +561,9 @@ class EnhancedSearchManager:
                     keyword, page_size=self.SEARCH_RESULT_LIMITS[platform], enrich_details=False
                 )
             elif platform == '蜻蜓FM':
-                books = self.qtfm_manager.search_books(keyword, max_pages=1)
+                books = self.qtfm_manager.search_books(
+                    keyword, max_pages=self.SEARCH_PAGE_LIMITS[platform]
+                )
             elif platform == '网易云听书':
                 books = self.netease_manager.search_books(keyword, limit=self.SEARCH_RESULT_LIMITS[platform])
             elif platform == '荔枝FM':

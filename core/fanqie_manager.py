@@ -191,6 +191,14 @@ class FanqieManager:
                         for book_item in result['data']['search_data']:
                             if 'books' in book_item and len(book_item['books']) > 0:
                                 book_data = book_item['books'][0]
+                                popularity = (
+                                    book_data.get('play_count')
+                                    or book_data.get('play_num')
+                                    or book_data.get('read_count')
+                                    or book_data.get('read_count_text')
+                                    or book_data.get('popularity')
+                                    or 0
+                                )
                                 
                                 books.append({
                                     'id': str(book_data.get('book_id', '')),
@@ -198,14 +206,17 @@ class FanqieManager:
                                     'author': book_data.get('author', ''),
                                     'platform': '番茄畅听',
                                     'cover': book_data.get('thumb_url', ''),
-                                    'plays': 0,  # 番茄搜索结果不显示播放量，提升速度
+                                    # 搜索接口通常不给纯播放量，但会返回阅读量/热度；
+                                    # 聚合层会把它作为同平台内的热门程度信号。
+                                    'plays': popularity,
                                     'episodes': 0,  # 番茄搜索结果不显示集数，提升速度
                                     'status': '连载中',
                                     'description': book_data.get('abstract', ''),
                                     'category': book_data.get('category', ''),
                                     'tags': [],
                                     'created_at': '',
-                                    'updated_at': ''
+                                    'updated_at': '',
+                                    'raw_data': book_data,
                                 })
                     
                     print(f"📋 第 {page_num} 页找到 {len(books)} 本书")
