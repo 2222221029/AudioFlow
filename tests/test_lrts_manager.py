@@ -7,8 +7,13 @@ from core.lrts_manager import (
     ALBUM_ENTITY_TYPE,
     APP_HEADERS,
     BOOK_ENTITY_TYPE,
+    COLLECTION_BOOKS_PATH,
     LrtsAppClient,
     LRTSManager,
+    PERSONAL_HOST,
+    PUBLISHED_ALBUMS_PATH,
+    PUBLISHED_BOOKS_PATH,
+    RECENT_LISTENS_PATH,
     V3_LISTEN_PATH,
 )
 
@@ -34,6 +39,40 @@ class FakeWebSession:
 
 
 class LRTSManagerTest(unittest.TestCase):
+    def test_personal_api_methods_use_current_host_and_http_methods(self):
+        client = LrtsAppClient(imei="test-imei", token="test-token")
+        session = mock.Mock()
+        session.get.return_value = FakeResponse({"status": 0})
+        session.post.return_value = FakeResponse({"status": 0, "data": []})
+        client.session = session
+
+        client.recent_listens("cursor-1")
+        client.collection_books()
+        client.published_books(user_id=88, refer_id=10, op_type="T", size=20)
+        client.published_albums(user_id=0, refer_id=0, op_type="H", size=20)
+
+        recent_call = session.get.call_args_list[0]
+        self.assertEqual(recent_call.args[0], PERSONAL_HOST + RECENT_LISTENS_PATH)
+        self.assertEqual(recent_call.kwargs["params"]["referId"], "cursor-1")
+        self.assertEqual(recent_call.kwargs["params"]["srcType"], "101")
+
+        favorite_call = session.post.call_args
+        self.assertEqual(favorite_call.args[0], PERSONAL_HOST + COLLECTION_BOOKS_PATH)
+        self.assertEqual(favorite_call.kwargs["data"]["srcType"], "11")
+        self.assertEqual(favorite_call.kwargs["data"]["token"], "test-token")
+        self.assertIn("sc", favorite_call.kwargs["data"])
+
+        book_call = session.get.call_args_list[1]
+        self.assertEqual(book_call.args[0], PERSONAL_HOST + PUBLISHED_BOOKS_PATH)
+        self.assertEqual(
+            {key: book_call.kwargs["params"][key] for key in ("userId", "referId", "opType", "size")},
+            {"userId": "88", "referId": "10", "opType": "T", "size": "20"},
+        )
+
+        album_call = session.get.call_args_list[2]
+        self.assertEqual(album_call.args[0], PERSONAL_HOST + PUBLISHED_ALBUMS_PATH)
+        self.assertNotIn("userId", album_call.kwargs["params"])
+
     def test_web_book_url_maps_to_app_book_entity(self):
         manager = LRTSManager()
 

@@ -42,6 +42,7 @@ SALT = "vYCmm+6CFVykQk5w0wiUDliCQRA="
 _LRTS_AUDIO_DEBUG_DONE = False
 READ_HOST = "https://dapis.mting.info"
 API_HOST = "https://dapi.mting.info"
+PERSONAL_HOST = "https://shapi.mting.info"
 BOOK_ENTITY_TYPE = 1
 ALBUM_ENTITY_TYPE = 2
 WEB_BOOK_SHARE_TYPE = 4
@@ -60,6 +61,10 @@ APP_HEADERS = {
 }
 V3_LISTEN_PATH = "/yyting/v3/gateway/getListenPath"
 LEGACY_LISTEN_PATH = "/yyting/gateway/getListenPath.action"
+RECENT_LISTENS_PATH = "/yyting/bookclient/ClientGetRecentListenBooks.action"
+COLLECTION_BOOKS_PATH = "/yyting/bookclient/ClientGetConllectionBooks.action"
+PUBLISHED_ALBUMS_PATH = "/yyting/snsresource/getAlbumnList.action"
+PUBLISHED_BOOKS_PATH = "/yyting/snsresource/getBookList.action"
 DEFAULT_AUDIO_QUALITY = 3
 
 
@@ -332,6 +337,12 @@ class LrtsAppClient:
         response.raise_for_status()
         return response.json()
 
+    def post(self, host: str, path: str, params: dict[str, Any] | None = None) -> dict:
+        self._last_path = path
+        response = self.session.post(host + path, data=self._signed_params(params or {}), timeout=30)
+        response.raise_for_status()
+        return response.json()
+
     def fetch_temp_token(self) -> str:
         meta = rsa_encrypt_meta(build_device_info(self.imei))
         path = "/yyting/usercenter/tempToken.action"
@@ -370,6 +381,50 @@ class LrtsAppClient:
         if data.get("status") == 0 and data.get("token"):
             self.token = data["token"]
         return data
+
+    def recent_listens(self, refer_id: str = "", src_type: int = 101) -> dict:
+        return self.get(PERSONAL_HOST, RECENT_LISTENS_PATH, {
+            "referId": refer_id,
+            "srcType": src_type,
+        })
+
+    def collection_books(self, src_type: int = 11) -> dict:
+        return self.post(PERSONAL_HOST, COLLECTION_BOOKS_PATH, {"srcType": src_type})
+
+    def _published_items(
+        self,
+        path: str,
+        user_id: int | str = 0,
+        refer_id: int | str = 0,
+        op_type: str = "H",
+        size: int = 20,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "opType": op_type,
+            "referId": refer_id,
+            "size": size,
+        }
+        if _to_int(user_id) > 0:
+            params["userId"] = user_id
+        return self.get(PERSONAL_HOST, path, params)
+
+    def published_albums(
+        self,
+        user_id: int | str = 0,
+        refer_id: int | str = 0,
+        op_type: str = "H",
+        size: int = 20,
+    ) -> dict:
+        return self._published_items(PUBLISHED_ALBUMS_PATH, user_id, refer_id, op_type, size)
+
+    def published_books(
+        self,
+        user_id: int | str = 0,
+        refer_id: int | str = 0,
+        op_type: str = "H",
+        size: int = 20,
+    ) -> dict:
+        return self._published_items(PUBLISHED_BOOKS_PATH, user_id, refer_id, op_type, size)
 
     def search_batch(self, keyword: str, page: int = 1, page_size: int = 20) -> dict:
         return self.get(READ_HOST, "/yyting/search/searchBatch.action", {

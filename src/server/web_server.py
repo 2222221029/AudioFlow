@@ -6002,66 +6002,18 @@ def _pick_ximalaya_author(item):
 
 
 def _load_lrts_personal(feature):
-    cookie = _get_personal_cookie("lrts")
-    if not cookie:
+    credential_text = _get_personal_cookie("lrts")
+    if not credential_text:
         raise RuntimeError("请先在个人中心为懒人听书登录或粘贴凭证")
+    credential = parse_lrts_credentials(credential_text)
+    if not credential.get("token") or not credential.get("imei"):
+        raise RuntimeError("懒人听书个人中心需要有效的 App token/imei 凭证，请重新登录")
     from core.lrts_manager import LRTSManager
     api = LRTSManager()
-    api.set_cookie(cookie)
+    api.set_cookie(credential)
     client = api._client_or_guest()
-    lrts_user_id = str(api.credentials.get("userId") or api.credentials.get("uid") or "0")
-    items = []
-    app_items = _load_lrts_personal_from_app(client, feature)
-    if app_items:
-        return app_items
-    try:
-        if feature == "history":
-            resp = api.session.get("https://m.lrts.me/ajax/getRecentList?srcType=101", timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            for item in (data.get("list", []) or []):
-                items.append(_normalize_personal_item({
-                    "id": str(item.get("bookId") or item.get("entityId") or ""),
-                    "title": item.get("name") or item.get("title", ""),
-                    "author": item.get("announcer") or item.get("author", ""),
-                    "cover": item.get("cover") or item.get("cover_url", ""),
-                    "episodes": item.get("sum") or item.get("sections", 0),
-                }, "懒人听书"))
-        elif feature == "favorites":
-            resp = api.session.get(
-                "https://m.lrts.me/ajax/getFolderEntities",
-                params={"folderId": 7855269751, "opType": "H", "pageSize": 100, "referId": 0, "userId": lrts_user_id},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            for item in ((data.get("data") or {}).get("list", []) or []):
-                 items.append(_normalize_personal_item({
-                    "id": str(item.get("bookId") or item.get("entityId") or item.get("id") or ""),
-                    "title": item.get("name") or item.get("title", ""),
-                    "author": item.get("announcer") or item.get("author", ""),
-                    "cover": item.get("cover") or item.get("cover_url", ""),
-                    "episodes": item.get("sum") or item.get("sections", 0),
-                }, "懒人听书"))
-        elif feature == "programs":
-            resp = api.session.get(
-                "https://m.lrts.me/ajax/getMyBookList",
-                params={"pageNum": 1, "pageSize": 100},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            for item in (data.get("list", []) or []):
-                items.append(_normalize_personal_item({
-                    "id": str(item.get("bookId") or item.get("id") or ""),
-                    "title": item.get("name") or item.get("title", ""),
-                    "author": item.get("announcer") or item.get("author", ""),
-                    "cover": item.get("cover") or item.get("cover_url", ""),
-                    "episodes": item.get("sum") or item.get("sections", 0),
-                }, "懒人听书"))
-    except Exception as e:
-        print(f"❌ 懒人听书个人数据加载失败({feature}): {e}")
-    return items
+    user_id = credential.get("userId") or credential.get("uid") or 0
+    return _load_lrts_personal_from_app(client, feature, user_id=user_id)
 
 
 def _iter_personal_records(data):
@@ -6070,25 +6022,80 @@ def _iter_personal_records(data):
         return
     if not isinstance(data, dict):
         return
-    for key in ("list", "booksInfo", "bookList", "albumList", "ablumnList", "resourceList", "records", "items"):
+    for key in (
+        "list", "booksInfo", "bookList", "albumList", "ablumnList",
+        "resourceList", "records", "items", "favorites", "resultList",
+    ):
         value = data.get(key)
         if isinstance(value, list):
             yield from value
-    inner = data.get("data")
-    if isinstance(inner, dict):
-        yield from _iter_personal_records(inner)
-    elif isinstance(inner, list):
-        yield from inner
+    for key in ("data", "result", "payload"):
+        inner = data.get(key)
+        if isinstance(inner, (dict, list)):
+            yield from _iter_personal_records(inner)
 
 
-def _normalize_lrts_personal_record(item):
+def _lrts_response_value(data, *keys):
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    for container_key in ("data", "result", "payload"):
+        value = _lrts_response_value(data.get(container_key), *keys)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _lrts_personal_response(data, label):
+    if not isinstance(data, dict):
+        raise RuntimeError(f"懒人听书{label}接口返回了无法识别的数据")
+    status = _lrts_response_value(data, "status")
+    if status in (None, "", 0, "0"):
+        return data
+    message = str(_lrts_response_value(data, "msg", "message", "errorMsg") or "").strip()
+    error_text = f"{status} {message}".lower()
+    if any(word in error_text for word in ("token", "login", "登录", "登陆", "认证", "未授权", "过期", "失效")):
+        raise RuntimeError("懒人听书登录凭证已失效，请在个人中心重新登录")
+    detail = message or f"status={status}"
+    raise RuntimeError(f"懒人听书{label}获取失败：{detail}")
+
+
+def _call_lrts_personal(label, callback):
+    try:
+        return _lrts_personal_response(callback(), label)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"懒人听书{label}网络请求失败：{exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"懒人听书{label}接口返回了无效 JSON") from exc
+
+
+def _lrts_entity_type(item, fallback=1):
+    if item.get("ablumnId") or item.get("albumId"):
+        return 2
+    raw_type = item.get("baseEntityType") or item.get("entityType")
+    entity_type = _to_int(raw_type, fallback)
+    if entity_type == 4:
+        return 1
+    return entity_type if entity_type in (1, 2) else fallback
+
+
+def _normalize_lrts_personal_record(item, entity_type=None):
     if not isinstance(item, dict):
         return None
-    entity_type = item.get("baseEntityType") or item.get("entityType") or item.get("type") or item.get("resType") or 2
-    entity_id = (
-        item.get("baseEntityId") or item.get("entityId") or item.get("bookId") or item.get("ablumnId")
-        or item.get("albumId") or item.get("id") or item.get("resId")
-    )
+    normalized_type = _lrts_entity_type(item, _to_int(entity_type, 1)) if entity_type is None else _to_int(entity_type, 1)
+    if normalized_type == 2:
+        entity_id = (
+            item.get("ablumnId") or item.get("albumId") or item.get("bookId")
+            or item.get("baseEntityId") or item.get("entityId") or item.get("id")
+        )
+    else:
+        entity_id = (
+            item.get("bookId") or item.get("baseEntityId") or item.get("entityId")
+            or item.get("id")
+        )
     if not entity_id:
         return None
     title = (
@@ -6097,61 +6104,114 @@ def _normalize_lrts_personal_record(item):
     )
     if not title:
         return None
-    return _normalize_personal_item({
-        "id": f"{entity_type}:{entity_id}",
+    normalized = _normalize_personal_item({
+        "id": f"{normalized_type}:{entity_id}",
         "title": title,
-        "author": item.get("author") or item.get("authorName") or item.get("anchorName") or item.get("nickname") or item.get("announcer") or "",
+        "author": (
+            item.get("author") or item.get("authorName") or item.get("anchorName")
+            or item.get("announcerName") or item.get("nickname") or item.get("nickName")
+            or item.get("announcer") or item.get("userNick") or ""
+        ),
         "cover": item.get("cover") or item.get("coverUrl") or item.get("coverPath") or item.get("bestCover") or item.get("pic") or "",
-        "episodes": item.get("sections") or item.get("countTrack") or item.get("chapterCount") or item.get("audioCount") or 0,
+        "episodes": item.get("sections") or item.get("sum") or item.get("countTrack") or item.get("chapterCount") or item.get("audioCount") or 0,
         "plays": item.get("plays") or item.get("playCount") or item.get("play") or 0,
-        "raw_data": item,
+        "description": item.get("desc") or item.get("description") or "",
     }, "懒人听书")
+    normalized["plays"] = _to_int(item.get("plays") or item.get("playCount") or item.get("hot"), 0)
+    normalized["_lrts_entity_type"] = normalized_type
+    normalized["_lrts_entity_id"] = _to_int(entity_id, 0)
+    return normalized
 
 
-def _load_lrts_personal_from_app(client, feature):
-    # usercenter 用户接口走 API_HOST(dapi.mting.info)，与登录(ClientLogon)一致；
-    # 此前误用 READ_HOST(dapis.mting.info，搜索/详情接口)导致全部 404「请求参数错误」。
-    # bookclient 书架接口仍在 READ_HOST。两个 host 都试一次以最大化命中。
-    from core.lrts_manager import READ_HOST, API_HOST
-    endpoint_groups = {
-        "history": [
-            (API_HOST, "/yyting/usercenter/getRecentList.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getRecentList.action", {"pageNum": 1, "pageSize": 100}),
-            (API_HOST, "/yyting/usercenter/getListenHistory.action", {"pageNum": 1, "pageSize": 100}),
-            (API_HOST, "/yyting/usercenter/getListenRecord.action", {"pageNum": 1, "pageSize": 100}),
-        ],
-        "favorites": [
-            (API_HOST, "/yyting/usercenter/getCollectList.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/usercenter/getCollectList.action", {"pageNum": 1, "pageSize": 100}),
-            (API_HOST, "/yyting/usercenter/getMyCollect.action", {"pageNum": 1, "pageSize": 100}),
-            (API_HOST, "/yyting/usercenter/getFavoriteList.action", {"pageNum": 1, "pageSize": 100}),
-        ],
-        "programs": [
-            (API_HOST, "/yyting/usercenter/getUserBookList.action", {"pageNum": 1, "pageSize": 100}),
-            (API_HOST, "/yyting/usercenter/getUserAblumnList.action", {"pageNum": 1, "pageSize": 100}),
-            (READ_HOST, "/yyting/bookclient/ClientGetBookShelf.action", {"pageNum": 1, "pageSize": 100}),
-        ],
-    }
+def _append_lrts_records(items, seen, records, entity_type=None):
+    added = 0
+    for record in records:
+        item = _normalize_lrts_personal_record(record, entity_type=entity_type)
+        if not item:
+            continue
+        key = item["id"]
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+        added += 1
+    return added
+
+
+def _load_lrts_history(client, items, seen, max_pages=200):
+    cursor = ""
+    requested = set()
+    for _ in range(max_pages):
+        if cursor in requested:
+            return
+        requested.add(cursor)
+        data = _call_lrts_personal("收听记录", lambda cursor=cursor: client.recent_listens(cursor, 101))
+        records = list(_iter_personal_records(data))
+        _append_lrts_records(items, seen, records)
+        next_cursor = str(_lrts_response_value(data, "referId") or "").strip()
+        if not records or next_cursor in ("", "0", cursor):
+            return
+        cursor = next_cursor
+    raise RuntimeError("懒人听书收听记录分页超过安全上限，未能完整加载")
+
+
+def _load_lrts_published(client, method_name, label, entity_type, user_id, items, seen, max_pages=200):
+    page_size = 20
+    cursor = 0
+    op_type = "H"
+    requested = set()
+    endpoint_seen = set()
+    for _ in range(max_pages):
+        marker = (op_type, str(cursor))
+        if marker in requested:
+            return
+        requested.add(marker)
+        method = getattr(client, method_name)
+        data = _call_lrts_personal(
+            label,
+            lambda method=method, cursor=cursor, op_type=op_type: method(
+                user_id=user_id,
+                refer_id=cursor,
+                op_type=op_type,
+                size=page_size,
+            ),
+        )
+        records = list(_iter_personal_records(data))
+        _append_lrts_records(items, seen, records, entity_type=entity_type)
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            record_id = record.get("bookId") if entity_type == 1 else (record.get("ablumnId") or record.get("albumId") or record.get("id"))
+            if record_id:
+                endpoint_seen.add(str(record_id))
+        total = _to_int(_lrts_response_value(data, "size", "total", "totalCount"), 0)
+        if not records or (total and len(endpoint_seen) >= total):
+            return
+        last = records[-1] if isinstance(records[-1], dict) else {}
+        next_cursor = (
+            last.get("bookId") if entity_type == 1
+            else (last.get("ablumnId") or last.get("albumId") or last.get("id"))
+        )
+        if not next_cursor or str(next_cursor) == str(cursor):
+            return
+        cursor = next_cursor
+        op_type = "T"
+    raise RuntimeError(f"懒人听书{label}分页超过安全上限，未能完整加载")
+
+
+def _load_lrts_personal_from_app(client, feature, user_id=0):
     items = []
     seen = set()
-    for host, path, params in endpoint_groups.get(feature, []):
-        try:
-            data = client.get(host, path, params)
-            print(f"[personal-lrts] {host}{path}: status={data.get('status')} msg={data.get('msg', '')}")
-        except Exception as exc:
-            print(f"[personal-lrts] {path} failed: {exc}")
-            continue
-        if data.get("status") not in (0, None):
-            continue
-        for record in _iter_personal_records(data):
-            item = _normalize_lrts_personal_record(record)
-            if not item:
-                continue
-            key = item.get("id") or item.get("title")
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append(item)
+    if feature == "history":
+        _load_lrts_history(client, items, seen)
+    elif feature == "favorites":
+        data = _call_lrts_personal("我的收藏", lambda: client.collection_books(11))
+        _append_lrts_records(items, seen, _iter_personal_records(data), entity_type=1)
+    elif feature == "programs":
+        _load_lrts_published(client, "published_books", "我的书籍节目", 1, user_id, items, seen)
+        _load_lrts_published(client, "published_albums", "我的专辑节目", 2, user_id, items, seen)
+    else:
+        raise RuntimeError(f"不支持的懒人听书个人中心功能: {feature}")
     return items
 
 
