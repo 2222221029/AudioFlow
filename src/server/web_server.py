@@ -1664,6 +1664,95 @@ def _qidian_api_for_album(album):
     return api
 
 
+_QIDIAN_AUDIO_ID_KEYS = (
+    "adid", "audioDataId", "audioBookId", "audioId",
+)
+_QIDIAN_AUDIO_ID_KEY_NAMES = {key.casefold() for key in _QIDIAN_AUDIO_ID_KEYS}
+
+
+def _qidian_audio_id_from_book(book):
+    """Extract the qdcg audio id without confusing it with the novel bookId."""
+    if not isinstance(book, dict):
+        return ""
+    for key, value in book.items():
+        if str(key).casefold() in _QIDIAN_AUDIO_ID_KEY_NAMES and value not in (None, "", 0, "0"):
+            return str(value).strip()
+    for key in ("audioBook", "audioInfo", "audioData", "audio", "bookInfo", "raw_data", "raw"):
+        value = _qidian_audio_id_from_book(book.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _normalize_qidian_match_text(value):
+    return re.sub(r"[\s·•:：,，.。!！?？_\-]+", "", str(value or "")).casefold()
+
+
+def _resolve_personal_qidian_album(album, api):
+    """Resolve a bookshelf novel id to the audio catalog id used by qdcg."""
+    resolved = dict(album or {})
+    audio_id = str(resolved.get("qidian_audio_id") or _qidian_audio_id_from_book(resolved)).strip()
+    book_id = str(
+        resolved.get("qidian_book_id")
+        or _pick_nested_value(resolved, ("bookId", "book_id"), ("raw_data", "raw", "book"))
+        or resolved.get("id")
+        or ""
+    ).strip()
+    if audio_id:
+        resolved["id"] = audio_id
+        resolved["qidian_audio_id"] = audio_id
+        if book_id:
+            resolved["qidian_book_id"] = book_id
+        return resolved
+
+    # Older bookshelf responses only expose the source novel bookId. Resolve
+    # the corresponding audio entry by exact title, then disambiguate by author.
+    if not resolved.get("qidian_book_id"):
+        return resolved
+    title = str(resolved.get("title") or "").strip()
+    if not title:
+        raise RuntimeError("起点书架条目缺少书名，无法匹配有声专辑")
+    candidates = api.search_qidian(title, page_size=50) or []
+    wanted_title = _normalize_qidian_match_text(title)
+    matches = [
+        item for item in candidates
+        if _normalize_qidian_match_text(item.get("title") or item.get("bookName")) == wanted_title
+    ]
+    if not matches:
+        matches = [
+            item for item in candidates
+            if wanted_title
+            and (
+                wanted_title in _normalize_qidian_match_text(item.get("title") or item.get("bookName"))
+                or _normalize_qidian_match_text(item.get("title") or item.get("bookName")) in wanted_title
+            )
+        ]
+    wanted_author = _normalize_qidian_match_text(resolved.get("author"))
+    if wanted_author and len(matches) > 1:
+        author_matches = [
+            item for item in matches
+            if _normalize_qidian_match_text(item.get("author") or item.get("authorName")) == wanted_author
+        ]
+        if author_matches:
+            matches = author_matches
+    if not matches:
+        raise RuntimeError(f"起点书架作品《{title}》未匹配到有声专辑，请确认该作品仍可收听")
+    if len(matches) > 1:
+        raise RuntimeError(f"起点书架作品《{title}》匹配到多个有声专辑，请通过搜索页选择正确专辑")
+    audio_id = str(
+        matches[0].get("id")
+        or matches[0].get("album_id")
+        or _qidian_audio_id_from_book(matches[0])
+        or ""
+    ).strip()
+    if not audio_id:
+        raise RuntimeError(f"起点有声专辑《{title}》缺少可用的专辑 ID")
+    resolved["id"] = audio_id
+    resolved["qidian_audio_id"] = audio_id
+    resolved["qidian_book_id"] = book_id
+    return resolved
+
+
 def chapter_identifier(chapter):
     if not isinstance(chapter, dict):
         return ""
@@ -3786,7 +3875,12 @@ def api_chapters():
         load_all=load_all,
     ):
         if _is_personal_qidian_album(album):
-            all_chapters = _qidian_api_for_album(album).get_qidian_chapters(str(album_id)) or []
+            qidian_api = _qidian_api_for_album(album)
+            album = _resolve_personal_qidian_album(album, qidian_api)
+            album_id = album.get("id")
+            all_chapters = qidian_api.get_qidian_chapters(str(album_id)) or []
+            if not all_chapters:
+                raise RuntimeError(f"起点有声专辑《{album.get('title') or album_id}》没有返回章节，请重新登录后再试")
             exact_total = len(all_chapters)
             if load_all:
                 raw_chapters = all_chapters
@@ -3860,7 +3954,10 @@ def api_album_detail():
         return json_error("缺少专辑 ID 或平台")
     try:
         if _is_personal_qidian_album(album):
-            detail = _qidian_api_for_album(album).get_qidian_detail(str(album_id))
+            qidian_api = _qidian_api_for_album(album)
+            album = _resolve_personal_qidian_album(album, qidian_api)
+            album_id = album.get("id")
+            detail = qidian_api.get_qidian_detail(str(album_id))
         else:
             detail = search_manager.get_album_detail(str(album_id), platform)
         return json_ok(album=annotate_album_library(merge_album_detail(album, detail)))
@@ -6424,8 +6521,10 @@ def _load_qidian_personal(feature):
         if not account:
             raise RuntimeError("起点账号校验失败，请在个人中心重新扫码或粘贴 Cookie")
         for book in _load_qidian_audio_bookshelf(api):
+            book_id = str(book.get("bookId") or "").strip()
+            audio_id = _qidian_audio_id_from_book(book)
             item = _normalize_personal_item({
-                "id": book.get("bookId"),
+                "id": audio_id or book_id,
                 "title": book.get("bookName"),
                 "author": book.get("authorName"),
                 "cover": book.get("coverUrl"),
@@ -6434,6 +6533,10 @@ def _load_qidian_personal(feature):
                 "raw_data": book,
             }, "起点听书")
             item["personal_center_platform"] = "qidian"
+            item["qidian_book_id"] = book_id
+            if audio_id:
+                item["qidian_audio_id"] = audio_id
+            item["raw_data"] = book
             items.append(item)
     except Exception as e:
         print(f"❌ 起点听书个人数据加载失败({feature}): {e}")
@@ -6699,16 +6802,44 @@ def serve_frontend(path):
 
 
 
+def _initialize_background_services():
+    """Initialize optional services without delaying the Web listener."""
+    services = (
+        ("subscription scheduler", ensure_subscription_scheduler),
+        ("Feishu bridge", feishu_bridge.start),
+        ("developer Agent", developer_agent_manager.reconcile),
+    )
+    for name, initialize in services:
+        started = time.monotonic()
+        try:
+            initialize()
+            logging.info(
+                "Background service initialized: %s (%.2fs)",
+                name,
+                time.monotonic() - started,
+            )
+        except Exception:
+            logging.exception("Background service initialization failed: %s", name)
+
+
+def start_background_services():
+    """Start optional integrations in a daemon thread."""
+    thread = threading.Thread(
+        target=_initialize_background_services,
+        name="background-service-initializer",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def main():
     """启动 Web 服务器入口。"""
-    import os
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 8082))
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true")
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        ensure_subscription_scheduler()
-        feishu_bridge.start()
-        developer_agent_manager.reconcile()
+        start_background_services()
     print(f"🚀 启动服务器: http://{host}:{port}  debug={debug}")
     try:
         from waitress import serve

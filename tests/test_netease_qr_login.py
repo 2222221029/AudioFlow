@@ -63,8 +63,8 @@ class NeteaseQrLoginTest(unittest.TestCase):
         self.assertEqual(session.cookies["__csrf"], "csrf-token")
         self.assertTrue(session.qr_image.startswith("data:image/png;base64,"))
         qrcode_module.make.assert_called_once_with("https://music.163.com/login?codekey=qr-key")
-        self.assertEqual(http.calls[0][1]["data"], {"type": 3})
-        self.assertEqual(http.calls[-1][1]["data"], {"key": "qr-key", "type": 3})
+        self.assertEqual(http.calls[0][1]["data"], {"type": 1})
+        self.assertEqual(http.calls[-1][1]["data"], {"key": "qr-key", "type": 1})
 
     def test_netease_driver_rejects_success_without_account_cookie(self):
         session, _, _ = self._run([

@@ -12,7 +12,9 @@ from typing import Dict, Optional
 
 
 SUPPORTED_PLATFORMS = ("ximalaya", "qidian", "qtfm", "netease")
-_NETEASE_QR_TYPE = 3
+# The current NetEase Music app accepts type=1 for Web QR authorization.
+# type=3 is rejected after scanning with "switch login method or upgrade".
+_NETEASE_QR_TYPE = 1
 
 
 class QRSession:
