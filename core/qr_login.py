@@ -12,6 +12,7 @@ from typing import Dict, Optional
 
 
 SUPPORTED_PLATFORMS = ("ximalaya", "qidian", "qtfm", "netease")
+_NETEASE_QR_TYPE = 3
 
 
 class QRSession:
@@ -305,7 +306,7 @@ def _drive_netease(session: QRSession) -> None:
     try:
         response = http.post(
             "https://music.163.com/api/login/qrcode/unikey",
-            data={"type": 1},
+            data={"type": _NETEASE_QR_TYPE},
             timeout=15,
         )
         response.raise_for_status()
@@ -350,7 +351,7 @@ def _drive_netease(session: QRSession) -> None:
         try:
             response = http.post(
                 "https://music.163.com/api/login/qrcode/client/login",
-                data={"key": key, "type": 1},
+                data={"key": key, "type": _NETEASE_QR_TYPE},
                 timeout=15,
             )
             response.raise_for_status()

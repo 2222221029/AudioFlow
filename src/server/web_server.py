@@ -1540,7 +1540,10 @@ def hydrate_download_chapters(album, chapters, chapter_ids=None):
     album_id = album.get("id") or album.get("album_id") or album.get("book_id")
     if not album_id or not platform:
         return []
-    all_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+    if _is_personal_qidian_album(album):
+        all_chapters = _qidian_api_for_album(album).get_qidian_chapters(str(album_id)) or []
+    else:
+        all_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
     normalized = [normalize_chapter(chapter, index) for index, chapter in enumerate(all_chapters, start=1)]
     wanted = set(ids)
     return [chapter for chapter in normalized if chapter_identifier(chapter) in wanted or chapter.get("id") in wanted]
@@ -1560,7 +1563,9 @@ def load_all_album_chapters(album, voice=None):
         if album.get("album_id"):
             search_manager.qimao_manager._search_cache[str(album.get("album_id"))] = dict(album)
     active_voice = resolve_voice_for_album(album, voice)
-    if platform == "番茄畅听" and active_voice:
+    if _is_personal_qidian_album(album):
+        raw_chapters = _qidian_api_for_album(album).get_qidian_chapters(str(album_id)) or []
+    elif platform == "番茄畅听" and active_voice:
         raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
     elif platform == "番茄听书" and active_voice:
         raw_chapters = search_manager.fanqie_tingshu_manager.get_chapters(str(album_id), active_voice)
@@ -1637,6 +1642,26 @@ def resolve_voice_for_album(album, voice):
         voices = search_manager.qimao_manager.fetch_voices(book_id)
         return search_manager.qimao_manager._match_voice(voices, voice) or voice
     return voice
+
+
+def _is_personal_qidian_album(album):
+    return (
+        isinstance(album, dict)
+        and album.get("platform") in ("起点听书", "qidian")
+        and str(album.get("personal_center_platform") or "").strip() == "qidian"
+    )
+
+
+def _qidian_api_for_album(album):
+    if not _is_personal_qidian_album(album):
+        return search_manager.search_manager
+    cookie = _get_personal_cookie("qidian")
+    if not cookie:
+        raise RuntimeError("起点听书个人中心登录已失效，请重新扫码")
+    from core.search_manager import SearchManager
+    api = SearchManager()
+    api.set_qidian_cookie(cookie)
+    return api
 
 
 def chapter_identifier(chapter):
@@ -3760,7 +3785,15 @@ def api_chapters():
         page_size=page_size,
         load_all=load_all,
     ):
-        if load_all:
+        if _is_personal_qidian_album(album):
+            all_chapters = _qidian_api_for_album(album).get_qidian_chapters(str(album_id)) or []
+            exact_total = len(all_chapters)
+            if load_all:
+                raw_chapters = all_chapters
+            else:
+                offset = (page - 1) * page_size
+                raw_chapters = all_chapters[offset:offset + page_size]
+        elif load_all:
             if platform == "番茄畅听" and active_voice:
                 raw_chapters = search_manager.fanqie_manager.get_chapters_for_voice(str(album_id), active_voice, page=1, page_size=10000)
             elif platform == "番茄听书" and active_voice:
@@ -3826,7 +3859,10 @@ def api_album_detail():
     if not album_id or not platform:
         return json_error("缺少专辑 ID 或平台")
     try:
-        detail = search_manager.get_album_detail(str(album_id), platform)
+        if _is_personal_qidian_album(album):
+            detail = _qidian_api_for_album(album).get_qidian_detail(str(album_id))
+        else:
+            detail = search_manager.get_album_detail(str(album_id), platform)
         return json_ok(album=annotate_album_library(merge_album_detail(album, detail)))
     except Exception as exc:
         logging.exception("load album detail failed")
@@ -3912,6 +3948,10 @@ def api_album_audio():
             elif platform == "懒人听书":
                 sync_platform_cookie(platform)
                 url = search_manager.lrts_manager.get_audio_url(str(album_id), str(track_id), chapter)
+            elif _is_personal_qidian_album(album):
+                url = pick_audio_url(
+                    _qidian_api_for_album(album).get_qidian_audio_url(str(album_id), str(track_id))
+                )
             else:
                 url = pick_audio_url(search_manager.get_audio_urls(str(track_id), platform, str(album_id), voice_name))
         if not url:
@@ -6384,7 +6424,7 @@ def _load_qidian_personal(feature):
         if not account:
             raise RuntimeError("起点账号校验失败，请在个人中心重新扫码或粘贴 Cookie")
         for book in _load_qidian_audio_bookshelf(api):
-            items.append(_normalize_personal_item({
+            item = _normalize_personal_item({
                 "id": book.get("bookId"),
                 "title": book.get("bookName"),
                 "author": book.get("authorName"),
@@ -6392,7 +6432,9 @@ def _load_qidian_personal(feature):
                 "last_chapter": book.get("lastChapterName"),
                 "update_time": book.get("updateTime"),
                 "raw_data": book,
-            }, "起点听书"))
+            }, "起点听书")
+            item["personal_center_platform"] = "qidian"
+            items.append(item)
     except Exception as e:
         print(f"❌ 起点听书个人数据加载失败({feature}): {e}")
         if not isinstance(e, RuntimeError):

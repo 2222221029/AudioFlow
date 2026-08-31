@@ -122,6 +122,51 @@ class QidianPersonalAPITest(unittest.TestCase):
         self.assertEqual(items[0]["title"], "有声专辑")
         self.assertEqual(items[0]["author"], "演播者")
         self.assertEqual(items[0]["platform"], "起点听书")
+        self.assertEqual(items[0]["personal_center_platform"], "qidian")
+
+    def test_personal_album_uses_isolated_qidian_credentials(self):
+        personal_api = mock.Mock()
+        album = {
+            "id": "22",
+            "platform": "起点听书",
+            "personal_center_platform": "qidian",
+        }
+        with (
+            mock.patch.object(web_server, "_get_personal_cookie", return_value="ywguid=personal-guid"),
+            mock.patch("core.search_manager.SearchManager", return_value=personal_api),
+        ):
+            selected = web_server._qidian_api_for_album(album)
+
+        self.assertIs(selected, personal_api)
+        personal_api.set_qidian_cookie.assert_called_once_with("ywguid=personal-guid")
+        self.assertIsNot(selected, web_server.search_manager.search_manager)
+
+    def test_personal_album_chapters_use_personal_qidian_client(self):
+        personal_api = mock.Mock()
+        personal_api.get_qidian_chapters.return_value = [
+            {"id": "chapter-1", "title": "第一集", "platform": "起点听书"},
+        ]
+        album = {
+            "id": "22",
+            "title": "有声专辑",
+            "platform": "起点听书",
+            "personal_center_platform": "qidian",
+        }
+        with (
+            web_server.app.test_request_context(
+                "/api/album/chapters",
+                method="POST",
+                json={"album": album, "page": 1, "page_size": 100},
+            ),
+            mock.patch.object(web_server, "_qidian_api_for_album", return_value=personal_api),
+        ):
+            response = web_server.api_chapters()
+
+        payload = response.get_json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["chapters"][0]["id"], "chapter-1")
+        personal_api.get_qidian_chapters.assert_called_once_with("22")
+        self.assertEqual(payload["album"]["personal_center_platform"], "qidian")
 
     def test_invalid_feature_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "不支持"):
