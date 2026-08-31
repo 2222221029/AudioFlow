@@ -6272,7 +6272,95 @@ def _load_lrts_personal_from_app(client, feature, user_id=0):
     return items
 
 
+QIDIAN_BOOKSHELF_URL = "https://wxapp.qidian.com/api/bookShelf/list"
+QIDIAN_BOOKSHELF_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+}
+
+
+def _is_qidian_audio_book(book):
+    """Only explicitly typed audiobook records are safe to show as albums."""
+    return isinstance(book, dict) and _to_int(book.get("bookType"), 0) == 2
+
+
+def _load_qidian_audio_bookshelf(api, page_size=50, max_pages=100):
+    items = []
+    seen_book_ids = set()
+    loaded_count = 0
+
+    for page in range(1, max_pages + 1):
+        try:
+            response = api.qidian_session.get(
+                QIDIAN_BOOKSHELF_URL,
+                params={"page": page, "pageSize": page_size},
+                headers=QIDIAN_BOOKSHELF_HEADERS,
+                cookies=api.qidian_cookies or None,
+                timeout=15,
+                verify=False,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError("起点书架连接失败，请稍后重试") from exc
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError("起点书架返回了无法解析的数据，请稍后重试") from exc
+
+        if not isinstance(data, dict):
+            raise RuntimeError("起点书架返回的数据格式异常，请稍后重试")
+        if _to_int(data.get("code"), -1) != 0:
+            message = str(data.get("msg") or "").strip()
+            raise RuntimeError(message or f"起点书架获取失败：code={data.get('code')}")
+
+        payload = data.get("data") or {}
+        if not isinstance(payload, dict):
+            raise RuntimeError("起点书架返回的数据格式异常，请稍后重试")
+        books = payload.get("booksInfo") or []
+        if not isinstance(books, list):
+            raise RuntimeError("起点书架返回的数据格式异常，请稍后重试")
+
+        loaded_count += len(books)
+        for book in books:
+            if not _is_qidian_audio_book(book):
+                continue
+            book_id = str(book.get("bookId") or "").strip()
+            if not book_id or book_id in seen_book_ids:
+                continue
+            seen_book_ids.add(book_id)
+            items.append(book)
+
+        page_info = payload.get("pageInfo") or {}
+        if not isinstance(page_info, dict):
+            page_info = {}
+        page_count = _to_int(page_info.get("pageCount"), 0)
+        total_count = _to_int(page_info.get("totalCount"), 0)
+
+        if not books:
+            return items
+        if page_count:
+            if page >= page_count:
+                return items
+        elif total_count:
+            if loaded_count >= total_count:
+                return items
+        elif len(books) < page_size:
+            return items
+
+    raise RuntimeError("起点书架分页超过安全上限，未能完整加载")
+
+
 def _load_qidian_personal(feature):
+    if feature != "favorites":
+        raise RuntimeError(f"不支持的起点听书个人中心功能: {feature}")
     cookie = _get_personal_cookie("qidian")
     if not cookie:
         raise RuntimeError("请先在个人中心为起点听书登录或粘贴 Cookie")
@@ -6281,47 +6369,24 @@ def _load_qidian_personal(feature):
     api.set_qidian_cookie(cookie)
     items = []
     try:
-        if feature == "favorites":
-            account = api.get_qidian_user_account()
-            if not account:
-                raise RuntimeError("起点账号校验失败，请在个人中心重新扫码或粘贴 Cookie")
-            # 对齐已验证可用的书架请求方式：用纯浏览器 headers + pageSize=50。
-            # 此前用 APP 专用 headers(qidian_headers 含 Platform/AppId/YwKey) + pageSize=100，
-            # 被起点网关判为「参数错误」。
-            resp = api.qidian_session.get(
-                "https://wxapp.qidian.com/api/bookShelf/list",
-                params={"page": 1, "pageSize": 50},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                                  "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Site": "same-site",
-                },
-                cookies=api.qidian_cookies or None,
-                timeout=15,
-                verify=False,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("code") != 0:
-                raise RuntimeError(data.get("msg") or f"起点书架获取失败：code={data.get('code')}")
-            for book in ((data.get("data") or {}).get("booksInfo") or []):
-                items.append(_normalize_personal_item({
-                    "id": book.get("bookId"),
-                    "title": book.get("bookName"),
-                    "author": book.get("authorName"),
-                    "cover": book.get("coverUrl"),
-                    "last_chapter": book.get("lastChapterName"),
-                    "update_time": book.get("updateTime"),
-                    "raw_data": book,
-                }, "起点听书"))
+        account = api.get_qidian_user_account()
+        if not account:
+            raise RuntimeError("起点账号校验失败，请在个人中心重新扫码或粘贴 Cookie")
+        for book in _load_qidian_audio_bookshelf(api):
+            items.append(_normalize_personal_item({
+                "id": book.get("bookId"),
+                "title": book.get("bookName"),
+                "author": book.get("authorName"),
+                "cover": book.get("coverUrl"),
+                "last_chapter": book.get("lastChapterName"),
+                "update_time": book.get("updateTime"),
+                "raw_data": book,
+            }, "起点听书"))
     except Exception as e:
         print(f"❌ 起点听书个人数据加载失败({feature}): {e}")
-        if isinstance(e, RuntimeError):
-            raise
+        if not isinstance(e, RuntimeError):
+            raise RuntimeError("起点书架加载失败，请稍后重试") from e
+        raise
     return items
 
 
