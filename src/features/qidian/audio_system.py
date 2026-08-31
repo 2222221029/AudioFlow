@@ -418,13 +418,25 @@ class QidianAudioSystem:
             )
             data = response.json()
 
-            if data.get("Result") == 0:
-                page_data = data.get("Data", {})
-                chapters = page_data.get("Items", [])
-                has_next = page_data.get("HasNext", False)
+            result_code = data.get("Result", data.get("result", data.get("code")))
+            if str(result_code) == "0":
+                page_data = data.get("Data") or data.get("data") or {}
+                chapters = (
+                    page_data.get("Items") or page_data.get("items")
+                    or page_data.get("chapterList") or page_data.get("list") or []
+                )
+                has_next_value = page_data.get(
+                    "HasNext",
+                    page_data.get("hasNext", page_data.get("has_more", False)),
+                )
+                has_next = (
+                    str(has_next_value).strip().casefold() in {"1", "true", "yes"}
+                    if isinstance(has_next_value, str)
+                    else bool(has_next_value)
+                )
                 return chapters, has_next
 
-            print(f"❌ 获取章节失败: {data.get('Message')}")
+            print(f"❌ 获取章节失败: code={result_code}, message={data.get('Message') or data.get('message') or data.get('msg')}")
             return [], False
         except Exception as exc:
             print(f"❌ 错误: {exc}")

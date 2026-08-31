@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from core.qr_login import QRSession, _drive_qidian
 from core.search_manager import SearchManager
-from src.features.qidian.audio_system import QrcodeLogin, normalize_qidian_cookies
+from src.features.qidian.audio_system import QidianAudioSystem, QrcodeLogin, normalize_qidian_cookies
 
 
 CAPTURED_HEADERS = """Host: unitelogreport.reader.qq.com\r
@@ -124,3 +124,40 @@ def test_qidian_qr_driver_does_not_require_a_writable_working_directory():
     assert session.status == "success"
     assert session.qr_image == FakeLogin.qr_image
     assert session.cookies == {"ywguid": "guid", "ywkey": "key"}
+
+
+def test_qidian_chapter_list_accepts_lowercase_response_shape():
+    response = Mock()
+    response.json.return_value = {
+        "code": 0,
+        "data": {
+            "items": [{"acid": "chapter-1", "audioChapterName": "第一集"}],
+            "hasNext": True,
+        },
+    }
+    system = QidianAudioSystem({"ywguid": "guid", "ywkey": "key"})
+    system.session.get = Mock(return_value=response)
+
+    chapters, has_next = system.get_chapter_list("audio-1", page=1)
+
+    assert chapters == [{"acid": "chapter-1", "audioChapterName": "第一集"}]
+    assert has_next is True
+
+
+def test_search_manager_normalizes_lowercase_qidian_chapters():
+    manager = _manager_without_init()
+    manager.qidian_cookies = {"ywguid": "guid", "ywkey": "key"}
+
+    with mock.patch(
+        "core.search_manager.QidianAudioSystem.get_chapter_list",
+        return_value=([{
+            "acid": "chapter-1",
+            "audioChapterName": "第一集",
+            "duration": 123,
+        }], False),
+    ):
+        chapters = manager.get_qidian_chapters("audio-1")
+
+    assert chapters[0]["id"] == "chapter-1"
+    assert chapters[0]["title"] == "第一集"
+    assert chapters[0]["duration"] == 123

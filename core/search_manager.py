@@ -317,9 +317,12 @@ class SearchManager:
             results = []
             for idx, chapter in enumerate(all_chapters, 1):
                 results.append({
-                    'id': chapter.get('Acid', f'acid_{idx}'),
-                    'title': chapter.get('AudioChapterName', f'第{idx}章'),
-                    'duration': chapter.get('Duration', 0),
+                    'id': chapter.get('Acid') or chapter.get('acid') or chapter.get('id') or f'acid_{idx}',
+                    'title': (
+                        chapter.get('AudioChapterName') or chapter.get('audioChapterName')
+                        or chapter.get('chapterName') or chapter.get('title') or f'第{idx}章'
+                    ),
+                    'duration': chapter.get('Duration') or chapter.get('duration') or 0,
                     'play_count': 0,
                     'index': idx,
                     'raw_data': chapter,

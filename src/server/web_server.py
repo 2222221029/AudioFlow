@@ -1753,6 +1753,57 @@ def _resolve_personal_qidian_album(album, api):
     return resolved
 
 
+def _load_personal_qidian_album_chapters(album, api):
+    """Try every known Qidian album identity before declaring an empty catalog."""
+    source = dict(album or {})
+    candidate_ids = []
+
+    def add(value):
+        value = str(value or "").strip()
+        if value and value not in candidate_ids:
+            candidate_ids.append(value)
+
+    # A type=2 bookshelf bookId is often already the qdcg adid. Try it first;
+    # explicit audio ids and the displayed item id remain compatible fallbacks.
+    add(source.get("qidian_book_id"))
+    add(source.get("qidian_audio_id") or _qidian_audio_id_from_book(source))
+    add(source.get("id") or source.get("album_id") or source.get("book_id"))
+
+    attempted = []
+    for candidate_id in candidate_ids:
+        chapters = api.get_qidian_chapters(candidate_id) or []
+        attempted.append(candidate_id)
+        logging.info(
+            "Qidian personal chapter candidate: album_id=%s chapters=%s",
+            candidate_id,
+            len(chapters),
+        )
+        if chapters:
+            resolved = dict(source)
+            resolved["id"] = candidate_id
+            resolved["qidian_audio_id"] = candidate_id
+            return resolved, chapters, attempted
+
+    if source.get("qidian_book_id"):
+        search_source = dict(source)
+        for key in ("qidian_audio_id", "raw_data", "raw"):
+            search_source.pop(key, None)
+        search_source["id"] = source.get("qidian_book_id")
+        searched = _resolve_personal_qidian_album(search_source, api)
+        searched_id = str(searched.get("id") or "").strip()
+        if searched_id and searched_id not in attempted:
+            chapters = api.get_qidian_chapters(searched_id) or []
+            attempted.append(searched_id)
+            logging.info(
+                "Qidian personal searched candidate: album_id=%s chapters=%s",
+                searched_id,
+                len(chapters),
+            )
+            if chapters:
+                return searched, chapters, attempted
+    return source, [], attempted
+
+
 def chapter_identifier(chapter):
     if not isinstance(chapter, dict):
         return ""
@@ -3876,11 +3927,14 @@ def api_chapters():
     ):
         if _is_personal_qidian_album(album):
             qidian_api = _qidian_api_for_album(album)
-            album = _resolve_personal_qidian_album(album, qidian_api)
+            album, all_chapters, attempted_ids = _load_personal_qidian_album_chapters(album, qidian_api)
             album_id = album.get("id")
-            all_chapters = qidian_api.get_qidian_chapters(str(album_id)) or []
             if not all_chapters:
-                raise RuntimeError(f"起点有声专辑《{album.get('title') or album_id}》没有返回章节，请重新登录后再试")
+                attempted_text = "、".join(attempted_ids) or str(album_id or "未知")
+                raise RuntimeError(
+                    f"起点有声专辑《{album.get('title') or album_id}》没有返回章节"
+                    f"（已尝试 ID：{attempted_text}），请查看服务日志中的上游错误"
+                )
             exact_total = len(all_chapters)
             if load_all:
                 raw_chapters = all_chapters

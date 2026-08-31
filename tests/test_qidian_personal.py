@@ -155,9 +155,9 @@ class QidianPersonalAPITest(unittest.TestCase):
         personal_api.search_qidian.return_value = [
             {"id": "9022", "title": "有声专辑", "author": "演播者"},
         ]
-        personal_api.get_qidian_chapters.return_value = [
+        personal_api.get_qidian_chapters.side_effect = [[], [
             {"id": "chapter-1", "title": "第一集", "platform": "起点听书"},
-        ]
+        ]]
         album = {
             "id": "22",
             "title": "有声专辑",
@@ -181,7 +181,30 @@ class QidianPersonalAPITest(unittest.TestCase):
         self.assertEqual(payload["album"]["id"], "9022")
         self.assertEqual(payload["album"]["qidian_book_id"], "22")
         personal_api.search_qidian.assert_called_once_with("有声专辑", page_size=50)
-        personal_api.get_qidian_chapters.assert_called_once_with("9022")
+        self.assertEqual(
+            [call.args[0] for call in personal_api.get_qidian_chapters.call_args_list],
+            ["22", "9022"],
+        )
+
+    def test_bookshelf_original_id_is_tried_before_search(self):
+        api = mock.Mock()
+        api.get_qidian_chapters.return_value = [
+            {"id": "chapter-1", "title": "第一集", "platform": "起点听书"},
+        ]
+        album = {
+            "id": "22",
+            "title": "有声专辑",
+            "platform": "起点听书",
+            "personal_center_platform": "qidian",
+            "qidian_book_id": "22",
+        }
+
+        resolved, chapters, attempted = web_server._load_personal_qidian_album_chapters(album, api)
+
+        self.assertEqual(resolved["id"], "22")
+        self.assertEqual(len(chapters), 1)
+        self.assertEqual(attempted, ["22"])
+        api.search_qidian.assert_not_called()
 
     def test_bookshelf_title_matches_unique_audio_edition_suffix(self):
         api = mock.Mock()

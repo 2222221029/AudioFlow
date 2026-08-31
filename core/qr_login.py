@@ -3,6 +3,7 @@
 """扫码登录会话管理（无 Qt 依赖）。"""
 
 import base64
+import logging
 import threading
 import time
 import uuid
@@ -293,9 +294,10 @@ def _drive_netease(session: QRSession) -> None:
     from io import BytesIO
 
     import qrcode
-    import requests
+    from core.netease_cloud_audiobook_manager import NeteaseCloudAudiobookManager
 
-    http = requests.Session()
+    client = NeteaseCloudAudiobookManager()
+    http = client.session
     http.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -306,14 +308,13 @@ def _drive_netease(session: QRSession) -> None:
     })
 
     try:
-        response = http.post(
-            "https://music.163.com/api/login/qrcode/unikey",
-            data={"type": _NETEASE_QR_TYPE},
+        payload = client._post_weapi(
+            "/weapi/login/qrcode/unikey",
+            {"type": _NETEASE_QR_TYPE},
             timeout=15,
         )
-        response.raise_for_status()
-        payload = response.json()
     except Exception as exc:
+        logging.exception("NetEase QR key request failed")
         session.update(status="failed", message=f"网易云听书二维码生成失败：{exc}")
         return
 
@@ -345,21 +346,21 @@ def _drive_netease(session: QRSession) -> None:
 
     deadline = time.time() + 180
     consecutive_errors = 0
+    last_code = ""
     while time.time() < deadline:
         if session.stopped:
             session.update(status="cancelled", message="已取消")
             return
         time.sleep(2)
         try:
-            response = http.post(
-                "https://music.163.com/api/login/qrcode/client/login",
-                data={"key": key, "type": _NETEASE_QR_TYPE},
+            payload = client._post_weapi(
+                "/weapi/login/qrcode/client/login",
+                {"key": key, "type": _NETEASE_QR_TYPE},
                 timeout=15,
             )
-            response.raise_for_status()
-            payload = response.json()
             consecutive_errors = 0
         except Exception:
+            logging.exception("NetEase QR status request failed")
             consecutive_errors += 1
             if consecutive_errors >= 5:
                 session.update(status="failed", message="网易云听书登录连接失败，请检查网络后重试")
@@ -370,6 +371,9 @@ def _drive_netease(session: QRSession) -> None:
             session.update(status="failed", message="网易云听书登录接口返回格式异常")
             return
         code = str(payload.get("code") or "")
+        if code != last_code:
+            logging.info("NetEase QR status changed: %s", code or "unknown")
+            last_code = code
         if code == "800":
             session.update(status="expired", message="二维码已过期，请重新获取")
             return
@@ -384,7 +388,7 @@ def _drive_netease(session: QRSession) -> None:
             return
 
         cookies = {}
-        for jar in (getattr(http, "cookies", None), getattr(response, "cookies", None)):
+        for jar in (getattr(http, "cookies", None),):
             if jar is None:
                 continue
             try:
