@@ -22,7 +22,7 @@ export const COOKIE_PLATFORMS = [
   {key: 'lrts', name: '懒人听书', qr: 'lrts'},
   {key: 'qidian', name: '起点听书', qr: 'qidian'},
   {key: 'qtfm', name: '蜻蜓FM', qr: 'qtfm'},
-  {key: 'netease', name: '网易云听书'},
+  {key: 'netease', name: '网易云听书', qr: 'netease'},
   {key: 'lizhi', name: '荔枝FM'},
   {key: 'fanqie', name: '番茄畅听'},
   {key: 'fanqie_tingshu', name: '番茄听书'},

@@ -15,7 +15,7 @@ pycryptodome>=3.19.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 
-qrcode>=7.4.0  # 蜻蜓FM Web 扫码登录用：把 qrcode_url 字符串渲成 PNG
+qrcode[pil]>=7.4.0  # 蜻蜓FM、网易云听书扫码登录：把登录 URL 渲染成 PNG
 
 # 压缩处理
 brotli>=1.0.0

@@ -5764,7 +5764,7 @@ def api_personal_lrts_login():
 
 # Generic QR login for other platforms --------------------------------------
 _PLATFORM_COOKIE_KEY = {
-    "ximalaya": "xmly", "qidian": "qidian", "qtfm": "qtfm",
+    "ximalaya": "xmly", "qidian": "qidian", "qtfm": "qtfm", "netease": "netease",
 }
 
 

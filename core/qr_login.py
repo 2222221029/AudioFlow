@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 
 
-SUPPORTED_PLATFORMS = ("ximalaya", "qidian", "qtfm")
+SUPPORTED_PLATFORMS = ("ximalaya", "qidian", "qtfm", "netease")
 
 
 class QRSession:
@@ -285,10 +285,132 @@ def _drive_qtfm(session: QRSession) -> None:
     session.update(status="expired", message="等待超时")
 
 
+def _drive_netease(session: QRSession) -> None:
+    from http.cookies import SimpleCookie
+    from io import BytesIO
+
+    import qrcode
+    import requests
+
+    http = requests.Session()
+    http.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://music.163.com/",
+    })
+
+    try:
+        response = http.post(
+            "https://music.163.com/api/login/qrcode/unikey",
+            data={"type": 1},
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        session.update(status="failed", message=f"网易云听书二维码生成失败：{exc}")
+        return
+
+    if not isinstance(payload, dict):
+        session.update(status="failed", message="网易云听书二维码接口返回格式异常")
+        return
+    key = str(payload.get("unikey") or "").strip()
+    if str(payload.get("code")) != "200" or not key:
+        message = str(payload.get("message") or payload.get("msg") or "未知错误")
+        session.update(status="failed", message=f"网易云听书二维码生成失败：{message}")
+        return
+
+    qr_url = f"https://music.163.com/login?codekey={key}"
+    try:
+        image = qrcode.make(qr_url)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        qr_image = _bytes_to_data_url(buffer.getvalue(), "image/png")
+    except Exception as exc:
+        session.update(status="failed", message=f"网易云听书二维码渲染失败：{exc}")
+        return
+
+    session.update(
+        qr_image=qr_image,
+        status="waiting",
+        message="请使用网易云音乐 APP 扫描二维码",
+        extra={"qr_url": qr_url},
+    )
+
+    deadline = time.time() + 180
+    consecutive_errors = 0
+    while time.time() < deadline:
+        if session.stopped:
+            session.update(status="cancelled", message="已取消")
+            return
+        time.sleep(2)
+        try:
+            response = http.post(
+                "https://music.163.com/api/login/qrcode/client/login",
+                data={"key": key, "type": 1},
+                timeout=15,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            consecutive_errors = 0
+        except Exception:
+            consecutive_errors += 1
+            if consecutive_errors >= 5:
+                session.update(status="failed", message="网易云听书登录连接失败，请检查网络后重试")
+                return
+            continue
+
+        if not isinstance(payload, dict):
+            session.update(status="failed", message="网易云听书登录接口返回格式异常")
+            return
+        code = str(payload.get("code") or "")
+        if code == "800":
+            session.update(status="expired", message="二维码已过期，请重新获取")
+            return
+        if code == "802":
+            session.update(status="scanned", message="已扫描，请在网易云音乐 APP 中确认登录")
+            continue
+        if code == "801":
+            continue
+        if code != "803":
+            message = str(payload.get("message") or payload.get("msg") or "登录失败")
+            session.update(status="failed", message=f"网易云听书登录失败：{message}")
+            return
+
+        cookies = {}
+        for jar in (getattr(http, "cookies", None), getattr(response, "cookies", None)):
+            if jar is None:
+                continue
+            try:
+                cookies.update(jar.get_dict())
+            except AttributeError:
+                try:
+                    cookies.update(dict(jar))
+                except (TypeError, ValueError):
+                    pass
+        cookie_text = str(payload.get("cookie") or "").strip()
+        if cookie_text:
+            parsed = SimpleCookie()
+            parsed.load(cookie_text)
+            cookies.update({name: morsel.value for name, morsel in parsed.items() if morsel.value})
+
+        if not cookies.get("MUSIC_U"):
+            session.update(status="failed", message="网易云听书已确认登录，但未返回账号 Cookie，请重新扫码")
+            return
+        session.update(status="success", message="网易云听书登录成功", cookies=cookies)
+        return
+
+    session.update(status="expired", message="等待扫码超时，请重新获取二维码")
+
+
 _DRIVERS = {
     "ximalaya": _drive_ximalaya,
     "qidian": _drive_qidian,
     "qtfm": _drive_qtfm,
+    "netease": _drive_netease,
 }
 
 
