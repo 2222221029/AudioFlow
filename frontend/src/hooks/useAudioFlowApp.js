@@ -456,7 +456,8 @@ export function useAudioFlowApp() {
         ? ximalayaDownloadQuality(config.quality)
         : (config.quality || DEFAULT_QUALITY),
     );
-    api('/api/album/detail', {method: 'POST', body: {album}}).then((detailData) => {
+    const albumTimeoutMs = album.platform === '起点听书' ? 180000 : 30000;
+    api('/api/album/detail', {method: 'POST', body: {album}, timeoutMs: albumTimeoutMs}).then((detailData) => {
       if (requestId !== albumRequestRef.current || !detailData.album) return;
       setSelectedAlbum((current) => current ? {...current, ...detailData.album} : detailData.album);
       if (album.platform === '喜马拉雅') {
@@ -477,7 +478,11 @@ export function useAudioFlowApp() {
       const voice = (remembered && nextVoices.find((v) => (v.name || v.title) === remembered)) || nextVoices[0] || null;
       setVoices(nextVoices);
       setSelectedVoice(voice);
-      const data = await api('/api/album/chapters', {method: 'POST', body: {album, voice, page: 1, page_size: 100}});
+      const data = await api('/api/album/chapters', {
+        method: 'POST',
+        body: {album, voice, page: 1, page_size: 100},
+        timeoutMs: albumTimeoutMs,
+      });
       if (requestId !== albumRequestRef.current) return;
       setSelectedAlbum((current) => ({...(current || album), ...(data.album || {})}));
       if (album.platform === '喜马拉雅' && data.album) {

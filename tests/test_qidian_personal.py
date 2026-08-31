@@ -206,6 +206,59 @@ class QidianPersonalAPITest(unittest.TestCase):
         self.assertEqual(attempted, ["22"])
         api.search_qidian.assert_not_called()
 
+    def test_bookshelf_detail_tries_original_id_before_search(self):
+        api = mock.Mock()
+        api.get_qidian_detail.return_value = {
+            "id": "22",
+            "title": "有声专辑",
+            "platform": "起点听书",
+        }
+        album = {
+            "id": "22",
+            "title": "有声专辑",
+            "platform": "起点听书",
+            "personal_center_platform": "qidian",
+            "qidian_book_id": "22",
+        }
+
+        resolved, detail, attempted = web_server._load_personal_qidian_album_detail(album, api)
+
+        self.assertEqual(resolved["id"], "22")
+        self.assertEqual(detail["title"], "有声专辑")
+        self.assertEqual(attempted, ["22"])
+        api.get_qidian_detail.assert_called_once_with("22")
+        api.search_qidian.assert_not_called()
+
+    def test_personal_album_detail_endpoint_uses_original_bookshelf_id(self):
+        api = mock.Mock()
+        api.get_qidian_detail.return_value = {
+            "id": "22",
+            "title": "有声专辑",
+            "platform": "起点听书",
+        }
+        album = {
+            "id": "22",
+            "title": "有声专辑",
+            "platform": "起点听书",
+            "personal_center_platform": "qidian",
+            "qidian_book_id": "22",
+        }
+        with (
+            web_server.app.test_request_context(
+                "/api/album/detail",
+                method="POST",
+                json={"album": album},
+            ),
+            mock.patch.object(web_server, "_qidian_api_for_album", return_value=api),
+        ):
+            response = web_server.api_album_detail()
+
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["album"]["id"], "22")
+        api.get_qidian_detail.assert_called_once_with("22")
+        api.search_qidian.assert_not_called()
+
     def test_bookshelf_title_matches_unique_audio_edition_suffix(self):
         api = mock.Mock()
         api.search_qidian.return_value = [

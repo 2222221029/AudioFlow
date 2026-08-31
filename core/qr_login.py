@@ -13,9 +13,9 @@ from typing import Dict, Optional
 
 
 SUPPORTED_PLATFORMS = ("ximalaya", "qidian", "qtfm", "netease")
-# The current NetEase Music app accepts type=1 for Web QR authorization.
-# type=3 is rejected after scanning with "switch login method or upgrade".
-_NETEASE_QR_TYPE = 1
+# NetEase's current web QR flow uses the raw /api endpoints with type=3.
+# Older type=1 keys still generate a QR image but are rejected by the app.
+_NETEASE_QR_TYPE = 3
 
 
 class QRSession:
@@ -294,10 +294,9 @@ def _drive_netease(session: QRSession) -> None:
     from io import BytesIO
 
     import qrcode
-    from core.netease_cloud_audiobook_manager import NeteaseCloudAudiobookManager
+    import requests
 
-    client = NeteaseCloudAudiobookManager()
-    http = client.session
+    http = requests.Session()
     http.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -308,11 +307,13 @@ def _drive_netease(session: QRSession) -> None:
     })
 
     try:
-        payload = client._post_weapi(
-            "/weapi/login/qrcode/unikey",
-            {"type": _NETEASE_QR_TYPE},
+        response = http.post(
+            "https://music.163.com/api/login/qrcode/unikey",
+            data={"type": _NETEASE_QR_TYPE},
             timeout=15,
         )
+        response.raise_for_status()
+        payload = response.json()
     except Exception as exc:
         logging.exception("NetEase QR key request failed")
         session.update(status="failed", message=f"网易云听书二维码生成失败：{exc}")
@@ -353,11 +354,13 @@ def _drive_netease(session: QRSession) -> None:
             return
         time.sleep(2)
         try:
-            payload = client._post_weapi(
-                "/weapi/login/qrcode/client/login",
-                {"key": key, "type": _NETEASE_QR_TYPE},
+            response = http.post(
+                "https://music.163.com/api/login/qrcode/client/login",
+                data={"key": key, "type": _NETEASE_QR_TYPE},
                 timeout=15,
             )
+            response.raise_for_status()
+            payload = response.json()
             consecutive_errors = 0
         except Exception:
             logging.exception("NetEase QR status request failed")

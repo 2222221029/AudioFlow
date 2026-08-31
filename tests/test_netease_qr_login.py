@@ -41,18 +41,14 @@ class NeteaseQrLoginTest(unittest.TestCase):
         session = QRSession("netease")
         with (
             mock.patch("requests.Session", return_value=http),
-            mock.patch(
-                "core.netease_cloud_audiobook_manager.NeteaseCloudAudiobookManager._encrypt_params",
-                side_effect=lambda payload: dict(payload),
-            ) as encrypt,
             mock.patch("core.qr_login.time.sleep", return_value=None),
             mock.patch.dict(sys.modules, {"qrcode": qrcode_module}),
         ):
             _drive_netease(session)
-        return session, http, qrcode_module, encrypt
+        return session, http, qrcode_module
 
     def test_netease_driver_generates_qr_and_saves_confirmed_cookie(self):
-        session, http, qrcode_module, encrypt = self._run([
+        session, http, qrcode_module = self._run([
             _response({"code": 200, "unikey": "qr-key"}),
             _response({"code": 801, "message": "等待扫码"}, {"NMTID": "device"}),
             _response({"code": 802, "message": "已扫码"}),
@@ -67,14 +63,13 @@ class NeteaseQrLoginTest(unittest.TestCase):
         self.assertEqual(session.cookies["__csrf"], "csrf-token")
         self.assertTrue(session.qr_image.startswith("data:image/png;base64,"))
         qrcode_module.make.assert_called_once_with("https://music.163.com/login?codekey=qr-key")
-        self.assertTrue(http.calls[0][0].endswith("/weapi/login/qrcode/unikey"))
-        self.assertTrue(http.calls[-1][0].endswith("/weapi/login/qrcode/client/login"))
-        self.assertEqual(http.calls[0][1]["data"], {"type": 1})
-        self.assertEqual(http.calls[-1][1]["data"], {"key": "qr-key", "type": 1})
-        self.assertEqual(encrypt.call_count, 4)
+        self.assertTrue(http.calls[0][0].endswith("/api/login/qrcode/unikey"))
+        self.assertTrue(http.calls[-1][0].endswith("/api/login/qrcode/client/login"))
+        self.assertEqual(http.calls[0][1]["data"], {"type": 3})
+        self.assertEqual(http.calls[-1][1]["data"], {"key": "qr-key", "type": 3})
 
     def test_netease_driver_rejects_success_without_account_cookie(self):
-        session, _, _, _ = self._run([
+        session, _, _ = self._run([
             _response({"code": 200, "unikey": "qr-key"}),
             _response({"code": 803, "message": "授权登录成功"}, {"NMTID": "device"}),
         ])
@@ -83,7 +78,7 @@ class NeteaseQrLoginTest(unittest.TestCase):
         self.assertIn("未返回账号 Cookie", session.message)
 
     def test_netease_driver_accepts_cookie_from_response_body(self):
-        session, _, _, _ = self._run([
+        session, _, _ = self._run([
             _response({"code": 200, "unikey": "qr-key"}),
             _response({
                 "code": 803,
@@ -97,7 +92,7 @@ class NeteaseQrLoginTest(unittest.TestCase):
         self.assertEqual(session.cookies["__csrf"], "body-csrf")
 
     def test_netease_driver_reports_expired_qr(self):
-        session, _, _, _ = self._run([
+        session, _, _ = self._run([
             _response({"code": 200, "unikey": "qr-key"}),
             _response({"code": 800, "message": "二维码已过期"}),
         ])

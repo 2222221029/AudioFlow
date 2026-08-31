@@ -1804,6 +1804,50 @@ def _load_personal_qidian_album_chapters(album, api):
     return source, [], attempted
 
 
+def _load_personal_qidian_album_detail(album, api):
+    """Resolve a personal bookshelf item without forcing a title search first."""
+    source = dict(album or {})
+    candidate_ids = []
+
+    def add(value):
+        value = str(value or "").strip()
+        if value and value not in candidate_ids:
+            candidate_ids.append(value)
+
+    add(source.get("qidian_book_id"))
+    add(source.get("qidian_audio_id") or _qidian_audio_id_from_book(source))
+    add(source.get("id") or source.get("album_id") or source.get("book_id"))
+
+    attempted = []
+    for candidate_id in candidate_ids:
+        detail = api.get_qidian_detail(candidate_id)
+        attempted.append(candidate_id)
+        logging.info(
+            "Qidian personal detail candidate: album_id=%s found=%s",
+            candidate_id,
+            bool(detail),
+        )
+        if detail:
+            resolved = dict(source)
+            resolved["id"] = candidate_id
+            resolved["qidian_audio_id"] = candidate_id
+            return resolved, detail, attempted
+
+    if source.get("qidian_book_id"):
+        search_source = dict(source)
+        for key in ("qidian_audio_id", "raw_data", "raw"):
+            search_source.pop(key, None)
+        search_source["id"] = source.get("qidian_book_id")
+        searched = _resolve_personal_qidian_album(search_source, api)
+        searched_id = str(searched.get("id") or "").strip()
+        if searched_id and searched_id not in attempted:
+            detail = api.get_qidian_detail(searched_id)
+            attempted.append(searched_id)
+            if detail:
+                return searched, detail, attempted
+    return source, None, attempted
+
+
 def chapter_identifier(chapter):
     if not isinstance(chapter, dict):
         return ""
@@ -4009,9 +4053,13 @@ def api_album_detail():
     try:
         if _is_personal_qidian_album(album):
             qidian_api = _qidian_api_for_album(album)
-            album = _resolve_personal_qidian_album(album, qidian_api)
-            album_id = album.get("id")
-            detail = qidian_api.get_qidian_detail(str(album_id))
+            album, detail, attempted_ids = _load_personal_qidian_album_detail(album, qidian_api)
+            if not detail:
+                attempted_text = "、".join(attempted_ids) or str(album_id or "未知")
+                raise RuntimeError(
+                    f"起点有声专辑《{album.get('title') or album_id}》没有返回详情"
+                    f"（已尝试 ID：{attempted_text}）"
+                )
         else:
             detail = search_manager.get_album_detail(str(album_id), platform)
         return json_ok(album=annotate_album_library(merge_album_detail(album, detail)))
