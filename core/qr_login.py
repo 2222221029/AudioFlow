@@ -3,19 +3,101 @@
 """扫码登录会话管理（无 Qt 依赖）。"""
 
 import base64
+import hashlib
+import json
 import logging
+import secrets
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.parse import quote
 
 
 
 SUPPORTED_PLATFORMS = ("ximalaya", "qidian", "qtfm", "netease")
-# NetEase's current web QR flow uses the raw /api endpoints with type=3.
-# Older type=1 keys still generate a QR image but are rejected by the app.
 _NETEASE_QR_TYPE = 3
+_NETEASE_EAPI_BASE_URL = "https://interface.music.163.com"
+_NETEASE_EAPI_KEY = b"e82ckenh8dichen8"
+_NETEASE_EAPI_MARKER = "-36cd479b6b5-"
+_NETEASE_DEVICE_UA = "NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)"
+_NETEASE_QUOTE_SAFE = "~()*!.'-_"
+
+
+def _netease_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _netease_device_id() -> str:
+    return secrets.token_hex(26).upper()
+
+
+def _netease_request_header(device_id: str) -> Dict[str, str]:
+    now_ms = _netease_now_ms()
+    return {
+        "osver": "Microsoft-Windows-10-Professional-build-19045-64bit",
+        "deviceId": device_id,
+        "os": "pc",
+        "appver": "3.1.17.204416",
+        "versioncode": "140",
+        "mobilename": "",
+        "buildver": str(now_ms // 1000),
+        "resolution": "1920x1080",
+        "__csrf": "",
+        "channel": "netease",
+        "requestId": f"{now_ms}_{secrets.randbelow(1000):04d}",
+    }
+
+
+def _netease_eapi_request(path: str, payload: Dict, device_id: str):
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import pad
+
+    header = _netease_request_header(device_id)
+    body = dict(payload)
+    body["e_r"] = False
+    body["header"] = header
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.md5(f"nobody{path}use{text}md5forencrypt".encode("utf-8")).hexdigest()
+    plaintext = f"{path}{_NETEASE_EAPI_MARKER}{text}{_NETEASE_EAPI_MARKER}{digest}"
+    encrypted = AES.new(_NETEASE_EAPI_KEY, AES.MODE_ECB).encrypt(
+        pad(plaintext.encode("utf-8"), AES.block_size)
+    )
+    cookie = "; ".join(
+        f"{quote(str(name), safe=_NETEASE_QUOTE_SAFE)}="
+        f"{quote(str(value), safe=_NETEASE_QUOTE_SAFE)}"
+        for name, value in header.items()
+    )
+    request_headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cookie": cookie,
+        "User-Agent": _NETEASE_DEVICE_UA,
+    }
+    endpoint = f"{_NETEASE_EAPI_BASE_URL}/eapi/{path.removeprefix('/api/')}"
+    return endpoint, {"params": encrypted.hex().upper()}, request_headers
+
+
+def _netease_post(http, path: str, payload: Dict, device_id: str, timeout: int = 15):
+    endpoint, form_data, headers = _netease_eapi_request(path, payload, device_id)
+    response = http.post(endpoint, data=form_data, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def _netease_cookie_value(cookie_jar, name: str) -> str:
+    if cookie_jar is None:
+        return ""
+    try:
+        for cookie in cookie_jar:
+            if getattr(cookie, "name", "") == name and getattr(cookie, "value", ""):
+                return str(cookie.value)
+    except TypeError:
+        pass
+    try:
+        return str(cookie_jar.get(name) or "")
+    except (AttributeError, KeyError):
+        return ""
 
 
 class QRSession:
@@ -297,26 +379,22 @@ def _drive_netease(session: QRSession) -> None:
     import requests
 
     http = requests.Session()
+    device_id = _netease_device_id()
     http.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
-        ),
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://music.163.com/",
     })
 
     try:
-        response = http.post(
-            "https://music.163.com/api/login/qrcode/unikey",
-            data={"type": _NETEASE_QR_TYPE},
-            timeout=15,
+        payload = _netease_post(
+            http,
+            "/api/login/qrcode/unikey",
+            {"type": _NETEASE_QR_TYPE},
+            device_id,
         )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
+    except Exception:
         logging.exception("NetEase QR key request failed")
-        session.update(status="failed", message=f"网易云听书二维码生成失败：{exc}")
+        session.update(status="failed", message="网易云听书二维码生成连接失败，请检查 NAS 网络后重试")
         return
 
     if not isinstance(payload, dict):
@@ -328,7 +406,14 @@ def _drive_netease(session: QRSession) -> None:
         session.update(status="failed", message=f"网易云听书二维码生成失败：{message}")
         return
 
-    qr_url = f"https://music.163.com/login?codekey={key}"
+    chain_device = _netease_cookie_value(getattr(http, "cookies", None), "sDeviceId")
+    if not chain_device:
+        chain_device = f"unknown-{secrets.randbelow(1_000_000)}"
+    chain_id = f"v1_{chain_device}_web_login_{_netease_now_ms()}"
+    qr_url = (
+        f"https://music.163.com/login?codekey={quote(key, safe='')}"
+        f"&chainId={quote(chain_id, safe='_-.')}"
+    )
     try:
         image = qrcode.make(qr_url)
         buffer = BytesIO()
@@ -354,13 +439,12 @@ def _drive_netease(session: QRSession) -> None:
             return
         time.sleep(2)
         try:
-            response = http.post(
-                "https://music.163.com/api/login/qrcode/client/login",
-                data={"key": key, "type": _NETEASE_QR_TYPE},
-                timeout=15,
+            payload = _netease_post(
+                http,
+                "/api/login/qrcode/client/login",
+                {"key": key, "type": _NETEASE_QR_TYPE},
+                device_id,
             )
-            response.raise_for_status()
-            payload = response.json()
             consecutive_errors = 0
         except Exception:
             logging.exception("NetEase QR status request failed")
@@ -387,7 +471,19 @@ def _drive_netease(session: QRSession) -> None:
             continue
         if code != "803":
             message = str(payload.get("message") or payload.get("msg") or "登录失败")
-            session.update(status="failed", message=f"网易云听书登录失败：{message}")
+            safe_message = " ".join(message.split())[:200]
+            logging.warning(
+                "NetEase QR authorization rejected: code=%s message=%s",
+                code or "unknown",
+                safe_message or "unknown",
+            )
+            if code == "8821":
+                session.update(
+                    status="failed",
+                    message="网易云拒绝了本次扫码授权，请重新获取二维码并使用最新版网易云音乐 APP 扫描",
+                )
+            else:
+                session.update(status="failed", message=f"网易云听书登录失败：{safe_message}")
             return
 
         cookies = {}
