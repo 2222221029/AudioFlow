@@ -31,6 +31,7 @@ from core.notification_manager import NotificationManager
 from core.rename_rules import RenameRuleStore, merge_rule_values
 from core.wecom_crypto import WeComCrypto, parse_wecom_message
 from core.lrts_manager import (
+    LrtsLoginSessionError,
     lrts_send_sms_code,
     lrts_sms_login,
     normalize_lrts_credentials,
@@ -5613,6 +5614,25 @@ def api_clear_cookies():
 
 
 # LRTS SMS credential login -------------------------------------------------
+_LRTS_LOGIN_DEVICE_KEY = "_lrts_login_device_id"
+_LRTS_LOGIN_DEVICE_LOCK = threading.Lock()
+
+
+def _lrts_login_device_id():
+    with _LRTS_LOGIN_DEVICE_LOCK:
+        for key in ("personal_lrts", "lrts"):
+            credential = parse_lrts_credentials(cookie_manager.get_cookie(key))
+            imei = str(credential.get("imei") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9._:-]{8,64}", imei):
+                return imei
+        saved = str(cookie_manager.get_cookie(_LRTS_LOGIN_DEVICE_KEY) or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9._:-]{8,64}", saved):
+            return saved
+        saved = uuid.uuid4().hex[:16]
+        cookie_manager.set_cookie(_LRTS_LOGIN_DEVICE_KEY, saved)
+        return saved
+
+
 @app.get("/api/lrts/check")
 def api_lrts_check():
     credential = parse_lrts_credentials(cookie_manager.get_cookie("lrts"))
@@ -5646,16 +5666,35 @@ def api_lrts_check():
 def api_lrts_send_code():
     payload = request.get_json(silent=True) or {}
     phone = str(payload.get("phone") or "").strip()
-    if not phone:
-        return json_error("请输入手机号")
+    session_id = str(payload.get("session_id") or "").strip()
+    swipe_ticket = str(payload.get("swipe_ticket") or "").strip()
+    randstr = str(payload.get("randstr") or "").strip()
+    if not re.fullmatch(r"1\d{10}", phone):
+        return json_error("请输入正确的 11 位手机号")
     try:
-        data = lrts_send_sms_code(phone)
-    except Exception as exc:
+        data = lrts_send_sms_code(
+            phone,
+            session_id=session_id,
+            swipe_ticket=swipe_ticket,
+            randstr=randstr,
+            imei=_lrts_login_device_id(),
+        )
+    except LrtsLoginSessionError as exc:
+        return json_error(str(exc))
+    except Exception:
         logging.exception("lrts send sms failed")
-        return json_error(f"发送验证码失败：{exc}", status=500)
-    if data.get("status") != 0:
+        return json_error("发送验证码失败，请检查服务端网络后重试", status=500)
+    if data.get("_requires_slider"):
+        return json_ok(
+            requires_slider=True,
+            message=data.get("msg") or "请完成滑动验证后继续",
+            session_id=data.get("_session_id", ""),
+            captcha_app_id=data.get("_captcha_app_id", ""),
+            captcha_script_url=data.get("_captcha_script_url", ""),
+        )
+    if str(data.get("status")) != "0":
         return json_error(data.get("msg") or f"发送验证码失败：status={data.get('status')}")
-    return json_ok(message="验证码已发送", imei=data.get("_imei", ""), temp_token=data.get("_token", ""))
+    return json_ok(message="验证码已发送", session_id=data.get("_session_id", ""))
 
 
 @app.post("/api/lrts/login")
@@ -5665,14 +5704,23 @@ def api_lrts_login():
     code = str(payload.get("code") or "").strip()
     imei = str(payload.get("imei") or "").strip()
     temp_token = str(payload.get("temp_token") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
     if not phone or not code:
         return json_error("请输入手机号和验证码")
     try:
-        data, credential = lrts_sms_login(phone, code, imei=imei, temp_token=temp_token)
-    except Exception as exc:
+        data, credential = lrts_sms_login(
+            phone,
+            code,
+            imei=imei,
+            temp_token=temp_token,
+            session_id=session_id,
+        )
+    except LrtsLoginSessionError as exc:
+        return json_error(str(exc))
+    except Exception:
         logging.exception("lrts sms login failed")
-        return json_error(f"验证码登录失败：{exc}", status=500)
-    if data.get("status") != 0 or not credential:
+        return json_error("验证码登录失败，请检查服务端网络后重试", status=500)
+    if str(data.get("status")) != "0" or not credential:
         return json_error(data.get("msg") or f"验证码登录失败：status={data.get('status')}")
     cookie_manager.set_cookie("lrts", credential)
     search_manager.set_cookie("lrts", credential)
@@ -5686,14 +5734,23 @@ def api_personal_lrts_login():
     code = str(payload.get("code") or "").strip()
     imei = str(payload.get("imei") or "").strip()
     temp_token = str(payload.get("temp_token") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
     if not phone or not code:
         return json_error("请输入手机号和验证码")
     try:
-        data, credential = lrts_sms_login(phone, code, imei=imei, temp_token=temp_token)
-    except Exception as exc:
+        data, credential = lrts_sms_login(
+            phone,
+            code,
+            imei=imei,
+            temp_token=temp_token,
+            session_id=session_id,
+        )
+    except LrtsLoginSessionError as exc:
+        return json_error(str(exc))
+    except Exception:
         logging.exception("personal lrts sms login failed")
-        return json_error(f"验证码登录失败：{exc}", status=500)
-    if data.get("status") != 0 or not credential:
+        return json_error("验证码登录失败，请检查服务端网络后重试", status=500)
+    if str(data.get("status")) != "0" or not credential:
         return json_error(data.get("msg") or f"验证码登录失败：status={data.get('status')}")
     cookie_manager.set_cookie("personal_lrts", credential)
     return json_ok(

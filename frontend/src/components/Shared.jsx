@@ -1479,6 +1479,53 @@ function XimalayaMobileLoginModal({actions, onDone, onClose}) {
   );
 }
 
+const LRTS_CAPTCHA_SCRIPT = 'https://turing.captcha.qcloud.com/TJCaptcha.js';
+let lrtsCaptchaScriptPromise = null;
+
+function loadLrtsCaptchaScript(scriptUrl = LRTS_CAPTCHA_SCRIPT) {
+  if (globalThis.TencentCaptcha) return Promise.resolve();
+  if (lrtsCaptchaScriptPromise) return lrtsCaptchaScriptPromise;
+  const source = scriptUrl === LRTS_CAPTCHA_SCRIPT ? scriptUrl : LRTS_CAPTCHA_SCRIPT;
+  lrtsCaptchaScriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${source}"]`);
+    const script = existing || document.createElement('script');
+    const done = () => globalThis.TencentCaptcha
+      ? resolve()
+      : reject(new Error('官方滑动验证组件加载失败'));
+    script.addEventListener('load', done, {once: true});
+    script.addEventListener('error', () => reject(new Error('无法连接官方滑动验证服务')), {once: true});
+    if (!existing) {
+      script.src = source;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  }).catch((error) => {
+    lrtsCaptchaScriptPromise = null;
+    throw error;
+  });
+  return lrtsCaptchaScriptPromise;
+}
+
+async function completeLrtsSlider(appId, scriptUrl) {
+  await loadLrtsCaptchaScript(scriptUrl);
+  return new Promise((resolve, reject) => {
+    try {
+      const captcha = new globalThis.TencentCaptcha(String(appId), (result) => {
+        if (result?.ret === 0 && result.ticket && result.randstr) {
+          resolve({swipe_ticket: result.ticket, randstr: result.randstr});
+        } else if (result?.ret === 2) {
+          reject(new Error('已取消滑动验证'));
+        } else {
+          reject(new Error('滑动验证未通过，请重试'));
+        }
+      }, {needFeedBack: false});
+      captcha.show();
+    } catch (error) {
+      reject(new Error(error?.message || '无法启动官方滑动验证'));
+    }
+  });
+}
+
 function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
   const [message, setMessage] = useState('正在初始化...');
   const [qr, setQr] = useState('');
@@ -1487,7 +1534,7 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
   const [smsCode, setSmsCode] = useState('');
   const [sendingCode, setSendingCode] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
-  const [lrtsLoginState, setLrtsLoginState] = useState({imei: '', tempToken: ''});
+  const [lrtsLoginState, setLrtsLoginState] = useState({sessionId: '', phone: '', imei: '', tempToken: ''});
   const [lrtsMode, setLrtsMode] = useState('sms');
   const [manualCredential, setManualCredential] = useState('');
   const [savingManualCredential, setSavingManualCredential] = useState(false);
@@ -1549,12 +1596,35 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
   // 手动保存 Cookie
 
   const sendLrtsCode = async () => {
-    if (!phone.trim()) return;
+    const normalizedPhone = phone.trim();
+    if (normalizedPhone.length !== 11) return;
     setSendingCode(true);
     setError('');
     try {
-      const data = await api('/api/lrts/send-code', {method: 'POST', body: {phone: phone.trim()}});
-      setLrtsLoginState({imei: data.imei || '', tempToken: data.temp_token || ''});
+      const reusableSession = lrtsLoginState.phone === normalizedPhone ? lrtsLoginState.sessionId : '';
+      let data = await api('/api/lrts/send-code', {
+        method: 'POST',
+        body: {phone: normalizedPhone, session_id: reusableSession},
+      });
+      for (let sliderAttempts = 0; data.requires_slider && sliderAttempts < 2; sliderAttempts += 1) {
+        setMessage(data.message || '请完成滑动验证');
+        setLrtsLoginState((current) => ({...current, sessionId: data.session_id || '', phone: normalizedPhone}));
+        const proof = await completeLrtsSlider(data.captcha_app_id, data.captcha_script_url);
+        data = await api('/api/lrts/send-code', {
+          method: 'POST',
+          body: {
+            phone: normalizedPhone,
+            session_id: data.session_id,
+            ...proof,
+          },
+        });
+      }
+      if (data.requires_slider) throw new Error(data.message || '滑动验证已失效，请重试');
+      setLrtsLoginState((current) => ({
+        ...current,
+        sessionId: data.session_id || current.sessionId,
+        phone: normalizedPhone,
+      }));
       setMessage(data.message || '验证码已发送');
     } catch (err) {
       setError(err.message);
@@ -1574,6 +1644,7 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
         body: {
           phone: phone.trim(),
           code: smsCode.trim(),
+          session_id: lrtsLoginState.sessionId,
           imei: lrtsLoginState.imei,
           temp_token: lrtsLoginState.tempToken,
         },
@@ -1632,27 +1703,33 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
               <input
                 className="field-input lrts-input"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                onChange={(e) => {
+                  const nextPhone = e.target.value.replace(/\D/g, '').slice(0, 11);
+                  setPhone(nextPhone);
+                  if (nextPhone !== lrtsLoginState.phone) {
+                    setLrtsLoginState({sessionId: '', phone: '', imei: '', tempToken: ''});
+                  }
+                }}
                 placeholder="手机号"
                 inputMode="tel"
                 autoComplete="tel"
               />
-              <button className="btn btn-ghost btn-sm lrts-send-btn" disabled={sendingCode || !phone.trim()} onClick={sendLrtsCode}>
+              <button className="btn btn-ghost btn-sm lrts-send-btn" disabled={sendingCode || phone.length !== 11} onClick={sendLrtsCode}>
                 <BusyIcon busy={sendingCode} icon="i-mobile" />发送验证码
               </button>
             </div>
             <input
               className="field-input lrts-input"
               value={smsCode}
-              onChange={(e) => setSmsCode(e.target.value)}
+              onChange={(e) => setSmsCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
               placeholder="短信验证码"
               inputMode="numeric"
               autoComplete="one-time-code"
             />
             {error && <div className="field-hint err">{error}</div>}
-            <div className="lrts-note">登录成功后会保存 App API 凭证：imei + token。{scope === 'personal' ? '仅用于个人中心。' : ''}</div>
+            <div className="lrts-note">滑块由懒人听书官方腾讯验证码服务提供。登录成功后保存 App API 凭证。{scope === 'personal' ? '仅用于个人中心。' : ''}</div>
             <div className="modal-actions">
-              <button className="btn btn-primary btn-sm" disabled={loggingIn || !phone.trim() || !smsCode.trim()} onClick={loginLrtsWithCode}>
+              <button className="btn btn-primary btn-sm" disabled={loggingIn || phone.length !== 11 || !smsCode.trim() || !lrtsLoginState.sessionId} onClick={loginLrtsWithCode}>
                 <BusyIcon busy={loggingIn} icon="i-check" />登录并保存
               </button>
               <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>

@@ -236,8 +236,8 @@ class LRTSManagerTest(unittest.TestCase):
         self.assertEqual(client.get.call_args.args[2]["quality"], 2)
 
     def test_current_android_headers_are_used(self):
-        self.assertEqual(APP_HEADERS["ClientVersion"], "8.8.03")
-        self.assertIn("/ch_yyting/8803/8.8.03", APP_HEADERS["User-Agent"])
+        self.assertEqual(APP_HEADERS["ClientVersion"], "8.8.12")
+        self.assertIn("/ch_yyting/8812/8.8.12", APP_HEADERS["User-Agent"])
 
     def test_audio_lookup_uses_book_entity_for_web_book(self):
         manager = LRTSManager()

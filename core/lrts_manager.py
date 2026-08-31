@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """LRTS manager backed by the Android app API.
 
-The login flow is SMS based:
-1. fetch a temporary token with a generated device ``imei``;
-2. send a verification code to the phone number;
-3. exchange phone + code for a persistent ``token``;
-4. store ``imei`` + ``token`` as the project's LRTS credential.
+The login flow is SMS based and protected by LRTS' official Tencent slider:
+1. create a short-lived server-side login session with a stable device ``imei``;
+2. let the user complete the official slider and retry with its proof;
+3. fetch a temporary token and send a verification code in the same session;
+4. exchange phone + code for a persistent ``token``;
+5. store ``imei`` + ``token`` as the project's LRTS credential.
 
 The persisted value lives in the existing CookieManager ``lrts`` slot for
 compatibility with the rest of the app, but it is JSON credentials rather than
@@ -52,13 +53,15 @@ RSA_PUB_B64 = (
     "BViIyqKi/1Z2buGWEb/ML836JiRY4WgcVOLWGpde3ZTddWvQ1Hm3bZ/+hGbswIDAQAB"
 )
 APP_HEADERS = {
-    # Mirrors the public Android 8.8.03 client. The v3 listen-path API rejects
+    # Mirrors the public Android 8.8.12 client. The v3 listen-path API rejects
     # the legacy 8.0.1 headers before it evaluates the signed parameters.
-    "User-Agent": "Android12/yyting/unknown/unknown/ch_yyting/8803/8.8.03",
+    "User-Agent": "Android12/yyting/unknown/unknown/ch_yyting/8812/8.8.12",
     "Accept-Encoding": "gzip,deflate,sdch",
-    "ClientVersion": "8.8.03",
+    "ClientVersion": "8.8.12",
     "Referer": "yytingting.com",
 }
+LRTS_CAPTCHA_APP_ID = "2082591240"
+LRTS_CAPTCHA_SCRIPT_URL = "https://turing.captcha.qcloud.com/TJCaptcha.js"
 V3_LISTEN_PATH = "/yyting/v3/gateway/getListenPath"
 LEGACY_LISTEN_PATH = "/yyting/gateway/getListenPath.action"
 RECENT_LISTENS_PATH = "/yyting/bookclient/ClientGetRecentListenBooks.action"
@@ -80,6 +83,9 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)) or default)
     except (TypeError, ValueError):
         return default
+
+
+LRTS_LOGIN_SESSION_TTL = max(120, _env_int("LRTS_LOGIN_SESSION_TTL", 15 * 60))
 
 
 def _audio_quality(value=None) -> int:
@@ -365,11 +371,20 @@ class LrtsAppClient:
         print(f"[lrts] AutoRegister status={data.get('status')} msg={data.get('msg')}")
         return ""
 
-    def send_sms_code(self, phone: str, code_type: int = 15, login_key: str = "") -> dict:
+    def send_sms_code(
+        self,
+        phone: str,
+        code_type: int = 15,
+        login_key: str = "",
+        swipe_ticket: str = "",
+        randstr: str = "",
+    ) -> dict:
         return self.get(API_HOST, "/yyting/usercenter/getVerifyCode.action", {
             "phoneNum": phone,
             "type": code_type,
             "loginKey": login_key,
+            "swipeTicket": swipe_ticket,
+            "randstr": randstr,
         })
 
     def sms_login(self, phone: str, verify_code: str) -> dict:
@@ -562,21 +577,206 @@ class LrtsAppClient:
         return all_items
 
 
-def lrts_send_sms_code(phone: str) -> dict:
-    client = LrtsAppClient()
-    client.fetch_temp_token()
-    data = client.send_sms_code(phone)
-    data["_imei"] = client.imei
-    data["_token"] = client.token
-    return data
+class LrtsLoginSessionError(ValueError):
+    pass
 
 
-def lrts_sms_login(phone: str, code: str, imei: str = "", temp_token: str = "") -> tuple[dict, str]:
-    client = LrtsAppClient(imei=imei or None, token=temp_token or "")
-    if not client.token:
-        client.fetch_temp_token()
-    data = client.sms_login(phone, code)
-    credential = credentials_from_login(phone, client.imei, data) if data.get("status") == 0 else {}
+class LrtsLoginSessionExpired(LrtsLoginSessionError):
+    pass
+
+
+class LrtsLoginSession:
+    def __init__(self, session_id: str, phone: str, client: LrtsAppClient, now: float):
+        self.session_id = session_id
+        self.phone = phone
+        self.client = client
+        self.created_at = now
+        self.last_used_at = now
+        self.login_key = ""
+        self.code_sent = False
+        self.lock = threading.Lock()
+
+
+class LrtsLoginSessionStore:
+    def __init__(self, ttl: int = LRTS_LOGIN_SESSION_TTL, client_factory=None, clock=None):
+        self.ttl = max(1, int(ttl))
+        self.client_factory = client_factory or LrtsAppClient
+        self.clock = clock or time.monotonic
+        self.lock = threading.Lock()
+        self.sessions: dict[str, LrtsLoginSession] = {}
+        self.phone_sessions: dict[str, str] = {}
+
+    def _close(self, session: LrtsLoginSession) -> None:
+        close = getattr(getattr(session.client, "session", None), "close", None)
+        if callable(close):
+            close()
+
+    def _remove_locked(self, session_id: str) -> LrtsLoginSession | None:
+        session = self.sessions.pop(session_id, None)
+        if session and self.phone_sessions.get(session.phone) == session_id:
+            self.phone_sessions.pop(session.phone, None)
+        return session
+
+    def _cleanup_locked(self, now: float) -> None:
+        expired = [
+            session_id
+            for session_id, session in self.sessions.items()
+            if now - session.last_used_at >= self.ttl
+        ]
+        for session_id in expired:
+            session = self._remove_locked(session_id)
+            if session:
+                self._close(session)
+
+    def get_or_create(self, phone: str, session_id: str = "", imei: str = "") -> LrtsLoginSession:
+        now = self.clock()
+        with self.lock:
+            self._cleanup_locked(now)
+            if session_id:
+                session = self.sessions.get(session_id)
+                if session is None:
+                    raise LrtsLoginSessionExpired("登录会话已过期，请重新进行滑动验证")
+                if session.phone != phone:
+                    raise LrtsLoginSessionError("手机号与登录会话不匹配，请重新获取验证码")
+                session.last_used_at = now
+                return session
+
+            existing_id = self.phone_sessions.get(phone, "")
+            session = self.sessions.get(existing_id)
+            if session is not None:
+                session.last_used_at = now
+                return session
+
+            new_id = uuid.uuid4().hex
+            session = LrtsLoginSession(new_id, phone, self.client_factory(imei=imei or None), now)
+            self.sessions[new_id] = session
+            self.phone_sessions[phone] = new_id
+            return session
+
+    def get(self, session_id: str, phone: str) -> LrtsLoginSession:
+        return self.get_or_create(phone, session_id=session_id)
+
+    def pop(self, session_id: str) -> None:
+        with self.lock:
+            session = self._remove_locked(session_id)
+        if session:
+            self._close(session)
+
+
+_LRTS_LOGIN_SESSIONS = LrtsLoginSessionStore()
+
+
+def _login_response_value(data: dict, key: str):
+    value = data.get(key)
+    if value not in (None, ""):
+        return value
+    inner = data.get("data")
+    return inner.get(key) if isinstance(inner, dict) else ""
+
+
+def _flatten_login_response(data: dict) -> dict:
+    """Expose successful login fields consistently across API response shapes."""
+    result = dict(data)
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        for key, value in inner.items():
+            if result.get(key) in (None, "") and value not in (None, ""):
+                result[key] = value
+    return result
+
+
+def _slider_required(data: dict) -> bool:
+    message = str(_login_response_value(data, "msg") or data.get("message") or "").lower()
+    return _login_status(data) == 460 or any(
+        marker in message for marker in ("滑动验证", "滑块验证", "captcha", "swipeticket")
+    )
+
+
+def _login_status(data: dict, default: int = -1) -> int:
+    value = data.get("status")
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _slider_challenge(session: LrtsLoginSession, message: str = "请完成滑动验证后继续") -> dict:
+    return {
+        "status": 0,
+        "msg": message,
+        "_requires_slider": True,
+        "_session_id": session.session_id,
+        "_captcha_app_id": LRTS_CAPTCHA_APP_ID,
+        "_captcha_script_url": LRTS_CAPTCHA_SCRIPT_URL,
+    }
+
+
+def lrts_send_sms_code(
+    phone: str,
+    session_id: str = "",
+    swipe_ticket: str = "",
+    randstr: str = "",
+    imei: str = "",
+) -> dict:
+    login_session = _LRTS_LOGIN_SESSIONS.get_or_create(phone, session_id=session_id, imei=imei)
+    if not swipe_ticket or not randstr:
+        return _slider_challenge(login_session)
+
+    with login_session.lock:
+        client = login_session.client
+        if not client.token:
+            client.fetch_temp_token()
+        if not client.token:
+            return {
+                "status": -1,
+                "msg": "无法建立懒人听书设备会话，请稍后重试",
+                "_session_id": login_session.session_id,
+            }
+        data = client.send_sms_code(
+            phone,
+            login_key=login_session.login_key,
+            swipe_ticket=swipe_ticket,
+            randstr=randstr,
+        )
+        login_key = str(_login_response_value(data, "loginKey") or "")
+        if login_key:
+            login_session.login_key = login_key
+        login_session.last_used_at = _LRTS_LOGIN_SESSIONS.clock()
+        data["_session_id"] = login_session.session_id
+        if _slider_required(data):
+            data.update(_slider_challenge(login_session, data.get("msg") or "滑动验证已失效，请重试"))
+        elif _login_status(data) == 0:
+            login_session.code_sent = True
+        return data
+
+
+def lrts_sms_login(
+    phone: str,
+    code: str,
+    imei: str = "",
+    temp_token: str = "",
+    session_id: str = "",
+) -> tuple[dict, str]:
+    login_session = None
+    if session_id:
+        login_session = _LRTS_LOGIN_SESSIONS.get(session_id, phone)
+        if not login_session.code_sent:
+            raise LrtsLoginSessionError("请先完成滑动验证并获取短信验证码")
+        client = login_session.client
+    else:
+        client = LrtsAppClient(imei=imei or None, token=temp_token or "")
+
+    with login_session.lock if login_session else threading.Lock():
+        if not client.token:
+            client.fetch_temp_token()
+        data = _flatten_login_response(client.sms_login(phone, code))
+        credential = credentials_from_login(phone, client.imei, data) if _login_status(data) == 0 else {}
+        if credential and not credential.get("token"):
+            credential = {}
+            data["status"] = -1
+            data["msg"] = "登录响应缺少 App token，请重新获取验证码后重试"
+    if login_session and credential:
+        _LRTS_LOGIN_SESSIONS.pop(login_session.session_id)
     return data, normalize_lrts_credentials(credential)
 
 
