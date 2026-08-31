@@ -85,6 +85,18 @@ export const PERSONAL_FEATURES = {
     {key: 'programs', name: '我的节目', icon: 'i-user'},
   ],
   qidian: [{key: 'favorites', name: '我的书架', icon: 'i-bookmark'}],
+  netease: [
+    {key: 'subscriptions', name: '我的订阅', icon: 'i-bookmark'},
+    {key: 'history', name: '最近播放', icon: 'i-clock'},
+  ],
+  qtfm: [
+    {key: 'favorites', name: '我的收藏', icon: 'i-bookmark'},
+    {key: 'history', name: '收听记录', icon: 'i-clock'},
+  ],
+  kuwo: [
+    {key: 'favorites', name: '我的收藏', icon: 'i-bookmark'},
+    {key: 'history', name: '播放记录', icon: 'i-clock'},
+  ],
 };
 
 export function platformKey(value) {

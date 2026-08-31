@@ -5541,11 +5541,16 @@ PERSONAL_COOKIE_KEYS = {
     "xmly": "personal_xmly",
     "lrts": "personal_lrts",
     "qidian": "personal_qidian",
+    "netease": "personal_netease",
+    "qtfm": "personal_qtfm",
+    "kuwo": "personal_kuwo",
 }
 
 PERSONAL_QR_COOKIE_KEYS = {
     "ximalaya": "personal_xmly",
     "qidian": "personal_qidian",
+    "netease": "personal_netease",
+    "qtfm": "personal_qtfm",
 }
 
 
@@ -5573,7 +5578,7 @@ def _personal_cookie_status(platform):
 def api_personal_cookies():
     cookie_manager.load()
     result = {}
-    for platform, key in (("ximalaya", "personal_xmly"), ("lrts", "personal_lrts"), ("qidian", "personal_qidian")):
+    for platform in ("ximalaya", "lrts", "qidian", "netease", "qtfm", "kuwo"):
         result[platform] = _personal_cookie_status(platform)
     return json_ok(cookies=result, config_file=str(cookie_manager.config_file))
 
@@ -5928,6 +5933,12 @@ def api_personal(platform, feature):
             items = _load_lrts_personal(feature)
         elif platform == "qidian":
             items = _load_qidian_personal(feature)
+        elif platform == "netease":
+            items = _load_netease_personal(feature)
+        elif platform == "qtfm":
+            items = _load_qtfm_personal(feature)
+        elif platform == "kuwo":
+            items = _load_kuwo_personal(feature)
         else:
             return json_error(f"不支持的平台: {platform}")
         return json_ok(items=items, platform=platform, feature=feature)
@@ -6388,6 +6399,218 @@ def _load_qidian_personal(feature):
             raise RuntimeError("起点书架加载失败，请稍后重试") from e
         raise
     return items
+
+
+def _netease_response_container(response, list_key, label):
+    if not isinstance(response, dict):
+        raise RuntimeError(f"网易云听书{label}接口返回格式异常")
+    code = response.get("code")
+    if code is not None and str(code) != "200":
+        message = response.get("message") or response.get("msg") or f"code={code}"
+        if str(code) in ("301", "401", "403"):
+            raise RuntimeError(f"网易云听书登录已失效，请在个人中心重新扫码：{message}")
+        raise RuntimeError(f"网易云听书{label}加载失败：{message}")
+    containers = [response]
+    if isinstance(response.get("data"), dict):
+        containers.append(response["data"])
+    for container in containers:
+        if list_key in container:
+            records = container.get(list_key)
+            if not isinstance(records, list):
+                raise RuntimeError(f"网易云听书{label}接口返回格式异常")
+            return container, records
+    raise RuntimeError(f"网易云听书{label}接口未返回 {list_key}")
+
+
+def _load_netease_personal(feature):
+    if feature not in ("subscriptions", "history"):
+        raise RuntimeError(f"不支持的网易云听书个人中心功能: {feature}")
+    cookie = _get_personal_cookie("netease")
+    if not cookie:
+        raise RuntimeError("请先在个人中心为网易云听书扫码登录或粘贴 Cookie")
+    from core.netease_cloud_audiobook_manager import NeteaseCloudAudiobookManager
+    api = NeteaseCloudAudiobookManager()
+    api.set_cookie(cookie)
+    validation = api.validate_cookie()
+    if not isinstance(validation, dict) or not validation.get("ok"):
+        raise RuntimeError("网易云听书登录已失效，请在个人中心重新扫码")
+    return _load_netease_personal_from_manager(api, feature)
+
+
+def _load_netease_personal_from_manager(api, feature, max_pages=200):
+    items = []
+    seen = set()
+    if feature == "subscriptions":
+        limit = 100
+        offset = 0
+        for _ in range(max_pages):
+            response = api._post_weapi("/weapi/djradio/get/subed", {
+                "limit": limit,
+                "offset": offset,
+                "total": "true",
+            })
+            container, radios = _netease_response_container(response, "djRadios", "订阅")
+            for radio in radios:
+                if not isinstance(radio, dict):
+                    continue
+                normalized = normalize_album(api._normalize_radio(radio))
+                radio_id = str(normalized.get("id") or "")
+                if not radio_id or radio_id in seen:
+                    continue
+                seen.add(radio_id)
+                items.append(normalized)
+            offset += len(radios)
+            count = container.get("count") or response.get("count") or 0
+            has_more = container.get("hasMore")
+            if has_more is None:
+                has_more = response.get("hasMore")
+            if not radios or has_more is False or (count and offset >= int(count)):
+                return items
+            if has_more is not True and len(radios) < limit:
+                return items
+        raise RuntimeError("网易云听书订阅分页超过安全上限，未能完整加载")
+
+    if feature != "history":
+        raise RuntimeError(f"不支持的网易云听书个人中心功能: {feature}")
+    response = api._post_weapi("/weapi/play-record/djradio/list", {"limit": 1000})
+    _, records = _netease_response_container(response, "list", "最近播放")
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        program = record.get("data") or record.get("program") or record
+        if isinstance(program, dict) and isinstance(program.get("program"), dict):
+            program = program["program"]
+        if not isinstance(program, dict):
+            continue
+        radio = program.get("radio") or record.get("radio")
+        if not isinstance(radio, dict):
+            continue
+        normalized = normalize_album(api._normalize_radio(radio))
+        radio_id = str(normalized.get("id") or "")
+        if not radio_id or radio_id in seen:
+            continue
+        seen.add(radio_id)
+        items.append(normalized)
+    return items
+
+
+def _qtfm_response_payload(response, label):
+    if isinstance(response, dict):
+        code = response.get("errcode")
+        if code is not None and str(code) not in ("0", "200"):
+            message = response.get("errmsg") or response.get("message") or f"errcode={code}"
+            if str(code) in ("401", "403"):
+                raise RuntimeError(f"蜻蜓 FM 登录已失效，请在个人中心重新扫码：{message}")
+            raise RuntimeError(f"蜻蜓 FM {label}加载失败：{message}")
+        if "data" in response:
+            return response.get("data")
+    return response
+
+
+def _qtfm_podcaster_name(value):
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("nick_name") or value.get("nickname") or "")
+    if isinstance(value, list):
+        names = [_qtfm_podcaster_name(item) for item in value]
+        return " / ".join(name for name in names if name)
+    return str(value or "")
+
+
+def _load_qtfm_personal(feature):
+    if feature not in ("favorites", "history"):
+        raise RuntimeError(f"不支持的蜻蜓 FM 个人中心功能: {feature}")
+    cookie = _get_personal_cookie("qtfm")
+    if not cookie:
+        raise RuntimeError("请先在个人中心为蜻蜓 FM 扫码登录或粘贴 Cookie")
+    from core.qtfm_manager import QtfmManager
+    api = QtfmManager()
+    api.set_cookie(cookie)
+    if not api.is_authenticated() or not api.get_user_profile():
+        raise RuntimeError("蜻蜓 FM 登录已失效，请在个人中心重新扫码")
+    return _load_qtfm_personal_from_manager(api, feature)
+
+
+def _load_qtfm_personal_from_manager(api, feature):
+    endpoints = {"favorites": "favchannel", "history": "listenhistory"}
+    endpoint = endpoints.get(feature)
+    if not endpoint:
+        raise RuntimeError(f"不支持的蜻蜓 FM 个人中心功能: {feature}")
+    try:
+        response = api.session.get(
+            f"https://webbff.qtfm.cn/www/{endpoint}",
+            params={"qingting_id": api.qingting_id, "access_token": api.access_token},
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = _qtfm_response_payload(response.json(), "收藏" if feature == "favorites" else "收听记录")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"蜻蜓 FM {'收藏' if feature == 'favorites' else '收听记录'}连接失败，请稍后重试") from exc
+
+    if feature == "favorites":
+        if not isinstance(payload, dict) or "favProgram" not in payload:
+            raise RuntimeError("蜻蜓 FM 收藏接口返回格式异常")
+        records = payload.get("favProgram")
+    else:
+        records = payload
+        if isinstance(payload, dict):
+            if "list" in payload:
+                records = payload.get("list")
+            elif "records" in payload:
+                records = payload.get("records")
+            else:
+                records = None
+    if not isinstance(records, list):
+        raise RuntimeError(f"蜻蜓 FM {'收藏' if feature == 'favorites' else '收听记录'}接口返回格式异常")
+
+    items = []
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if feature == "history" and str(record.get("ctype")) != "1":
+            continue
+        item_id = record.get("id") if feature == "favorites" else record.get("cid")
+        item_id = str(item_id or "")
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        if feature == "favorites":
+            normalized = _normalize_personal_item({
+                "id": item_id,
+                "title": record.get("name") or record.get("title"),
+                "author": _qtfm_podcaster_name(record.get("podcaster")),
+                "cover": record.get("album_cover") or record.get("cover"),
+                "episodes": record.get("program_count") or 0,
+                "description": record.get("description") or record.get("desc"),
+            }, "蜻蜓FM")
+        else:
+            normalized = _normalize_personal_item({
+                "id": item_id,
+                "title": record.get("cname"),
+                "author": _qtfm_podcaster_name(record.get("podcaster") or record.get("anchor")),
+                "cover": record.get("cavatar"),
+                "description": record.get("pname"),
+            }, "蜻蜓FM")
+        items.append(normalized)
+    return items
+
+
+def _load_kuwo_personal(feature):
+    if feature not in ("favorites", "history"):
+        raise RuntimeError(f"不支持的酷我听书个人中心功能: {feature}")
+    cookie = _get_personal_cookie("kuwo")
+    if not cookie:
+        raise RuntimeError("请先在个人中心为酷我听书登录或粘贴 Cookie")
+    pairs = _parse_cookie_pairs(cookie)
+    if not (pairs.get("userid") or pairs.get("uid")) or not (pairs.get("sid") or pairs.get("websid")):
+        raise RuntimeError("酷我听书个人中心 Cookie 缺少 userid 和 sid/websid，请重新登录后获取")
+    label = "收藏" if feature == "favorites" else "播放记录"
+    raise RuntimeError(
+        f"酷我听书官网当前未提供可验证的远端{label}读取接口；"
+        "个人中心凭证已独立保存，不会影响账号管理和公开搜索"
+    )
 
 
 def _normalize_personal_item(item, platform):
