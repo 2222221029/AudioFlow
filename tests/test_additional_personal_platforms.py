@@ -11,13 +11,15 @@ def _http_response(payload):
 
 
 class AdditionalPersonalPlatformsTest(unittest.TestCase):
-    def test_personal_cookie_keys_are_isolated(self):
-        self.assertEqual(web_server.PERSONAL_COOKIE_KEYS["netease"], "personal_netease")
-        self.assertEqual(web_server.PERSONAL_COOKIE_KEYS["qtfm"], "personal_qtfm")
-        self.assertEqual(web_server.PERSONAL_COOKIE_KEYS["kuwo"], "personal_kuwo")
-        self.assertEqual(web_server.PERSONAL_QR_COOKIE_KEYS["netease"], "personal_netease")
-        self.assertEqual(web_server.PERSONAL_QR_COOKIE_KEYS["qtfm"], "personal_qtfm")
-        self.assertNotIn("kuwo", web_server.PERSONAL_QR_COOKIE_KEYS)
+    def test_removed_platforms_are_not_personal_cookie_targets(self):
+        self.assertEqual(
+            set(web_server.PERSONAL_COOKIE_KEYS),
+            {"ximalaya", "xmly", "lrts", "qidian"},
+        )
+        self.assertEqual(
+            set(web_server.PERSONAL_QR_COOKIE_KEYS),
+            {"ximalaya", "qidian"},
+        )
 
     def test_personal_cookie_status_lists_all_supported_platforms(self):
         with (
@@ -29,11 +31,11 @@ class AdditionalPersonalPlatformsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             set(response.get_json()["cookies"]),
-            {"ximalaya", "lrts", "qidian", "netease", "qtfm", "kuwo"},
+            {"ximalaya", "lrts", "qidian"},
         )
 
-    def test_personal_qr_poll_saves_netease_and_qtfm_only_to_personal_keys(self):
-        for platform, expected_key in (("netease", "personal_netease"), ("qtfm", "personal_qtfm")):
+    def test_removed_platform_qr_sessions_are_not_saved_to_personal_keys(self):
+        for platform in ("netease", "qtfm"):
             with self.subTest(platform=platform):
                 session = mock.Mock()
                 session.snapshot.return_value = {
@@ -49,8 +51,17 @@ class AdditionalPersonalPlatformsTest(unittest.TestCase):
                 ):
                     response = web_server.app.test_client().get("/api/personal/qr/poll/session")
                 self.assertEqual(response.status_code, 200)
-                set_cookie.assert_called_once_with(expected_key, "token=secret")
+                set_cookie.assert_not_called()
                 set_search_cookie.assert_not_called()
+
+    def test_removed_personal_content_platforms_are_rejected(self):
+        with mock.patch.object(web_server, "current_user", return_value={"username": "test"}):
+            client = web_server.app.test_client()
+            for platform in ("netease", "qtfm", "kuwo"):
+                with self.subTest(platform=platform):
+                    response = client.get(f"/api/personal/{platform}/history")
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("不支持的平台", response.get_json()["error"])
 
     def test_netease_subscriptions_paginate_and_deduplicate(self):
         api = mock.Mock()

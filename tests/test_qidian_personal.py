@@ -150,6 +150,50 @@ class QidianPersonalAPITest(unittest.TestCase):
         self.assertEqual(items[0]["qidian_audio_id"], "9022")
         self.assertEqual(items[0]["qidian_book_id"], "22")
 
+    def test_personal_favorites_derives_official_cover_when_shelf_omits_it(self):
+        api = self._api(
+            _response(
+                [{"bookId": 22, "bookName": "有声专辑", "bookType": 2}],
+                1,
+                page_count=1,
+            )
+        )
+        api.get_qidian_user_account.return_value = {"user": {"userId": 9}}
+
+        with (
+            mock.patch.object(web_server, "_get_personal_cookie", return_value="ywguid=test-guid"),
+            mock.patch("core.search_manager.SearchManager", return_value=api),
+        ):
+            items = web_server._load_qidian_personal("favorites")
+
+        self.assertEqual(
+            items[0]["cover"],
+            "https://bookcover.yuewen.com/qdbimg/349573/22/180",
+        )
+
+    def test_personal_favorites_uses_nested_upstream_cover_before_fallback(self):
+        api = self._api(
+            _response(
+                [{
+                    "bookId": 22,
+                    "bookName": "有声专辑",
+                    "bookType": 2,
+                    "audioInfo": {"bookCover": "//example.com/audio-cover.jpg"},
+                }],
+                1,
+                page_count=1,
+            )
+        )
+        api.get_qidian_user_account.return_value = {"user": {"userId": 9}}
+
+        with (
+            mock.patch.object(web_server, "_get_personal_cookie", return_value="ywguid=test-guid"),
+            mock.patch("core.search_manager.SearchManager", return_value=api),
+        ):
+            items = web_server._load_qidian_personal("favorites")
+
+        self.assertEqual(items[0]["cover"], "https://example.com/audio-cover.jpg")
+
     def test_bookshelf_novel_id_is_resolved_before_loading_chapters(self):
         personal_api = mock.Mock()
         personal_api.search_qidian.return_value = [

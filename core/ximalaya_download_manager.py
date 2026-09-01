@@ -1750,7 +1750,17 @@ class XimalayaDownloadManager:
                     os.remove(temp_path)
                 except OSError:
                     pass
-                self._record_error(f"移动端返回的{profile['name']}{validation_error}，已拒绝保存")
+                # The V4 catalog occasionally labels an ordinary AAC payload
+                # as Dolby/Vivid.  Keep rejecting the mislabeled file, but let
+                # preferred-quality modes continue to the next exact level.
+                spatial_quality_unavailable = level in (12, 13) and validation_error not in {
+                    "文件地址返回了错误页面",
+                    "文件格式无法识别",
+                }
+                self._record_error(
+                    f"移动端返回的{profile['name']}{validation_error}，已拒绝保存",
+                    error_type="quality_unavailable" if spatial_quality_unavailable else None,
+                )
                 return False
 
             actual_extension = self._mobile_media_extension(temp_path, level)

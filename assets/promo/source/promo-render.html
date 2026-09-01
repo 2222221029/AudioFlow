@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AudioFlow Product Posters</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body {
+      overflow: hidden;
+      background: #070a14;
+      color: #f7f9ff;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .poster {
+      position: relative;
+      display: none;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+    }
+    .poster.active { display: block; }
+    .poster::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 5px;
+      background: #31d4ee;
+    }
+    .brand {
+      position: absolute;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      top: 34px;
+      left: 52px;
+    }
+    .brand img { width: 44px; height: 44px; }
+    .brand-name { font-size: 24px; font-weight: 800; }
+    .brand-meta { margin-top: 2px; color: #9ea8c8; font-size: 12px; font-weight: 600; }
+    .index {
+      position: absolute;
+      z-index: 3;
+      top: 44px;
+      right: 54px;
+      color: #7683aa;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .kicker {
+      color: #4be0f4;
+      font-size: 14px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .dot-row { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 6px; height: 6px; background: #46e4a4; border-radius: 50%; }
+    .rule { height: 1px; background: #27304a; }
+
+    /* 01 - product hero */
+    #hero { background: #090d1b; }
+    #hero .rail {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 18px;
+      height: 100%;
+      background: #6948ff;
+    }
+    #hero .copy {
+      position: absolute;
+      z-index: 4;
+      top: 129px;
+      left: 64px;
+      width: 430px;
+    }
+    #hero h1 {
+      margin: 17px 0 22px;
+      font-size: 58px;
+      line-height: 1.14;
+      font-weight: 900;
+    }
+    #hero .lead {
+      width: 405px;
+      margin: 0;
+      color: #b6bfd8;
+      font-size: 18px;
+      line-height: 1.75;
+    }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+    .tag {
+      padding: 9px 13px;
+      border: 1px solid #36415f;
+      border-radius: 6px;
+      background: #10172b;
+      color: #e6ebff;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    #hero .product-window {
+      position: absolute;
+      z-index: 3;
+      top: 122px;
+      right: 42px;
+      width: 720px;
+      height: 438px;
+      overflow: hidden;
+      border: 1px solid #46517b;
+      border-radius: 8px;
+      background: #10152a;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
+    }
+    .window-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 34px;
+      padding: 0 13px;
+      border-bottom: 1px solid #28314c;
+      background: #151b31;
+      color: #8994b6;
+      font-size: 10px;
+    }
+    .window-dots { display: flex; gap: 6px; }
+    .window-dots i { width: 7px; height: 7px; border-radius: 50%; background: #3d4868; }
+    .window-dots i:nth-child(1) { background: #ff6b77; }
+    .window-dots i:nth-child(2) { background: #ffc75d; }
+    .window-dots i:nth-child(3) { background: #46e4a4; }
+    .product-window img { display: block; width: 100%; height: 404px; object-fit: cover; object-position: top left; }
+    #hero .window-shadow {
+      position: absolute;
+      z-index: 1;
+      top: 103px;
+      right: 66px;
+      width: 720px;
+      height: 438px;
+      border: 1px solid #2c3757;
+      border-radius: 8px;
+    }
+    #hero .metrics {
+      position: absolute;
+      z-index: 4;
+      right: 42px;
+      bottom: 48px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      width: 720px;
+      border-top: 1px solid #303955;
+    }
+    .metric { padding: 17px 0 0 18px; border-left: 1px solid #303955; }
+    .metric strong { display: block; font-size: 22px; }
+    .metric span { display: block; margin-top: 4px; color: #929dbd; font-size: 12px; }
+    #hero .corner-note {
+      position: absolute;
+      left: 64px;
+      bottom: 55px;
+      color: #7e89aa;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    /* 02 - workflow */
+    #workflow { background: #090d18; }
+    #workflow .copy-top {
+      position: absolute;
+      top: 112px;
+      left: 52px;
+      width: 1176px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+    }
+    #workflow h2 {
+      margin: 8px 0 0;
+      font-size: 42px;
+      line-height: 1.18;
+    }
+    #workflow .copy-top p { width: 390px; margin: 0; color: #9da8c5; font-size: 15px; line-height: 1.65; }
+    #workflow .mobile-window {
+      position: absolute;
+      left: 52px;
+      bottom: 52px;
+      width: 660px;
+      height: 404px;
+      overflow: hidden;
+      border: 1px solid #3e496d;
+      border-radius: 8px;
+      background: #10152a;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .4);
+    }
+    #workflow .mobile-window img { display: block; width: 100%; height: 370px; object-fit: cover; object-position: top left; }
+    #workflow .steps {
+      position: absolute;
+      right: 52px;
+      bottom: 52px;
+      width: 474px;
+    }
+    .step {
+      display: grid;
+      grid-template-columns: 54px 1fr 98px;
+      align-items: center;
+      min-height: 96px;
+      border-top: 1px solid #313b5a;
+    }
+    .step:last-child { border-bottom: 1px solid #313b5a; }
+    .step-num { color: #6d7ca6; font-size: 13px; font-weight: 800; }
+    .step strong { display: block; font-size: 20px; }
+    .step p { margin: 6px 0 0; color: #919dbc; font-size: 13px; }
+    .step-mark {
+      justify-self: end;
+      padding: 8px 10px;
+      border-radius: 5px;
+      background: #18213a;
+      color: #4ce0f3;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .step:nth-child(2) .step-mark { color: #a68cff; }
+    .step:nth-child(3) .step-mark { color: #45dea0; }
+    #workflow .flow-line {
+      position: absolute;
+      z-index: 0;
+      top: 0;
+      right: 356px;
+      width: 1px;
+      height: 100%;
+      background: #171f34;
+    }
+
+    /* 03 - deployment */
+    #deploy { background: #f3f6fb; color: #101624; }
+    #deploy::before { background: #1fc7df; }
+    #deploy .brand-name { color: #111827; }
+    #deploy .brand-meta { color: #65708a; }
+    #deploy .index { color: #8791a8; }
+    #deploy .deploy-copy {
+      position: absolute;
+      top: 138px;
+      left: 60px;
+      width: 450px;
+    }
+    #deploy h2 {
+      margin: 13px 0 22px;
+      font-size: 53px;
+      line-height: 1.13;
+      font-weight: 900;
+    }
+    #deploy .deploy-copy > p { width: 400px; margin: 0; color: #5a6479; font-size: 17px; line-height: 1.75; }
+    #deploy .deploy-tags { display: flex; gap: 9px; margin-top: 27px; }
+    #deploy .deploy-tags span {
+      padding: 9px 12px;
+      border: 1px solid #cbd3e1;
+      border-radius: 5px;
+      background: #fff;
+      color: #263047;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    #deploy .deploy-foot {
+      position: absolute;
+      left: 60px;
+      bottom: 48px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #4d5870;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #deploy .diagram {
+      position: absolute;
+      top: 100px;
+      right: 44px;
+      width: 680px;
+      height: 555px;
+    }
+    .screen {
+      position: absolute;
+      z-index: 4;
+      top: 10px;
+      right: 6px;
+      width: 538px;
+      height: 304px;
+      overflow: hidden;
+      border: 8px solid #1b2234;
+      border-radius: 8px;
+      background: #10152a;
+      box-shadow: 0 24px 50px rgba(37, 48, 74, .2);
+    }
+    .screen img { width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+    .screen-base {
+      position: absolute;
+      z-index: 3;
+      top: 313px;
+      right: 174px;
+      width: 190px;
+      height: 14px;
+      border-radius: 0 0 7px 7px;
+      background: #30394e;
+    }
+    .connector {
+      position: absolute;
+      top: 294px;
+      right: 471px;
+      width: 92px;
+      height: 96px;
+      border-left: 2px solid #24bfd9;
+      border-bottom: 2px solid #24bfd9;
+    }
+    .connector::after {
+      content: "";
+      position: absolute;
+      right: -5px;
+      bottom: -5px;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #24bfd9;
+    }
+    .nas {
+      position: absolute;
+      z-index: 2;
+      left: 27px;
+      bottom: 24px;
+      width: 570px;
+      height: 182px;
+      border: 1px solid #222c42;
+      border-radius: 8px;
+      background: #151c2c;
+      box-shadow: 0 22px 45px rgba(40, 50, 75, .22);
+    }
+    .nas-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 51px;
+      padding: 0 20px;
+      border-bottom: 1px solid #303a52;
+      color: #f4f7ff;
+    }
+    .nas-top strong { font-size: 14px; }
+    .nas-top span { color: #41dda1; font-size: 11px; font-weight: 800; }
+    .drive-row { display: flex; gap: 12px; padding: 19px 20px; }
+    .drive {
+      position: relative;
+      flex: 1;
+      height: 88px;
+      border: 1px solid #3b465f;
+      border-radius: 5px;
+      background: #20283b;
+    }
+    .drive::before {
+      content: "";
+      position: absolute;
+      top: 13px;
+      left: 13px;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #3fd99c;
+    }
+    .drive::after {
+      content: "DATA";
+      position: absolute;
+      right: 12px;
+      bottom: 11px;
+      color: #73809f;
+      font-size: 9px;
+      font-weight: 800;
+    }
+    .callout {
+      position: absolute;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid #c9d2e3;
+      border-radius: 5px;
+      background: #fff;
+      color: #303a50;
+      font-size: 11px;
+      font-weight: 800;
+      box-shadow: 0 8px 20px rgba(43, 53, 78, .08);
+    }
+    .callout i { width: 7px; height: 7px; border-radius: 50%; background: #704dff; }
+    .callout.a { top: 2px; left: 8px; }
+    .callout.b { top: 220px; left: 4px; }
+    .callout.c { right: 0; bottom: 15px; }
+  </style>
+</head>
+<body>
+  <section class="poster" id="hero">
+    <div class="rail"></div>
+    <div class="brand">
+      <img src="../../branding/icons/app_icon_512.png" alt="AudioFlow" />
+      <div><div class="brand-name">AudioFlow</div><div class="brand-meta">MULTI-PLATFORM AUDIOBOOK HUB</div></div>
+    </div>
+    <div class="index">PRODUCT INTRO · 01</div>
+    <div class="copy">
+      <div class="kicker">Docker · NAS · Web / PWA</div>
+      <h1>多平台有声书<br />一站式管理</h1>
+      <p class="lead">聚合搜索、章节下载、订阅追更，<br />全部运行在自己的设备上。</p>
+      <div class="tag-list">
+        <span class="tag">跨平台搜索</span>
+        <span class="tag">章节级管理</span>
+        <span class="tag">自动检测更新</span>
+      </div>
+    </div>
+    <div class="window-shadow"></div>
+    <div class="product-window">
+      <div class="window-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>AudioFlow · Web</span></div>
+      <img src="audioflow-home.png" alt="AudioFlow 产品界面" />
+    </div>
+    <div class="metrics">
+      <div class="metric"><strong>10+</strong><span>平台聚合检索</span></div>
+      <div class="metric"><strong>Web</strong><span>桌面与 PWA</span></div>
+      <div class="metric"><strong>NAS</strong><span>数据留在本地</span></div>
+      <div class="metric"><strong>Auto</strong><span>订阅自动追更</span></div>
+    </div>
+    <div class="corner-note"><div class="dot-row"><i class="dot"></i><span>SELF-HOSTED AUDIOBOOK WORKSPACE</span></div></div>
+  </section>
+
+  <section class="poster" id="workflow">
+    <div class="brand">
+      <img src="../../branding/icons/app_icon_512.png" alt="AudioFlow" />
+      <div><div class="brand-name">AudioFlow</div><div class="brand-meta">CORE WORKFLOW</div></div>
+    </div>
+    <div class="index">PRODUCT INTRO · 02</div>
+    <div class="copy-top">
+      <div><div class="kicker">Discover · Download · Follow</div><h2>从发现到追更，一条链路完成</h2></div>
+      <p>桌面端与移动端共享同一套任务、订阅和下载状态，随时查看进度。</p>
+    </div>
+    <div class="mobile-window">
+      <div class="window-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>AudioFlow · Mobile Web</span></div>
+      <img src="audioflow-mobile.png" alt="AudioFlow 移动版界面" />
+    </div>
+    <div class="steps">
+      <div class="step"><span class="step-num">01</span><div><strong>聚合发现</strong><p>一次检索多个有声书平台</p></div><span class="step-mark">SEARCH</span></div>
+      <div class="step"><span class="step-num">02</span><div><strong>章节下载</strong><p>暂停、继续、停止与失败重试</p></div><span class="step-mark">MANAGE</span></div>
+      <div class="step"><span class="step-num">03</span><div><strong>订阅追更</strong><p>检测缺失章节并自动补全</p></div><span class="step-mark">FOLLOW</span></div>
+    </div>
+    <div class="flow-line"></div>
+  </section>
+
+  <section class="poster" id="deploy">
+    <div class="brand">
+      <img src="../../branding/icons/app_icon_512.png" alt="AudioFlow" />
+      <div><div class="brand-name">AudioFlow</div><div class="brand-meta">DEPLOY ON YOUR OWN DEVICE</div></div>
+    </div>
+    <div class="index">PRODUCT INTRO · 03</div>
+    <div class="deploy-copy">
+      <div class="kicker">Simple deployment</div>
+      <h2>把有声书服务<br />装进你的 NAS</h2>
+      <p>前后端打包为一个 Docker 镜像，挂载配置与下载目录，即可在浏览器或 PWA 中使用。</p>
+      <div class="deploy-tags"><span>单容器</span><span>持久化存储</span><span>局域网访问</span></div>
+    </div>
+    <div class="deploy-foot"><i class="dot"></i><span>YOUR LIBRARY · YOUR STORAGE · YOUR FLOW</span></div>
+    <div class="diagram">
+      <div class="callout a"><i></i>Browser / PWA</div>
+      <div class="callout b"><i></i>Docker 单容器</div>
+      <div class="callout c"><i></i>配置与下载目录持久化</div>
+      <div class="screen"><img src="audioflow-home.png" alt="AudioFlow Web 界面" /></div>
+      <div class="screen-base"></div>
+      <div class="connector"></div>
+      <div class="nas">
+        <div class="nas-top"><strong>NAS · AudioFlow Container</strong><span>● RUNNING</span></div>
+        <div class="drive-row"><div class="drive"></div><div class="drive"></div><div class="drive"></div><div class="drive"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const selected = location.hash.slice(1) || "hero";
+    document.getElementById(selected)?.classList.add("active");
+  </script>
+</body>
+</html>

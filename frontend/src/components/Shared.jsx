@@ -675,13 +675,10 @@ export function PersonalPage({app, mobile = false}) {
       xmly: '喜马拉雅',
       lrts: '懒人听书',
       qidian: '起点听书',
-      qtfm: '蜻蜓FM',
       fanqie: '番茄畅听',
       fanqie_tingshu: '番茄听书',
       qimao: '七猫听书',
       yuntu: '云听FM',
-      kuwo: '酷我听书',
-      netease: '网易云听书',
       lizhi: '荔枝FM',
     };
     return (
@@ -725,7 +722,7 @@ export function PersonalPage({app, mobile = false}) {
     <div className={mobile ? 'mobile-personal' : ''}>
       <div className="tabs">
         {Object.entries(PERSONAL_FEATURES).map(([key]) => {
-          const nameMap = {ximalaya: '喜马拉雅', lrts: '懒人听书', qidian: '起点听书', lizhi: '荔枝', xmly: '喜马拉雅', kuwo: '酷我听书', qtfm: '蜻蜓FM', netease: '网易云听书', yuntu: '云听', fanqie: '番茄畅听'};
+          const nameMap = {ximalaya: '喜马拉雅', lrts: '懒人听书', qidian: '起点听书', lizhi: '荔枝', xmly: '喜马拉雅', yuntu: '云听', fanqie: '番茄畅听'};
           return (
             <button key={key} className={`tab ${platform === key ? 'active' : ''}`} onClick={() => changePlatform(key)}>
               {nameMap[key] || key}

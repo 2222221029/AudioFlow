@@ -5799,16 +5799,11 @@ PERSONAL_COOKIE_KEYS = {
     "xmly": "personal_xmly",
     "lrts": "personal_lrts",
     "qidian": "personal_qidian",
-    "netease": "personal_netease",
-    "qtfm": "personal_qtfm",
-    "kuwo": "personal_kuwo",
 }
 
 PERSONAL_QR_COOKIE_KEYS = {
     "ximalaya": "personal_xmly",
     "qidian": "personal_qidian",
-    "netease": "personal_netease",
-    "qtfm": "personal_qtfm",
 }
 
 
@@ -5836,7 +5831,7 @@ def _personal_cookie_status(platform):
 def api_personal_cookies():
     cookie_manager.load()
     result = {}
-    for platform in ("ximalaya", "lrts", "qidian", "netease", "qtfm", "kuwo"):
+    for platform in ("ximalaya", "lrts", "qidian"):
         result[platform] = _personal_cookie_status(platform)
     return json_ok(cookies=result, config_file=str(cookie_manager.config_file))
 
@@ -6191,12 +6186,6 @@ def api_personal(platform, feature):
             items = _load_lrts_personal(feature)
         elif platform == "qidian":
             items = _load_qidian_personal(feature)
-        elif platform == "netease":
-            items = _load_netease_personal(feature)
-        elif platform == "qtfm":
-            items = _load_qtfm_personal(feature)
-        elif platform == "kuwo":
-            items = _load_kuwo_personal(feature)
         else:
             return json_error(f"不支持的平台: {platform}")
         return json_ok(items=items, platform=platform, feature=feature)
@@ -6560,6 +6549,31 @@ def _is_qidian_audio_book(book):
     return isinstance(book, dict) and _to_int(book.get("bookType"), 0) == 2
 
 
+def _qidian_bookshelf_cover(book):
+    cover = _pick_nested_value(
+        book or {},
+        (
+            "cover", "coverUrl", "cover_url", "CoverUrl", "bookCover",
+            "book_cover", "image", "imageUrl", "pic", "picUrl", "bookImg",
+        ),
+        ("audioInfo", "audioBook", "bookInfo", "data"),
+    )
+    cover = str(cover or "").strip()
+    if cover:
+        if cover.startswith("//"):
+            cover = "https:" + cover
+        elif cover.startswith("/"):
+            cover = "https://bookcover.yuewen.com" + cover
+        elif not urlparse(cover).scheme:
+            cover = "https://bookcover.yuewen.com/" + cover.lstrip("/")
+        return normalize_cover_url(cover, "起点听书")
+
+    book_id = str((book or {}).get("bookId") or "").strip()
+    if re.fullmatch(r"\d+", book_id):
+        return f"https://bookcover.yuewen.com/qdbimg/349573/{book_id}/180"
+    return ""
+
+
 def _load_qidian_audio_bookshelf(api, page_size=50, max_pages=100):
     items = []
     seen_book_ids = set()
@@ -6648,7 +6662,7 @@ def _load_qidian_personal(feature):
                 "id": audio_id or book_id,
                 "title": book.get("bookName"),
                 "author": book.get("authorName"),
-                "cover": book.get("coverUrl"),
+                "cover": _qidian_bookshelf_cover(book),
                 "last_chapter": book.get("lastChapterName"),
                 "update_time": book.get("updateTime"),
                 "raw_data": book,

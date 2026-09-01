@@ -258,6 +258,47 @@ class XimalayaDownloadManagerTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual([call.args[2] for call in mocked.call_args_list], [12, 3])
 
+    def test_dolby_preferred_falls_back_when_level_twelve_payload_is_plain_aac(self):
+        plain_aac = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A isom" + b"mp4a" + (b"audio" * 1000)
+        lossless = b"fLaC" + (b"lossless-audio" * 500)
+        dolby_info = self._spatial_info(
+            12, "杜比全景声", "https://audio.example/plain-aac.m4a", len(plain_aac)
+        )
+        lossless_info = self._spatial_info(
+            3, "无损音质", "https://audio.example/lossless.flac", len(lossless)
+        )
+        dolby_audio = FakeResponse(headers={"content-type": "audio/mp4"}, body=plain_aac)
+        lossless_audio = FakeResponse(headers={"content-type": "audio/flac"}, body=lossless)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(
+                mobile_credentials=self._mobile_credentials("mobile-ticket")
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                requested_path = Path(tmp) / "track.m4a"
+                with mock.patch.object(
+                    manager.session,
+                    "get",
+                    side_effect=[dolby_info, dolby_audio, lossless_info, lossless_audio],
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "979576276",
+                        "杜比全景声优先（自动降级）",
+                        str(requested_path),
+                    )
+                self.assertTrue((Path(tmp) / "track.flac").exists())
+                self.assertFalse(requested_path.exists())
+                self.assertFalse(Path(str(requested_path) + ".part").exists())
+
+        self.assertTrue(ok)
+        requested_levels = [
+            parse_qs(urlparse(get.call_args_list[index].args[0]).query)["trackQualityLevel"][0]
+            for index in (0, 2)
+        ]
+        self.assertEqual(requested_levels, ["12", "3"])
+        self.assertEqual(manager.last_download_source, "mobile_v4_lossless")
+        self.assertEqual(manager.last_download_quality_label, "无损音质")
+
     def test_mobile_auto_quality_stops_downgrade_after_v4_rate_limit(self):
         manager = XimalayaDownloadManager(mobile_credentials=self._mobile_credentials())
 
