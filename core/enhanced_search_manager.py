@@ -1039,6 +1039,7 @@ class EnhancedSearchManager:
         page: int = 1,
         page_size: int = 100,
         voice: Optional[Dict] = None,
+        expected_total: int = 0,
     ):
         started = time.monotonic()
         with log_context(
@@ -1049,7 +1050,12 @@ class EnhancedSearchManager:
             page_size=page_size,
         ):
             chapters, total = self._get_album_chapters_page(
-                album_id, platform, page=page, page_size=page_size, voice=voice
+                album_id,
+                platform,
+                page=page,
+                page_size=page_size,
+                voice=voice,
+                expected_total=expected_total,
             )
             log_event(
                 "INFO" if chapters else "WARN",
@@ -1067,6 +1073,7 @@ class EnhancedSearchManager:
         page: int = 1,
         page_size: int = 100,
         voice: Optional[Dict] = None,
+        expected_total: int = 0,
     ):
         """Return one UI page plus an exact total when the provider exposes only a full directory."""
         page = max(1, int(page or 1))
@@ -1099,7 +1106,10 @@ class EnhancedSearchManager:
             chapters = self.kuwo_manager.get_chapters(album_id, page=page, page_size=page_size)
         elif platform in ['网易云听书', 'netease']:
             chapters, exact_total = self.netease_manager.get_chapters_page(
-                album_id, page=page, page_size=page_size
+                album_id,
+                page=page,
+                page_size=page_size,
+                expected_total=expected_total,
             )
             return list(chapters or [])[:page_size], max(0, int(exact_total or 0))
         elif platform in ['荔枝FM', 'lizhi']:

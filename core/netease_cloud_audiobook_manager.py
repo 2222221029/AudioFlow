@@ -11,6 +11,7 @@ import os
 import random
 import re
 import string
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -27,6 +28,8 @@ class NeteaseCloudAudiobookManager:
     base_url = "https://music.163.com"
     program_page_limit = 500
     max_program_pages = 200
+    program_page_attempts = 3
+    program_page_retry_delays = (0.35, 0.8)
     preset_key = "0CoJUm6Qyw8W8jud"
     iv = "0102030405060708"
     rsa_exponent = "010001"
@@ -42,6 +45,7 @@ class NeteaseCloudAudiobookManager:
         self.cookie_string = ""
         self.csrf_token = ""
         self.session = requests.Session()
+        self._session_lock = threading.RLock()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -91,9 +95,10 @@ class NeteaseCloudAudiobookManager:
             payload = dict(payload)
             payload["csrf_token"] = self.csrf_token
         url = self.base_url + path
-        response = self.session.post(url, data=self._encrypt_params(payload), timeout=timeout)
-        response.raise_for_status()
-        return response.json()
+        with self._session_lock:
+            response = self.session.post(url, data=self._encrypt_params(payload), timeout=timeout)
+            response.raise_for_status()
+            return response.json()
 
     def validate_cookie(self) -> Dict:
         try:
@@ -158,11 +163,28 @@ class NeteaseCloudAudiobookManager:
             "description": f"网易云听书播客 ID: {radio_id}",
         }
 
-    def get_chapters(self, radio_id: str, page: int = 1, page_size: int = 1000) -> List[Dict]:
-        chapters, _total = self.get_chapters_page(radio_id, page=page, page_size=page_size)
+    def get_chapters(
+        self,
+        radio_id: str,
+        page: int = 1,
+        page_size: int = 1000,
+        expected_total: int = 0,
+    ) -> List[Dict]:
+        chapters, _total = self.get_chapters_page(
+            radio_id,
+            page=page,
+            page_size=page_size,
+            expected_total=expected_total,
+        )
         return chapters
 
-    def get_chapters_page(self, radio_id: str, page: int = 1, page_size: int = 100) -> tuple[List[Dict], int]:
+    def get_chapters_page(
+        self,
+        radio_id: str,
+        page: int = 1,
+        page_size: int = 100,
+        expected_total: int = 0,
+    ) -> tuple[List[Dict], int]:
         self._require_cookie()
         radio_id = str(radio_id or "").strip()
         if not radio_id:
@@ -171,7 +193,12 @@ class NeteaseCloudAudiobookManager:
         page = max(1, int(page or 1))
         limit = min(max(int(page_size or 1), 1), self.program_page_limit)
         offset = (page - 1) * limit
-        data = self._fetch_program_page(radio_id, offset=offset, limit=limit)
+        data = self._fetch_program_page(
+            radio_id,
+            offset=offset,
+            limit=limit,
+            expected_total=expected_total,
+        )
         programs = list(data.get("programs") or [])
         chapters = [self._normalize_program(item, radio_id, offset + idx) for idx, item in enumerate(programs, 1)]
         total = self._program_total(data, programs)
@@ -238,13 +265,62 @@ class NeteaseCloudAudiobookManager:
                 return number
         return 0
 
-    def _fetch_program_page(self, radio_id: str, offset: int = 0, limit: int = 1000) -> Dict:
-        return self._post_weapi("/weapi/dj/program/byradio", {
+    def _fetch_program_page(
+        self,
+        radio_id: str,
+        offset: int = 0,
+        limit: int = 1000,
+        expected_total: int = 0,
+    ) -> Dict:
+        request_data = {
             "radioId": str(radio_id),
             "limit": int(limit),
             "offset": int(offset),
             "asc": True,
-        }, timeout=30)
+        }
+        last_data = {}
+        last_error = None
+        for attempt in range(1, self.program_page_attempts + 1):
+            try:
+                data = self._post_weapi(
+                    "/weapi/dj/program/byradio",
+                    request_data,
+                    timeout=30,
+                )
+                if not isinstance(data, dict):
+                    raise RuntimeError("网易云节目接口返回格式异常")
+                code = str(data.get("code") or "200")
+                if code != "200":
+                    message = str(data.get("message") or data.get("msg") or "未知错误")
+                    raise RuntimeError(f"网易云节目接口返回 {code}：{message}")
+                last_data = data
+                programs = data.get("programs")
+                if isinstance(programs, list) and programs:
+                    return data
+                if (
+                    isinstance(programs, list)
+                    and data.get("more") is False
+                    and self._program_total(data, programs) == 0
+                    and int(expected_total or 0) <= 0
+                ):
+                    return data
+                last_error = None
+            except requests.RequestException as exc:
+                last_error = exc
+
+            if attempt >= self.program_page_attempts:
+                break
+            delay = self.program_page_retry_delays[min(attempt - 1, len(self.program_page_retry_delays) - 1)]
+            print(f"⚠️ 网易云节目页暂未返回有效数据，{delay:.2f} 秒后重试（{attempt + 1}/{self.program_page_attempts}）")
+            time.sleep(delay)
+
+        if last_error is not None:
+            raise last_error
+        if int(expected_total or 0) > 0 and not (last_data.get("programs") or []):
+            raise RuntimeError(
+                f"网易云专辑应有 {int(expected_total)} 期节目，但连续 {self.program_page_attempts} 次未返回章节"
+            )
+        return last_data
 
     def get_audio_url(self, program_id: str, level: str = "exhigh") -> Optional[str]:
         self._require_cookie()

@@ -3996,9 +3996,28 @@ def api_chapters():
                 raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
             exact_total = len(raw_chapters)
         else:
+            chapter_page_options = {
+                "page": page,
+                "page_size": page_size,
+                "voice": active_voice,
+            }
+            if platform in ("网易云听书", "netease"):
+                chapter_page_options["expected_total"] = _to_int(album.get("episodes"))
             raw_chapters, exact_total = search_manager.get_album_chapters_page(
-                str(album_id), platform, page=page, page_size=page_size, voice=active_voice
+                str(album_id),
+                platform,
+                **chapter_page_options,
             )
+    if platform in ("网易云听书", "netease") and raw_chapters:
+        first_chapter = next((item for item in raw_chapters if isinstance(item, dict)), {})
+        raw_radio = first_chapter.get("_radio") if isinstance(first_chapter, dict) else None
+        if isinstance(raw_radio, dict) and raw_radio:
+            radio_detail = search_manager.netease_manager._normalize_radio(
+                raw_radio,
+                fallback_id=str(album_id),
+                episode_count=exact_total,
+            )
+            album = merge_album_detail(album, radio_detail)
     warning = ""
     if platform == "懒人听书":
         warning = str(getattr(search_manager.lrts_manager, "last_chapter_warning", "") or "")

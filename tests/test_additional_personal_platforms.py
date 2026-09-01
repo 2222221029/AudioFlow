@@ -100,6 +100,53 @@ class AdditionalPersonalPlatformsTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "重新扫码"):
             web_server._load_netease_personal_from_manager(api, "subscriptions")
 
+    def test_netease_chapters_use_expected_total_and_restore_album_detail(self):
+        album = {
+            "id": "radio-1",
+            "title": "未知专辑",
+            "platform": "网易云听书",
+            "episodes": 12,
+        }
+        chapters = [{
+            "id": "program-1",
+            "title": "第一集",
+            "_radio": {
+                "id": "radio-1",
+                "name": "真实专辑名",
+                "dj": {"nickname": "主播"},
+                "programCount": 12,
+            },
+        }]
+        with (
+            web_server.app.test_request_context(
+                "/api/album/chapters",
+                method="POST",
+                json={"album": album},
+            ),
+            mock.patch.object(
+                web_server.search_manager,
+                "get_album_chapters_page",
+                return_value=(chapters, 12),
+            ) as get_page,
+            mock.patch.object(web_server, "album_chapter_download_states", return_value={}),
+            mock.patch.object(web_server, "annotate_album_library", side_effect=lambda item: item),
+        ):
+            response = web_server.api_chapters()
+
+        payload = response.get_json()
+        self.assertEqual(payload["album"]["title"], "真实专辑名")
+        self.assertEqual(payload["album"]["author"], "主播")
+        self.assertEqual(payload["album"]["episodes"], 12)
+        self.assertEqual([chapter["id"] for chapter in payload["chapters"]], ["program-1"])
+        get_page.assert_called_once_with(
+            "radio-1",
+            "网易云听书",
+            page=1,
+            page_size=100,
+            voice=None,
+            expected_total=12,
+        )
+
     def test_qtfm_favorites_only_uses_on_demand_programs(self):
         api = mock.Mock(qingting_id="user", access_token="token")
         api.session.get.return_value = _http_response({

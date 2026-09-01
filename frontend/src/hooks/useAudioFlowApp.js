@@ -10,6 +10,29 @@ const DOWNLOADS_CACHE_KEY = 'audioflow_downloads_cache';
 const SUBSCRIPTIONS_CACHE_KEY = 'audioflow_subscriptions_cache';
 const VOICE_PLATFORMS = new Set(['番茄畅听', '番茄听书', '七猫听书']);
 const DEFAULT_CHAPTER_PAGINATION = {page: 1, page_size: 100, total: 0, total_pages: 1, total_known: false, has_more: false};
+const ALBUM_DISPLAY_FIELDS = ['title', 'author', 'cover', 'description'];
+
+function hasAlbumDisplayValue(key, value) {
+  if (value === null || value === undefined) return false;
+  const text = String(value).trim();
+  if (!text) return false;
+  if (key === 'title' && ['未知', '未知专辑'].includes(text)) return false;
+  if (key === 'author' && ['未知', '未知作者'].includes(text)) return false;
+  return true;
+}
+
+function mergeAlbumState(current, incoming) {
+  const previous = current && typeof current === 'object' ? current : {};
+  const update = incoming && typeof incoming === 'object' ? incoming : {};
+  const merged = {...previous, ...update};
+  for (const key of ALBUM_DISPLAY_FIELDS) {
+    if (!hasAlbumDisplayValue(key, update[key]) && hasAlbumDisplayValue(key, previous[key])) {
+      merged[key] = previous[key];
+    }
+  }
+  return merged;
+}
+
 function loadSearchHistory() {
   try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
 }
@@ -456,16 +479,19 @@ export function useAudioFlowApp() {
         ? ximalayaDownloadQuality(config.quality)
         : (config.quality || DEFAULT_QUALITY),
     );
-    const albumTimeoutMs = album.platform === '起点听书' ? 180000 : 30000;
-    api('/api/album/detail', {method: 'POST', body: {album}, timeoutMs: albumTimeoutMs}).then((detailData) => {
-      if (requestId !== albumRequestRef.current || !detailData.album) return;
-      setSelectedAlbum((current) => current ? {...current, ...detailData.album} : detailData.album);
-      if (album.platform === '喜马拉雅') {
-        setSubscriptionQuality(ximalayaSubscriptionQuality(
-          detailData.album.library?.subscription_quality || detailData.album.subscription_quality,
-        ));
-      }
-    }).catch(() => {});
+    const isNeteaseAlbum = album.platform === '网易云听书' || album.platform === 'netease';
+    const albumTimeoutMs = album.platform === '起点听书' ? 180000 : (isNeteaseAlbum ? 60000 : 30000);
+    if (!isNeteaseAlbum) {
+      api('/api/album/detail', {method: 'POST', body: {album}, timeoutMs: albumTimeoutMs}).then((detailData) => {
+        if (requestId !== albumRequestRef.current || !detailData.album) return;
+        setSelectedAlbum((current) => mergeAlbumState(current || album, detailData.album));
+        if (album.platform === '喜马拉雅') {
+          setSubscriptionQuality(ximalayaSubscriptionQuality(
+            detailData.album.library?.subscription_quality || detailData.album.subscription_quality,
+          ));
+        }
+      }).catch(() => {});
+    }
 
     await runBusy('album', async () => {
       const voiceData = VOICE_PLATFORMS.has(album.platform)
@@ -484,7 +510,7 @@ export function useAudioFlowApp() {
         timeoutMs: albumTimeoutMs,
       });
       if (requestId !== albumRequestRef.current) return;
-      setSelectedAlbum((current) => ({...(current || album), ...(data.album || {})}));
+      setSelectedAlbum((current) => mergeAlbumState(current || album, data.album));
       if (album.platform === '喜马拉雅' && data.album) {
         setSubscriptionQuality(ximalayaSubscriptionQuality(
           data.album.library?.subscription_quality || data.album.subscription_quality,
@@ -514,7 +540,7 @@ export function useAudioFlowApp() {
       if (requestId !== albumRequestRef.current) return;
       setChapters(data.chapters || []);
       setChapterPagination(data.pagination || DEFAULT_CHAPTER_PAGINATION);
-      if (data.album) setSelectedAlbum((current) => ({...(current || selectedAlbum), ...data.album}));
+      if (data.album) setSelectedAlbum((current) => mergeAlbumState(current || selectedAlbum, data.album));
       if (data.warning) showToast(data.warning, 'err');
     }).catch((error) => {
       showToast('切换音色失败：' + error.message, 'err');
@@ -540,7 +566,7 @@ export function useAudioFlowApp() {
       setChapters(data.chapters || []);
       setSelectedChapters(new Set());
       setChapterPagination(data.pagination || {...DEFAULT_CHAPTER_PAGINATION, page: targetPage});
-      if (data.album) setSelectedAlbum((current) => ({...(current || selectedAlbum), ...data.album}));
+      if (data.album) setSelectedAlbum((current) => mergeAlbumState(current || selectedAlbum, data.album));
       if (data.warning) showToast(data.warning, 'err');
     }).catch((error) => {
       if (requestId === albumRequestRef.current) showToast('加载章节失败：' + error.message, 'err');

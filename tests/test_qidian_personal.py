@@ -309,6 +309,7 @@ class QidianPersonalAPITest(unittest.TestCase):
         album = {
             "id": "22",
             "title": "有声专辑",
+            "cover": "https://example.com/qidian-cover.jpg",
             "platform": "起点听书",
             "personal_center_platform": "qidian",
         }
@@ -327,6 +328,7 @@ class QidianPersonalAPITest(unittest.TestCase):
         self.assertEqual(payload["chapters"][0]["id"], "chapter-1")
         personal_api.get_qidian_chapters.assert_called_once_with("22")
         self.assertEqual(payload["album"]["personal_center_platform"], "qidian")
+        self.assertEqual(payload["album"]["cover"], "https://example.com/qidian-cover.jpg")
 
     def test_invalid_feature_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "不支持"):
