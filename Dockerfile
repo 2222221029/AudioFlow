@@ -1,9 +1,8 @@
 # ============================================================
 # 镜像源策略：
-#   GitHub Actions 构建（docker-image.yml）不传 build-args → 官方源
-#   （海外 runner 最快）。
-#   飞牛 NAS 等国内环境本地构建 → 传入国内镜像源（见 docker-compose.yml
-#   的 build.args / docker build --build-arg ...）。
+#   全部使用官方源（Dockerfile 默认 npmjs.org / pypi.org / deb.debian.org），
+#   构建环境能访问外网（GitHub Actions、直连或代理）时速度最快。
+#   如需国内镜像源可自行用 build-arg 覆盖（PIP_INDEX_URL/NPM_REGISTRY/APT_MIRROR）。
 # ============================================================
 
 FROM node:22-alpine AS frontend-build
@@ -48,7 +47,7 @@ ENV APP_MODE=server \
 
 WORKDIR /app
 
-# apt 源：默认官方源（Actions 快）；国内构建传 APT_MIRROR 切换（如 mirrors.aliyun.com）
+# apt 源：默认官方源；如需国内镜像可传 APT_MIRROR 覆盖（如 mirrors.aliyun.com）
 RUN if [ -n "${APT_MIRROR}" ]; then \
         sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" \
             /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
