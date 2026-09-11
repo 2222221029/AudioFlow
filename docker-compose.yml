@@ -1,6 +1,13 @@
 services:
   audioflow:
-    build: .
+    build:
+      context: .
+      # NAS 本地构建走国内镜像源（GitHub Actions 走 docker-image.yml 用官方源，互不影响）
+      args:
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
+        PIP_TRUSTED_HOST: mirrors.aliyun.com
+        NPM_REGISTRY: https://registry.npmmirror.com
+        APT_MIRROR: mirrors.aliyun.com
     container_name: audioflow
     restart: unless-stopped
     environment:
