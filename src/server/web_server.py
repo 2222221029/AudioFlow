@@ -20,15 +20,10 @@ import requests
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 
 from core.auth_manager import AuthManager
-from core.agent_manager import AgentManager
-from core.audiobook_renamer import AUDIO_EXTENSIONS, RenamePlanManager, preview_rule_samples
 from core.cookie_manager import CookieManager
 from core.download_worker import DownloadWorker
-from core.developer_agent_manager import DeveloperAgentManager
 from core.enhanced_search_manager import EnhancedSearchManager
-from core.feishu_bridge import FeishuBridge
 from core.notification_manager import NotificationManager
-from core.rename_rules import RenameRuleStore, merge_rule_values
 from core.wecom_crypto import WeComCrypto, parse_wecom_message
 from core.lrts_manager import (
     LrtsLoginSessionError,
@@ -386,160 +381,17 @@ migrate_runtime_file(data_dir() / "tasks.json", TASKS_FILE)
 subscription_manager = SubscriptionManager(config_dir=config_dir())
 
 notification_manager = NotificationManager(config_dir() / "notifications.json")
-rename_rule_store = RenameRuleStore(config_dir() / "rename_rules.json")
-rename_plan_manager = RenamePlanManager(config_dir() / "rename_plans.json", rename_rule_store)
-agent_manager = AgentManager(
-    config_dir() / "agent.json",
-    config_dir() / "agent_sessions.json",
-)
 
 
-MANUAL_ORGANIZE_MODES = {"off", "review", "auto_safe"}
 MANUAL_DOWNLOAD_SOURCES = {"web", "wecom"}
 
 
-def manual_organize_mode():
-    """Return the UI-managed post-download organization policy.
-
-    AUDIOFLOW_AUTO_RENAME remains a compatibility fallback for existing
-    deployments, but new deployments do not need another Compose variable.
-    """
-    saved = str(cookie_manager.get_cookie("manual_organize_mode") or "").strip()
-    if saved in MANUAL_ORGANIZE_MODES:
-        return saved
-    legacy_value = os.getenv("AUDIOFLOW_AUTO_RENAME")
-    if legacy_value is not None:
-        legacy_enabled = str(legacy_value).strip().lower()
-        return "review" if legacy_enabled in {"1", "true", "yes", "on"} else "off"
-    return "review"
 
 
 def manual_download_origin(source):
     return str(source or "").strip().casefold() in MANUAL_DOWNLOAD_SOURCES
 
 
-def _rename_safe_name(value):
-    text = str(value or "").strip() or "未知"
-    for char in '<>:"/\\|?*':
-        text = text.replace(char, "_")
-    return text[:200]
-
-
-def _task_album_dir(task):
-    album = task.get("album") or {}
-    root = Path(resolve_download_dir((task.get("options") or {}).get("download_dir")))
-    if cookie_manager.get_cookie("organize_by_platform_enabled") == "true":
-        root /= _rename_safe_name(album.get("platform") or "未知平台")
-    return root / _rename_safe_name(album.get("title") or task.get("title") or "未知专辑")
-
-
-def _notify_rename_plan(plan, task_id=""):
-    if not plan or plan.get("status") not in {"pending_confirmation", "needs_review"}:
-        return
-    summary = plan.get("summary") or {}
-    samples = [
-        f"{item.get('source_name')} -> {item.get('target_name')}"
-        for item in (plan.get("items") or [])[:3]
-    ]
-    lines = [
-        f"专辑：{(plan.get('album') or {}).get('title') or '-'}",
-        f"计划 ID：{plan.get('id')}",
-        f"格式：{plan.get('suggested_format')}",
-        f"待重命名：{summary.get('planned', 0)} 个",
-        f"需复核问题：{summary.get('issues', 0)} 个",
-        f"特殊文件：{summary.get('special_files', summary.get('unmatched', 0))} 个",
-        f"缺失章节（已预留空号）：{summary.get('missing_chapters', 0)} 个",
-    ]
-    if samples:
-        lines.extend(["示例：", *samples])
-    if plan.get("status") == "pending_confirmation":
-        lines.append(f"企业微信回复：确认重命名 {plan.get('id')} / 取消重命名 {plan.get('id')}")
-    else:
-        lines.append("计划存在歧义或特殊文件，已阻止执行；可逐项复核，或选择保留风险文件并整理其余文件。")
-    base_url = str(os.getenv("PUBLIC_BASE_URL", "")).strip().rstrip("/")
-    if base_url:
-        lines.append(f"详情：{base_url}/api/rename-plans/{plan.get('id')}")
-    notification_manager.notify(
-        "rename_confirmation",
-        f"待确认重命名：{(plan.get('album') or {}).get('title') or task_id}",
-        "\n".join(lines),
-        {
-            "title": (plan.get("album") or {}).get("title") or "",
-            "plan_id": plan.get("id"),
-            "plan_status": plan.get("status"),
-            "planned": summary.get("planned", 0),
-            "issues": summary.get("issues", 0),
-            "task_id": task_id or plan.get("task_id") or "",
-        },
-    )
-
-
-def create_rename_plan_for_task(task_id, *, notify=True, replace=False):
-    task = task_snapshot(task_id)
-    if not task:
-        raise KeyError("下载任务不存在")
-    if task.get("status") != "completed":
-        raise ValueError("只有完整下载成功的任务才能生成重命名计划")
-    existing = next((
-        item for item in rename_plan_manager.list()
-        if item.get("task_id") == task_id
-        and item.get("status") not in {"cancelled", "expired", "failed"}
-    ), None)
-    if existing:
-        if not replace:
-            return existing
-        if existing.get("status") in {"executing", "completed"}:
-            raise ValueError("该任务已有已执行或正在执行的整理计划")
-        rename_plan_manager.cancel(existing.get("id"))
-    album = task.get("album") or {}
-    chapters = task.get("success_chapters") or task.get("chapters") or []
-    plan = rename_plan_manager.create_plan(
-        task_id=task_id,
-        album=album,
-        chapters=chapters,
-        album_dir=_task_album_dir(task),
-        origin_source=task.get("origin_source") or task.get("source") or "",
-    )
-    if notify:
-        _notify_rename_plan(plan, task_id)
-    return plan
-
-
-def schedule_rename_plan(task_id):
-    mode = manual_organize_mode()
-    task = task_snapshot(task_id)
-    if mode == "off" or not task or not task.get("organize_after_download"):
-        return
-
-    def worker():
-        try:
-            plan = create_rename_plan_for_task(task_id)
-            if (mode == "auto_safe" and plan.get("status") == "pending_confirmation"
-                    and not plan.get("configuration_confirmation_required")):
-                completed = rename_plan_manager.confirm(plan.get("id"))
-                summary = completed.get("summary") or {}
-                verification = completed.get("verification") or {}
-                verification_text = (
-                    f"验证：{'通过' if verification.get('passed') else '发现问题'}"
-                    if verification else "验证：未启用"
-                )
-                notification_manager.notify(
-                    "rename_confirmation",
-                    f"整理完成：{(completed.get('album') or {}).get('title') or task_id}",
-                    f"已按该专辑确认过的规则自动整理 {summary.get('planned', 0)} 个文件。\n{verification_text}",
-                    {
-                        "title": (completed.get("album") or {}).get("title") or "",
-                        "plan_id": completed.get("id"),
-                        "plan_status": completed.get("status"),
-                        "planned": summary.get("planned", 0),
-                        "issues": 0,
-                        "task_id": task_id,
-                    },
-                )
-        except Exception:
-            logging.exception("automatic audiobook rename analysis failed: %s", task_id)
-
-    threading.Thread(target=worker, name=f"rename-plan-{task_id}", daemon=True).start()
 
 
 def ximalaya_subscription_quality(album, value=None, *, default_web=False):
@@ -2520,8 +2372,6 @@ def handle_download_completed(task_id, success, failed, success_chapters, failed
             f"平台：{album.get('platform') or '-'}\n成功：{success} 章\n失败：{failed} 章\n任务：{task_id}",
             {"task": task, "album": album, "success": success, "failed": failed},
         )
-    if status == "completed":
-        schedule_rename_plan(task_id)
     prune_tasks()  # 任务进入终态后清理超量历史记录，防止无限堆积
     return task
 
@@ -2653,7 +2503,6 @@ def api_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
-        manual_organize_mode=manual_organize_mode(),
         background_events_max_keep=background_events_max_keep(),
         **task_history_settings(),
     )
@@ -2687,11 +2536,6 @@ def api_set_config():
         fmt = str(payload.get("filename_prefix_format") or "0001-").strip()
         allowed = {"0001-", "001-", "01-", "1-", "0001.", "001.", "01.", "1.", "none"}
         cookie_manager.set_cookie("filename_prefix_format", fmt if fmt in allowed else "0001-")
-    if "manual_organize_mode" in payload:
-        mode = str(payload.get("manual_organize_mode") or "off").strip()
-        cookie_manager.set_cookie(
-            "manual_organize_mode", mode if mode in MANUAL_ORGANIZE_MODES else "off"
-        )
     task_setting_limits = {
         "task_history_max_keep": (10, 10000),
         "task_history_max_age_days": (1, 3650),
@@ -2724,7 +2568,6 @@ def api_set_config():
         split_chapters_enabled=cookie_manager.get_cookie("split_chapters_enabled") == "true",
         chapters_per_folder=int_cookie_setting("chapters_per_folder", 200),
         filename_prefix_format=cookie_manager.get_cookie("filename_prefix_format") or "0001-",
-        manual_organize_mode=manual_organize_mode(),
         background_events_max_keep=background_events_max_keep(),
         **task_history_settings(),
     )
@@ -2787,7 +2630,6 @@ def api_notifications():
 def api_save_notifications():
     payload = request.get_json(silent=True) or {}
     config = notification_manager.save(_merge_notification_secrets(payload))
-    feishu_bridge.start()
     return json_ok(config=notification_manager.public_config(), saved_at=config.get("updated_at"))
 
 
@@ -2805,624 +2647,9 @@ def api_test_notifications():
         return json_error(str(exc), 400)
 
 
-@app.get("/api/rename-plans")
-def api_rename_plans():
-    return json_ok(plans=rename_plan_manager.list(request.args.get("status") or None))
 
 
-def _rename_folder_entries():
-    root = Path(resolve_download_dir()).resolve()
-    folders = []
-    if not root.exists() or not root.is_dir():
-        return folders
-    for path in root.rglob("*"):
-        if not path.is_dir() or path.is_symlink():
-            continue
-        try:
-            relative = path.resolve().relative_to(root)
-        except ValueError:
-            continue
-        if not relative.parts or len(relative.parts) > 3:
-            continue
-        if any(part == ".audioflow-trash" or part.startswith(".") for part in relative.parts):
-            continue
-        count = sum(
-            1 for child in path.iterdir()
-            if child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS
-        )
-        if count:
-            folders.append({
-                "relative_path": relative.as_posix(),
-                "name": path.name,
-                "audio_count": count,
-            })
-        if len(folders) >= 500:
-            break
-    return sorted(folders, key=lambda item: item["relative_path"].casefold())[:500]
 
-
-def create_rename_plan_for_folder(relative_path, album_title=None, *, notify=True, replace=False):
-    raw_path = str(relative_path or "").strip().replace("\\", "/")
-    if not raw_path or Path(raw_path).is_absolute():
-        raise ValueError("请提供下载目录内的相对文件夹路径")
-    root = Path(resolve_download_dir()).resolve()
-    target = (root / Path(raw_path)).resolve()
-    try:
-        relative = target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("整理路径必须位于下载目录内") from exc
-    if not relative.parts or any(part == ".audioflow-trash" or part.startswith(".") for part in relative.parts):
-        raise ValueError("不能整理隐藏目录或隔离目录")
-    if not target.exists() or not target.is_dir():
-        raise ValueError("目标文件夹不存在")
-    task_id = f"folder:{relative.as_posix()}"
-    existing = next((
-        item for item in rename_plan_manager.list()
-        if (item.get("task_id") == task_id
-            or Path(item.get("album_dir") or "").resolve() == target)
-        and item.get("status") not in {"cancelled", "expired", "failed"}
-    ), None)
-    if existing:
-        if not replace:
-            return existing
-        if existing.get("status") in {"executing", "completed"}:
-            raise ValueError("该文件夹已有已执行或正在执行的整理计划")
-        rename_plan_manager.cancel(existing.get("id"))
-    title = str(album_title or target.name).strip() or target.name
-    plan = rename_plan_manager.create_plan(
-        task_id=task_id,
-        album={"title": title, "platform": "", "id": ""},
-        chapters=[],
-        album_dir=target,
-        origin_source="manual",
-    )
-    if notify:
-        _notify_rename_plan(plan, task_id)
-    return plan
-
-
-@app.get("/api/rename-plans/folders")
-def api_rename_plan_folders():
-    return json_ok(folders=_rename_folder_entries())
-
-
-@app.post("/api/rename-plans/analyze-folder")
-def api_analyze_rename_folder():
-    payload = request.get_json(silent=True) or {}
-    try:
-        plan = create_rename_plan_for_folder(
-            payload.get("relative_path") or payload.get("relativePath"),
-            payload.get("album_title") or payload.get("albumTitle"),
-            notify=True,
-            replace=bool(payload.get("replace")),
-        )
-        return json_ok(plan=plan)
-    except (ValueError, OSError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.get("/api/rename-rules")
-def api_rename_rules():
-    return json_ok(
-        packs=rename_rule_store.list(),
-        effective=rename_rule_store.effective({}),
-    )
-
-
-@app.post("/api/rename-rules/drafts")
-def api_save_rename_rule_draft():
-    try:
-        return json_ok(rule=rename_rule_store.save_draft(request.get_json(silent=True) or {}))
-    except (TypeError, ValueError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-rules/<rule_id>/activate")
-def api_activate_rename_rule(rule_id):
-    try:
-        return json_ok(rule=rename_rule_store.activate(rule_id), packs=rename_rule_store.list())
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-
-
-@app.delete("/api/rename-rules/<rule_id>")
-def api_delete_rename_rule(rule_id):
-    try:
-        if not rename_rule_store.delete_draft(rule_id):
-            return json_error("重命名规则不存在", 404)
-        return json_ok(deleted=True, packs=rename_rule_store.list())
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-rules/test")
-def api_test_rename_rules():
-    payload = request.get_json(silent=True) or {}
-    try:
-        return json_ok(results=preview_rule_samples(
-            payload.get("rules") or {},
-            payload.get("samples") or [],
-            str(payload.get("album_title") or "示例书名"),
-        ))
-    except (TypeError, ValueError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.get("/api/rename-plans/<plan_id>")
-def api_rename_plan(plan_id):
-    plan = rename_plan_manager.get(plan_id)
-    if not plan:
-        return json_error("重命名计划不存在", 404)
-    return json_ok(plan=plan)
-
-
-@app.post("/api/rename-plans/analyze")
-def api_analyze_rename_plan():
-    payload = request.get_json(silent=True) or {}
-    try:
-        plan = create_rename_plan_for_task(
-            str(payload.get("task_id") or payload.get("taskId") or ""),
-            notify=False,
-            replace=bool(payload.get("replace")),
-        )
-        return json_ok(plan=plan)
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except (ValueError, OSError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-plans/<plan_id>/review")
-def api_review_rename_plan(plan_id):
-    try:
-        return json_ok(plan=rename_plan_manager.configure(
-            plan_id, request.get_json(silent=True) or {}
-        ))
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except (TypeError, ValueError, OSError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-plans/<plan_id>/resolve-safe")
-def api_resolve_safe_rename_plan(plan_id):
-    try:
-        return json_ok(plan=rename_plan_manager.resolve_safe(plan_id))
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except (TypeError, ValueError, OSError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-plans/<plan_id>/ai-analyze")
-def api_ai_analyze_rename_plan(plan_id):
-    plan = rename_plan_manager.get(plan_id)
-    if not plan:
-        return json_error("重命名计划不存在", 404)
-    try:
-        analysis = agent_manager.analyze_rename_plan(plan)
-        return json_ok(plan=rename_plan_manager.save_ai_analysis(plan_id, analysis))
-    except (TypeError, ValueError, requests.RequestException) as exc:
-        return json_error(str(exc), 400)
-
-
-def _full_clean_entries(plan):
-    chapters = sorted(
-        [item for item in (plan.get("items") or []) if item.get("kind") == "chapter"],
-        key=lambda item: (item.get("sequence", 0), item.get("chapter", 0)),
-    )
-    entries = []
-    for index, item in enumerate(chapters):
-        neighbors = []
-        if index:
-            neighbors.append(chapters[index - 1].get("source_name") or "")
-        if index + 1 < len(chapters):
-            neighbors.append(chapters[index + 1].get("source_name") or "")
-        entries.append({
-            "relative_source": item.get("relative_source") or item.get("source_name") or "",
-            "source_name": item.get("source_name") or "",
-            "current_title": item.get("clean_title") or "",
-            "chapter": item.get("chapter"),
-            "unit": item.get("original_unit") or (plan.get("configuration") or {}).get("chapter_unit") or "集",
-            "neighbors": neighbors,
-        })
-    return entries
-
-
-def _run_full_clean(plan_id):
-    try:
-        plan = rename_plan_manager.get(plan_id)
-        if not plan:
-            return
-        entries = _full_clean_entries(plan)
-        total = len(entries)
-        _provider_id, _spec, model_config = agent_manager._validate_ready()
-        existing_state = plan.get("ai_clean") or {}
-        existing = {
-            str(item.get("relative_source") or ""): dict(item)
-            for item in existing_state.get("suggestions") or []
-            if isinstance(item, dict) and item.get("relative_source")
-        }
-        keys = {entry["relative_source"] for entry in entries}
-        existing = {key: value for key, value in existing.items() if key in keys}
-        started_at = int(existing_state.get("started_at") or time.time())
-        rename_plan_manager.update_ai_clean(plan_id, {
-            "status": "running", "done": len(existing), "total": total,
-            "model": model_config["model"], "started_at": started_at,
-        })
-        remaining = [entry for entry in entries if entry["relative_source"] not in existing]
-        for offset in range(0, len(remaining), 40):
-            batch = remaining[offset:offset + 40]
-            result = agent_manager.clean_titles_batch(
-                plan.get("album") or {},
-                (plan.get("rule_snapshot") or {}).get("rules") or {},
-                batch,
-                max_tokens=4096,
-            )
-            returned = {
-                str(item.get("relative_source") or ""): dict(item)
-                for item in result.get("suggestions") or []
-                if isinstance(item, dict) and item.get("relative_source")
-            }
-            for entry in batch:
-                key = entry["relative_source"]
-                suggestion = returned.get(key) or {
-                    "relative_source": key,
-                    "clean_title": entry.get("current_title") or "",
-                    "changed": False,
-                    "action": "keep",
-                    "reason": "AI 未返回该条建议，保留规则引擎结果",
-                    "confidence": 0,
-                }
-                suggestion["relative_source"] = key
-                suggestion.setdefault("action", "rename" if suggestion.get("changed") else "keep")
-                existing[key] = suggestion
-            rename_plan_manager.update_ai_clean(plan_id, {
-                "status": "running", "done": len(existing), "total": total,
-                "model": model_config["model"], "suggestions": list(existing.values()),
-            })
-        ordered_suggestions = [existing[entry["relative_source"]] for entry in entries]
-        saved = rename_plan_manager.save_ai_analysis(plan_id, {
-            "mode": "full_clean",
-            "suggestions": ordered_suggestions,
-            "summary": "已完成全部章节的 AI 清洗建议，建议仍需逐项勾选并最终确认。",
-            "model": model_config["model"],
-        })
-        completed = rename_plan_manager.update_ai_clean(plan_id, {
-            "status": "completed", "done": total, "total": total,
-            "model": model_config["model"], "suggestions": ordered_suggestions,
-            "completed_at": int(time.time()),
-        })
-        notification_manager.notify(
-            "rename_confirmation",
-            f"全量 AI 清洗完成：{(saved.get('album') or {}).get('title') or plan_id}",
-            f"计划 {plan_id} 已生成 {total} 条全量清洗建议，请在 AudioFlow 中勾选并应用后再确认执行。",
-            {"title": (saved.get("album") or {}).get("title") or "", "plan_id": plan_id,
-             "plan_status": saved.get("status"), "planned": total, "issues": 0,
-             "task_id": saved.get("task_id") or ""},
-        )
-        return completed
-    except Exception as exc:
-        logging.exception("full audiobook AI cleaning failed: %s", plan_id)
-        try:
-            current = rename_plan_manager.get(plan_id) or {}
-            state = current.get("ai_clean") or {}
-            rename_plan_manager.update_ai_clean(plan_id, {
-                "status": "failed", "done": int(state.get("done") or 0),
-                "total": int(state.get("total") or 0), "error": str(exc),
-                "failed_at": int(time.time()),
-            })
-        except Exception:
-            logging.exception("failed to persist full audiobook AI cleaning error: %s", plan_id)
-
-
-@app.post("/api/rename-plans/<plan_id>/ai-clean")
-def api_ai_clean_rename_plan(plan_id):
-    plan = rename_plan_manager.get(plan_id)
-    if not plan:
-        return json_error("重命名计划不存在", 404)
-    if plan.get("status") not in {"needs_review", "pending_confirmation"}:
-        return json_error("只有待复核或待确认计划可以进行全量 AI 清洗", 400)
-    state = plan.get("ai_clean") or {}
-    if state.get("status") == "running":
-        return json_ok(plan=plan)
-    if state.get("status") == "completed":
-        return json_ok(plan=plan)
-    try:
-        _provider_id, _spec, model_config = agent_manager._validate_ready()
-    except (TypeError, ValueError, requests.RequestException) as exc:
-        return json_error(f"请先去 Agent 设置配置模型密钥：{exc}", 400)
-    entries = _full_clean_entries(plan)
-    started_at = int(state.get("started_at") or time.time())
-    plan = rename_plan_manager.update_ai_clean(plan_id, {
-        "status": "running", "done": int(state.get("done") or 0),
-        "total": len(entries), "model": model_config["model"], "started_at": started_at,
-    })
-    threading.Thread(
-        target=_run_full_clean, args=(plan_id,), name=f"rename-ai-clean-{plan_id}", daemon=True
-    ).start()
-    return json_ok(plan=plan)
-
-
-@app.post("/api/rename-plans/<plan_id>/ai-apply")
-def api_apply_ai_rename_suggestions(plan_id):
-    payload = request.get_json(silent=True) or {}
-    try:
-        return json_ok(plan=rename_plan_manager.apply_ai_suggestions(
-            plan_id, payload.get("suggestion_ids") or []
-        ))
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except (TypeError, ValueError, OSError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-plans/<plan_id>/ai-rule-draft")
-def api_create_ai_rename_rule_draft(plan_id):
-    plan = rename_plan_manager.get(plan_id)
-    if not plan:
-        return json_error("重命名计划不存在", 404)
-    try:
-        proposed = agent_manager.propose_rename_rule_draft(plan)
-        effective = rename_rule_store.effective(plan.get("album") or {})["rules"]
-        proposed["rules"] = merge_rule_values(effective, proposed.get("rules") or {})
-        proposed["source"] = f"agent:{plan_id}"
-        return json_ok(rule=rename_rule_store.save_draft(proposed), packs=rename_rule_store.list())
-    except (TypeError, ValueError, requests.RequestException) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-plans/<plan_id>/confirm")
-def api_confirm_rename_plan(plan_id):
-    try:
-        return json_ok(plan=rename_plan_manager.confirm(plan_id))
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except (ValueError, OSError) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/rename-plans/<plan_id>/cancel")
-def api_cancel_rename_plan(plan_id):
-    try:
-        return json_ok(plan=rename_plan_manager.cancel(plan_id))
-    except KeyError as exc:
-        return json_error(str(exc), 404)
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-
-
-def _agent_list_downloads(status="all", limit=20):
-    status = str(status or "all")
-    limit = max(1, min(50, int(limit or 20)))
-    with task_lock:
-        snapshot = [dict(item) for item in tasks.values()]
-    snapshot.sort(key=lambda item: item.get("created_at", 0), reverse=True)
-    if status == "active":
-        snapshot = [item for item in snapshot if item.get("status") in {"queued", "preparing", "downloading", "paused"}]
-    elif status != "all":
-        snapshot = [item for item in snapshot if item.get("status") == status]
-    return {
-        "tasks": [
-            {
-                "id": item.get("id"),
-                "title": item.get("title"),
-                "platform": (item.get("album") or {}).get("platform"),
-                "status": item.get("status"),
-                "success": item.get("success", 0),
-                "failed": item.get("failed", 0),
-                "total": item.get("total", 0),
-                "finished_at": item.get("finished_at"),
-            }
-            for item in snapshot[:limit]
-        ]
-    }
-
-
-def _agent_list_rename_plans(status=""):
-    plans = rename_plan_manager.list(str(status or "") or None)
-    return {
-        "plans": [
-            {
-                "id": item.get("id"),
-                "task_id": item.get("task_id"),
-                "title": (item.get("album") or {}).get("title"),
-                "status": item.get("status"),
-                "summary": item.get("summary") or {},
-            }
-            for item in plans[:50]
-        ]
-    }
-
-
-def _agent_get_rename_plan(plan_id):
-    plan = rename_plan_manager.get(str(plan_id or ""))
-    if not plan:
-        raise KeyError("重命名计划不存在")
-    return plan
-
-
-def _agent_create_rename_plan(task_id="", folder="", album_title=""):
-    if folder:
-        plan = create_rename_plan_for_folder(folder, album_title or None, notify=True)
-    else:
-        plan = create_rename_plan_for_task(str(task_id or ""), notify=True)
-    return {
-        "id": plan.get("id"),
-        "task_id": plan.get("task_id"),
-        "status": plan.get("status"),
-        "summary": plan.get("summary") or {},
-        "confirmation_required": True,
-        "confirmation_command": f"确认重命名 {plan.get('id')}",
-        "message": "计划已保存并发送通知；必须由用户明确确认后才会执行。",
-    }
-
-
-def _agent_analyze_rename_plan_with_ai(plan_id):
-    plan = rename_plan_manager.get(str(plan_id or ""))
-    if not plan:
-        raise KeyError("重命名计划不存在")
-    analysis = agent_manager.analyze_rename_plan(plan)
-    saved = rename_plan_manager.save_ai_analysis(str(plan_id), analysis)
-    return {
-        "id": saved.get("id"),
-        "status": saved.get("status"),
-        "suggestions": len((saved.get("ai_analysis") or {}).get("suggestions") or []),
-        "message": "AI 风险建议已保存到计划，尚未应用或执行。",
-    }
-
-
-def _agent_apply_ai_rename_suggestions(plan_id, suggestion_ids):
-    plan = rename_plan_manager.apply_ai_suggestions(str(plan_id or ""), suggestion_ids or [])
-    return {
-        "id": plan.get("id"), "status": plan.get("status"),
-        "summary": plan.get("summary") or {},
-        "message": "选中的 AI 建议已写入计划；仍需用户最终确认后才会执行。",
-    }
-
-
-def _agent_create_rename_rule_draft(plan_id):
-    plan = rename_plan_manager.get(str(plan_id or ""))
-    if not plan:
-        raise KeyError("重命名计划不存在")
-    proposed = agent_manager.propose_rename_rule_draft(plan)
-    effective = rename_rule_store.effective(plan.get("album") or {})["rules"]
-    proposed["rules"] = merge_rule_values(effective, proposed.get("rules") or {})
-    proposed["source"] = f"agent:{plan_id}"
-    rule = rename_rule_store.save_draft(proposed)
-    return {
-        "id": rule.get("id"), "name": rule.get("name"), "status": rule.get("status"),
-        "message": "规则草稿已生成；必须在规则中心测试并手动启用。",
-    }
-
-
-def _agent_resolve_rename_plan_safe(plan_id):
-    plan = rename_plan_manager.resolve_safe(str(plan_id or ""))
-    return {
-        "id": plan.get("id"),
-        "status": plan.get("status"),
-        "summary": plan.get("summary") or {},
-        "message": "风险和特殊文件将保持不动；安全章节已进入最终确认。",
-    }
-
-
-def _agent_confirm_rename_plan(plan_id):
-    plan = rename_plan_manager.confirm(str(plan_id or ""))
-    return {
-        "id": plan.get("id"),
-        "status": plan.get("status"),
-        "summary": plan.get("summary") or {},
-        "mapping_file": plan.get("mapping_file"),
-        "message": "AudioFlow 服务端已完成两阶段整理和结果校验。",
-    }
-
-
-def _agent_cancel_rename_plan(plan_id):
-    plan = rename_plan_manager.cancel(str(plan_id or ""))
-    return {"id": plan.get("id"), "status": plan.get("status"), "message": "整理计划已取消。"}
-
-
-agent_manager.set_tools({
-    "list_downloads": _agent_list_downloads,
-    "list_rename_plans": _agent_list_rename_plans,
-    "get_rename_plan": _agent_get_rename_plan,
-    "create_rename_plan": _agent_create_rename_plan,
-    "analyze_rename_plan_with_ai": _agent_analyze_rename_plan_with_ai,
-    "apply_ai_rename_suggestions": _agent_apply_ai_rename_suggestions,
-    "create_rename_rule_draft": _agent_create_rename_rule_draft,
-    "resolve_rename_plan_safe": _agent_resolve_rename_plan_safe,
-    "confirm_rename_plan": _agent_confirm_rename_plan,
-    "cancel_rename_plan": _agent_cancel_rename_plan,
-})
-
-feishu_bridge = FeishuBridge(
-    notification_manager,
-    agent_manager,
-    rename_plan_manager,
-    config_dir() / "feishu_actions.json",
-)
-developer_agent_manager = DeveloperAgentManager(
-    agent_manager,
-    notification_manager,
-    config_dir(),
-    project_root() / "developer-agent",
-)
-
-
-@app.get("/api/agent/status")
-def api_agent_status():
-    return json_ok(**agent_manager.status(), developer=developer_agent_manager.status())
-
-
-@app.post("/api/agent/config")
-def api_agent_config():
-    try:
-        config = agent_manager.store.save_config(request.get_json(silent=True) or {})
-        developer = developer_agent_manager.reconcile()
-        return json_ok(config=config, developer=developer)
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-
-
-@app.get("/api/agent/developer/status")
-def api_developer_agent_status():
-    return json_ok(status=developer_agent_manager.status())
-
-
-@app.post("/api/agent/developer/start")
-def api_developer_agent_start():
-    try:
-        return json_ok(status=developer_agent_manager.start())
-    except ValueError as exc:
-        return json_error(str(exc), 400)
-
-
-@app.post("/api/agent/developer/stop")
-def api_developer_agent_stop():
-    return json_ok(status=developer_agent_manager.stop())
-
-
-@app.post("/api/agent/test")
-def api_agent_test():
-    payload = request.get_json(silent=True) or {}
-    try:
-        return json_ok(result=agent_manager.test_provider(payload.get("provider")))
-    except (ValueError, requests.RequestException) as exc:
-        return json_error(str(exc), 400)
-
-
-@app.get("/api/agent/sessions")
-def api_agent_sessions():
-    return json_ok(sessions=agent_manager.store.list_sessions())
-
-
-@app.get("/api/agent/sessions/<session_id>")
-def api_agent_session(session_id):
-    session = agent_manager.store.get_session(session_id)
-    if not session:
-        return json_error("Agent 会话不存在", 404)
-    return json_ok(session=session)
-
-
-@app.delete("/api/agent/sessions/<session_id>")
-def api_delete_agent_session(session_id):
-    if not agent_manager.store.delete_session(session_id):
-        return json_error("Agent 会话不存在", 404)
-    return json_ok(deleted=True)
-
-
-@app.post("/api/agent/chat")
-def api_agent_chat():
-    payload = request.get_json(silent=True) or {}
-    try:
-        return json_ok(**agent_manager.chat(
-            payload.get("message") or payload.get("content"),
-            payload.get("session_id") or payload.get("sessionId"),
-        ))
-    except (ValueError, requests.RequestException) as exc:
-        return json_error(str(exc), 400)
 
 
 def _notification_service(service_id, service_type=None):
@@ -3484,8 +2711,6 @@ WECOM_TEMPLATE_FIELDS = [
     {"key": "notify_download_completed_desc", "label": "通知·下载完成·描述", "vars": ["title", "platform", "success", "failed", "task_id"]},
     {"key": "notify_download_failed_title", "label": "通知·下载失败·标题", "vars": ["title", "task_id", "error"]},
     {"key": "notify_download_failed_desc", "label": "通知·下载失败·描述", "vars": ["title", "task_id", "error"]},
-    {"key": "notify_rename_confirmation_title", "label": "通知·重命名确认·标题", "vars": ["title", "plan_id", "planned", "issues", "task_id"]},
-    {"key": "notify_rename_confirmation_desc", "label": "通知·重命名确认·描述", "vars": ["title", "plan_id", "planned", "issues", "task_id"]},
 ]
 
 
@@ -3772,24 +2997,6 @@ def _wecom_handle_text_command(service_id, user_id, text):
         tasks_now = task_snapshot()
         running = sum(1 for item in tasks_now if item.get("status") in {"running", "pending", "paused"})
         return f"AudioFlow v{APP_VERSION}\n任务总数：{len(tasks_now)}\n进行中：{running}"
-    rename_match = re.match(r"^(确认重命名|确认整理|安全整理|取消重命名|取消整理)\s+([a-f0-9]{10})$", text, re.I)
-    if rename_match:
-        plan_id = rename_match.group(2).lower()
-        try:
-            command = rename_match.group(1)
-            if command in {"确认重命名", "确认整理"}:
-                plan = rename_plan_manager.confirm(plan_id)
-                renamed = sum(1 for item in (plan.get("items") or []) if item.get("status") == "renamed")
-                return f"整理已完成：{(plan.get('album') or {}).get('title') or plan_id}\n成功：{renamed} 个文件"
-            if command == "安全整理":
-                rename_plan_manager.resolve_safe(plan_id)
-                plan = rename_plan_manager.confirm(plan_id)
-                renamed = sum(1 for item in (plan.get("items") or []) if item.get("status") == "renamed")
-                return f"安全整理已完成：风险文件保持不动，整理 {renamed} 个文件"
-            rename_plan_manager.cancel(plan_id)
-            return f"整理计划已取消：{plan_id}"
-        except (KeyError, ValueError, OSError) as exc:
-            return f"整理操作失败：{exc}"
     # 慢指令（搜索/翻页/订阅/下载）改为后台异步执行 + 主动推送卡片，立即回执避免企业微信 5 秒超时
     tpl = notification_manager.get_wecom_templates()
     if re.match(r"^(搜索|search|/search)\s+.+$", text, re.I):
@@ -6941,8 +6148,6 @@ def _initialize_background_services():
     """Initialize optional services without delaying the Web listener."""
     services = (
         ("subscription scheduler", ensure_subscription_scheduler),
-        ("Feishu bridge", feishu_bridge.start),
-        ("developer Agent", developer_agent_manager.reconcile),
     )
     for name, initialize in services:
         started = time.monotonic()

@@ -39,7 +39,6 @@ export function IconSprite() {
         <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></symbol>
         <symbol id="i-bolt" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></symbol>
         <symbol id="i-headphone" viewBox="0 0 24 24"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1v-7h3v5zM3 19a2 2 0 0 0 2 2h1v-7H3v5z" /></symbol>
-        <symbol id="i-agent" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="14" rx="4" /><path d="M9 2h6M12 2v4" /><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none" /><path d="M9 16h6" /></symbol>
         <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></symbol>
         <symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></symbol>
         <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="14.5" r="4.5" /><path d="M11 11l9-9M16 6l2 2M14 8l2 2" /></symbol>

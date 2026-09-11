@@ -17,16 +17,6 @@ class SubscriptionJobsTest(unittest.TestCase):
             web_server.tasks.clear()
             web_server.task_workers.clear()
 
-    def test_manual_organization_defaults_to_review_mode(self):
-        with (
-            mock.patch.object(web_server.cookie_manager, "get_cookie", return_value=None),
-            mock.patch.object(web_server.os, "getenv", return_value=None),
-        ):
-            self.assertEqual(web_server.manual_organize_mode(), "review")
-
-    def test_manual_organization_respects_saved_off_mode(self):
-        with mock.patch.object(web_server.cookie_manager, "get_cookie", return_value="off"):
-            self.assertEqual(web_server.manual_organize_mode(), "off")
 
     def test_cleanup_marks_stale_running_job_failed(self):
         web_server.subscription_jobs["job-1"] = {
@@ -131,21 +121,6 @@ class SubscriptionJobsTest(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(start.call_args.kwargs["origin_source"], origin)
             self.assertEqual(web_server.manual_download_origin(origin), expected)
-
-    def test_automatic_plan_scheduler_skips_subscription_tasks(self):
-        with web_server.task_lock:
-            web_server.tasks.update({
-                "manual": {"id": "manual", "organize_after_download": True},
-                "subscription": {"id": "subscription", "organize_after_download": False},
-            })
-        with (
-            mock.patch.object(web_server, "manual_organize_mode", return_value="review"),
-            mock.patch.object(web_server.threading, "Thread") as thread,
-        ):
-            web_server.schedule_rename_plan("subscription")
-            thread.assert_not_called()
-            web_server.schedule_rename_plan("manual")
-            thread.assert_called_once()
 
     def test_retry_failed_reuses_original_task(self):
         task_id = "failed-task"
