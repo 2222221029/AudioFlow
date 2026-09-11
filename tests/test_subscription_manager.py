@@ -359,6 +359,154 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertEqual(diff["remote_total"], 1)
             self.assertEqual(stats["total"], 1)
 
+    def test_diff_extra_audio_do_not_mask_real_missing(self):
+        # 回归：专辑目录里混入非章节音频（主播节目/片头片尾等）时，本地音频文件总数
+        # file_count 会 >= 远端章节总数。旧「文件数兜底」把所有章节（含真实缺失的）
+        # 误标为已下载，检测误报「无需补全」；修复后兜底只标记本地确有对应序号文件的章节。
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "book", "title": "测试书", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "1", "title": "测试书 001集", "order_num": 1},
+                {"id": "2", "title": "测试书 002集", "order_num": 2},
+                {"id": "3", "title": "测试书 003集", "order_num": 3},
+            ]
+            subscription = manager.add_or_update(album, chapters, download_tmp)
+            album_dir = Path(download_tmp) / "喜马拉雅" / "测试书"
+            album_dir.mkdir(parents=True)
+            for idx in (1, 2):  # 磁盘只有前 2 集
+                (album_dir / f"{idx:04d}-测试书 {idx:03d}集.m4a").write_bytes(b"x" * 4096)
+            # 非章节音频：无章节序号，但会被 file_count 统计（file_count=3 >= remote_total=3）
+            (album_dir / "主播有话说.m4a").write_bytes(b"x" * 4096)
+            manager.build_audio_index(download_tmp, force=True)
+
+            diff = manager.diff_chapters(subscription, chapters, download_tmp)
+            # 旧逻辑会把第 3 集也标为已下载（missing 清空）；修复后第 3 集仍报缺失
+            self.assertEqual([c["id"] for c in diff["missing"]], ["3"])
+            self.assertEqual(diff["file_missing_count"], 1)
+            self.assertNotIn("3", subscription["downloaded"])
+
+            # 统计同样不被非章节音频抬高：refresh_local_stats 后 downloaded 仍为 2 而非 3
+            subscription["download_dir"] = download_tmp
+            stats = manager.refresh_local_stats(subscription, download_tmp)
+            self.assertEqual((stats["total"], stats["downloaded"], stats["missing"]), (3, 2, 1))
+
+    def test_diff_renamed_files_marked_only_when_actually_present(self):
+        # 重命名/刮削后文件名与远端标题对不上 + 目录混入非章节音频：file_count >= 远端总数，
+        # 旧兜底把真实缺失的章节也标成已下载。修复后按本地序号逐个验证：
+        # 文件确实在的重命名章节被识别为已下载，真实缺失的章节仍报缺失。
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "book2", "title": "重命名书", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "1", "title": "重命名书 001集 演播者", "order_num": 1},
+                {"id": "2", "title": "重命名书 002集 演播者", "order_num": 2},
+                {"id": "3", "title": "重命名书 003集 演播者", "order_num": 3},
+            ]
+            subscription = manager.add_or_update(album, chapters, download_tmp)
+            album_dir = Path(download_tmp) / "喜马拉雅" / "重命名书"
+            album_dir.mkdir(parents=True)
+            # 重命名成纯章节标题（与远端标题完全对不上，只保留序号前缀）
+            (album_dir / "0001-第一章 开端.m4a").write_bytes(b"x" * 4096)
+            (album_dir / "0002-第二章 发展.m4a").write_bytes(b"x" * 4096)
+            (album_dir / "主播有话说.m4a").write_bytes(b"x" * 4096)  # 非章节音频
+            manager.build_audio_index(download_tmp, force=True)
+
+            diff = manager.diff_chapters(subscription, chapters, download_tmp)
+            # 第 1、2 集被兜底按序号识别为已下载；第 3 集本地无对应序号文件，仍报缺失
+            self.assertEqual([c["id"] for c in diff["missing"]], ["3"])
+            self.assertEqual(subscription["downloaded"]["1"]["status"], "downloaded")
+            self.assertEqual(subscription["downloaded"]["2"]["status"], "downloaded")
+            self.assertNotIn("3", subscription["downloaded"])
+
+    def test_refresh_stats_extra_audio_does_not_inflate_downloaded(self):
+        # 回归：refresh_local_stats 用 max(matched, file_count) 时，专辑目录里的非章节
+        # 音频会把 downloaded 顶到 total，UI 假报「已下载 N/N」；修复后以本地序号交集兜底。
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "book3", "title": "统计书", "platform": "喜马拉雅"}
+            chapters = [
+                {"id": "1", "title": "统计书 001集", "order_num": 1},
+                {"id": "2", "title": "统计书 002集", "order_num": 2},
+                {"id": "3", "title": "统计书 003集", "order_num": 3},
+            ]
+            subscription = manager.add_or_update(album, chapters, download_tmp)
+            album_dir = Path(download_tmp) / "喜马拉雅" / "统计书"
+            album_dir.mkdir(parents=True)
+            for idx in (1, 2):
+                (album_dir / f"{idx:04d}-统计书 {idx:03d}集.m4a").write_bytes(b"x" * 4096)
+            (album_dir / "主播有话说.m4a").write_bytes(b"x" * 4096)  # 非章节音频 → file_count=3
+            manager.build_audio_index(download_tmp, force=True)
+
+            # 历史脏状态：第 3 集被旧版「按数量兜底」误标为已下载（local-count-full）
+            subscription["downloaded"]["3"] = {"status": "downloaded", "source": "local-count-full"}
+
+            subscription["download_dir"] = download_tmp
+            stats = manager.refresh_local_stats(subscription, download_tmp)
+            # 旧逻辑 downloaded=max(matched=2, file_count=3)=3 假报全量；修复后按序号交集=2
+            self.assertEqual((stats["total"], stats["downloaded"], stats["missing"]), (3, 2, 1))
+            self.assertEqual(stats["file_count"], 3)  # file_count 本身仍是本地文件总数，仅作展示
+            # 无本地文件的脏状态被清除，fast 模式不再被 state_count 虚报
+            self.assertNotIn("3", subscription["downloaded"])
+            fast = manager.stats_for(subscription, download_tmp, fast=True)
+            self.assertEqual((fast["total"], fast["downloaded"], fast["missing"]), (3, 2, 1))
+
+    def test_snapshot_preserves_publish_time_and_normalizes(self):
+        # 快照应保存各平台章节发布时间（_publish_time），并支持统一解析为 ISO。
+        from datetime import datetime
+
+        manager = SubscriptionManager(tempfile.mkdtemp())
+        chapters = [
+            {"id": "1", "title": "第1集", "order_num": 1, "created_at": 1700000000},  # 秒级时间戳
+            {"id": "2", "title": "第2集", "order_num": 2, "created_at": "2025-09-01T12:00:00Z"},  # ISO
+            {"id": "3", "title": "第3集", "order_num": 3},  # 平台不提供时间字段
+        ]
+        snapshots = manager.snapshot_chapters(chapters)
+
+        self.assertEqual(snapshots[0]["_publish_time"], 1700000000)
+        self.assertEqual(snapshots[1]["_publish_time"], "2025-09-01T12:00:00Z")
+        self.assertNotIn("_publish_time", snapshots[2])
+
+        expected_first = datetime.utcfromtimestamp(1700000000).replace(microsecond=0).isoformat() + "Z"
+        self.assertEqual(manager.normalize_publish_time(1700000000), expected_first)
+        self.assertEqual(manager.normalize_publish_time("2025-09-01T12:00:00Z"), "2025-09-01T12:00:00Z")
+        # 毫秒级时间戳、日期字符串
+        self.assertEqual(manager.normalize_publish_time(1750000000000), manager.normalize_publish_time(1750000000))
+        self.assertEqual(manager.normalize_publish_time("2025-06-15"), "2025-06-15T00:00:00Z")
+        # 占位值/无法识别 → 空
+        self.assertEqual(manager.normalize_publish_time(""), "")
+        self.assertEqual(manager.normalize_publish_time("0"), "")
+        self.assertEqual(manager.normalize_publish_time("未知"), "")
+        self.assertEqual(manager.normalize_publish_time("not-a-date"), "")
+
+    def test_update_check_result_records_last_update_at(self):
+        # 检测后订阅记录应保存「最近更新」= 远端章节里最新一章的发布时间。
+        from datetime import datetime
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "book5", "title": "更新时间书", "platform": "喜马拉雅"}
+            subscription = manager.add_or_update(album, [], download_tmp)
+            chapters = [
+                {"id": "1", "title": "更新时间书 001集", "order_num": 1, "created_at": 1700000000},   # 2023
+                {"id": "2", "title": "更新时间书 002集", "order_num": 2, "created_at": 1750000000},   # 2025（最新）
+                {"id": "3", "title": "更新时间书 003集", "order_num": 3},  # 无时间字段，忽略
+            ]
+            diff = {"missing": [], "new_count": 2, "file_missing_count": 0, "partial_count": 0,
+                    "restricted_count": 0, "deferred_failed_count": 0, "remote_total": 3}
+
+            manager.update_check_result(subscription["id"], chapters, diff, message="已检查", refresh_local=False)
+
+            expected = datetime.utcfromtimestamp(1750000000).replace(microsecond=0).isoformat() + "Z"
+            self.assertEqual(subscription["last_update_at"], expected)
+            # 快照里保留发布时间，供后续复用
+            self.assertEqual(subscription["chapters"][1]["_publish_time"], 1750000000)
+
+            # 平台不提供时间字段 → 不写入 last_update_at（前端回退显示）
+            subscription2 = manager.add_or_update({**album, "id": "book6"}, [], download_tmp)
+            manager.update_check_result(subscription2["id"], [{"id": "1", "title": "无时间", "order_num": 1}], diff, refresh_local=False)
+            self.assertNotIn("last_update_at", subscription2)
+
 
 if __name__ == "__main__":
     unittest.main()

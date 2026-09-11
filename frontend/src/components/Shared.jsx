@@ -1027,6 +1027,7 @@ export function SubscriptionsPage({app, onNavigate}) {
           const progress = total > 0 ? Math.max(0, Math.min(100, Math.round((downloaded / total) * 100))) : 0;
           const lastCheck = formatCheckTime(sub.last_check_at);
           const nextCheck = formatCheckTime(sub.next_check_at, '等待首次检测');
+          const lastUpdate = formatCheckTime(sub.last_update_at, '未知');
           return (
             <div className="sub-card" key={sub.id}>
               <div className="sub-cover-wrap">
@@ -1055,6 +1056,7 @@ export function SubscriptionsPage({app, onNavigate}) {
                     {restricted > 0 && <span>受限 {restricted}</span>}
                   </div>
                   <div className="sub-times">
+                    <span>最近更新 {lastUpdate}</span>
                     <span>上次检测 {lastCheck}</span>
                     <span>下次检测 {nextCheck}</span>
                   </div>

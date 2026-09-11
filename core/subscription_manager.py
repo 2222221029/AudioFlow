@@ -1085,6 +1085,72 @@ class SubscriptionManager:
         item["last_message"] = message or "检测失败"
         self.save()
 
+    # 各平台章节/专辑返回的发布时间字段（喜马拉雅 track.created_at 为秒级时间戳、
+    # 起点 update_time 为日期字符串等）。仅用于展示「专辑最近更新时间」，取到哪个用哪个。
+    PUBLISH_TIME_KEYS = (
+        "created_at", "createdAt", "create_time", "createTime", "created",
+        "release_time", "releaseTime", "publish_at", "publishAt",
+        "publish_time", "publishTime", "update_time", "updateTime",
+        "updated_at", "updatedAt", "releaseDate", "release_date",
+        "add_time", "addTime", "ts",
+    )
+
+    @staticmethod
+    def chapter_publish_time(chapter):
+        """提取章节的发布时间原始值；找不到或为占位值时返回 None。"""
+        if not isinstance(chapter, dict):
+            return None
+        for key in SubscriptionManager.PUBLISH_TIME_KEYS:
+            value = chapter.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text or text.lower() in (
+                "0", "none", "null", "未知", "1970-01-01",
+                "1970-01-01 08:00:00", "1970-01-01 00:00:00",
+            ):
+                continue
+            return value
+        return None
+
+    @staticmethod
+    def normalize_publish_time(value):
+        """把各平台五花八门的发布时间统一成可比较的 ISO 字符串（UTC）；无法识别返回 ''。
+
+        支持：秒/毫秒数值时间戳、ISO8601、'YYYY-MM-DD HH:MM:SS'、'YYYY-MM-DD'、
+        'YYYY/MM/DD'、'YYYY.MM.DD' 等常见格式。
+        """
+        if value in (None, ""):
+            return ""
+        text = str(value).strip()
+        if not text or text.lower() in ("0", "none", "null", "未知"):
+            return ""
+        if text.isdigit():
+            try:
+                ts = int(text)
+                if ts > 10_000_000_000:  # 毫秒级时间戳
+                    ts = ts // 1000
+                if ts > 0:
+                    return datetime.utcfromtimestamp(ts).replace(microsecond=0).isoformat() + "Z"
+            except Exception:
+                pass
+            return ""
+        normalized = str(value).replace("Z", "+00:00")
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+            "%Y-%m-%d", "%Y/%m/%d", "%Y/%m/%d %H:%M:%S",
+            "%Y.%m.%d",
+        ):
+            try:
+                parsed = datetime.strptime(normalized, fmt)
+                if parsed.tzinfo is not None:
+                    parsed = parsed.replace(tzinfo=None) - parsed.utcoffset()
+                return parsed.replace(microsecond=0).isoformat() + "Z"
+            except Exception:
+                continue
+        return ""
+
     def snapshot_chapters(self, chapters):
         # Persist only fields required for identity, file matching, permission
         # rechecks and a degraded API fallback.  Raw platform responses often
@@ -1103,6 +1169,10 @@ class SubscriptionManager:
             if not isinstance(chapter, dict):
                 continue
             data = {key: chapter[key] for key in fields if chapter.get(key) not in (None, "", [], {})}
+            # 各平台章节发布时间（原始值），用于计算「专辑最近更新时间」；平台不提供则为空
+            publish_time = self.chapter_publish_time(chapter)
+            if publish_time is not None:
+                data["_publish_time"] = publish_time
             data["_subscription_key"] = chapter_key(data)
             data["_snapshot_order"] = chapter_order(data, idx)
             result.append(data)
@@ -1141,6 +1211,37 @@ class SubscriptionManager:
                 dir_cache=scan_cache.setdefault("dirs", {}),
                 file_cache=scan_cache.setdefault("files", {}),
             )
+        # 索引新鲜度双向预检：本地文件数明显少于远端总数（外部删除文件后索引未重建）
+        # 或明显多于远端总数（文件被移走/标题模糊匹配纳入了其他专辑目录/索引仍统计着
+        # 已删除的文件）都视为索引陈旧。旧逻辑只在 file_count 偏小时失效；file_count
+        # 虚高会直接触发下方「文件数兜底」把所有章节（含真实缺失的）误标为已下载，
+        # 导致 UI 显示「已下载 N/N、无需补全」而实际章节缺失。预检发生在逐章匹配之前，
+        # 陈旧时当轮失效重建，主循环直接使用新索引，结果一致。
+        if not skip_local and local_files:
+            probe_index = build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
+            probe_count = probe_index.get("file_count", 0)
+            remote_probe = sum(
+                1 for ch in remote_chapters
+                if isinstance(ch, dict) and not ch.get("_source_missing")
+            )
+            if probe_count > 0 and remote_probe > 0 and (
+                remote_probe > probe_count * 1.1 or probe_count > remote_probe * 1.5
+            ):
+                logging.info(
+                    "diff_chapters: file_count={} vs remote_total={}, index stale, "
+                    "invalidating and rescanning".format(probe_count, remote_probe)
+                )
+                self.invalidate_audio_index(download_dir)
+                local_files, has_album_scope, index = self.indexed_album_files(album, download_dir, max_age=0)
+                album_dirs = [Path("__indexed_album_scope__")] if has_album_scope else []
+                if not local_files:
+                    album_dirs = album_dir_candidates(album, download_dir, dir_cache=scan_cache.setdefault("dirs", {}))
+                    local_files = collect_album_audio_files(
+                        album,
+                        download_dir,
+                        dir_cache=scan_cache.setdefault("dirs", {}),
+                        file_cache=scan_cache.setdefault("files", {}),
+                    )
         local_index = {} if skip_local else build_local_file_match_index(local_files, has_album_scope=bool(album_dirs))
         missing = []
         matched_keys = set()
@@ -1248,49 +1349,51 @@ class SubscriptionManager:
                 item["_missing_reason"] = "restricted_released" if state_restricted and not restricted_now else "new" if is_new else "missing_or_incomplete"
                 missing.append(item)
         file_count = 0 if skip_local else local_index.get("file_count", 0)
-        # Invalidate stale index when file_count dropped significantly from remote total
-        # (after manual file deletion). Without this, the cached index still shows
-        # deleted files and is_chapter_file_complete with the stale index may miss them.
-        if not skip_local and file_count > 0 and current_source_total > file_count * 1.1:
-            logging.info(
-                "diff_chapters: file_count={} < remote_total={}, index stale, invalidating".format(
-                    file_count, current_source_total)
-            )
-            self.invalidate_audio_index(download_dir)
+        # 本地序号集合：文件名以数字开头（下载端 {order:04d}-标题 格式，重命名后通常
+        # 仍保留序号前缀）。「按数量推断」与「文件数兜底」只标记本地确实存在对应序号
+        # 文件的章节——file_count 是本地音频文件总数，含片头片尾/主播节目/其他专辑混入
+        # 等非章节文件，直接与远端总数比较时非章节文件会顶满计数，把真实缺失的章节
+        # （VIP、新章节等）误标为已下载，导致 UI 显示「已下载 N/N、无需补全」而实际
+        # 章节缺失、永远补不齐。
+        local_orders = set(local_index.get("orders", {}).keys())
         # 「按数量推断」只在有标题级别的实际匹配（matched_keys 非空）时才生效，
         # 防止跨平台同名专辑（本地文件来自另一平台）让系统误以为已全部下载。
         if not saved_keys and file_count > len(matched_keys) and matched_keys:
-            known_local_count = min(current_source_total, file_count)
             assumed_keys = set()
             now = utc_now_iso()
             for idx, chapter in enumerate(remote_chapters or [], start=1):
-                if isinstance(chapter, dict) and chapter.get("_source_missing"):
+                if not isinstance(chapter, dict) or chapter.get("_source_missing"):
                     continue
-                if idx > known_local_count or not isinstance(chapter, dict):
-                    break
+                # 逐章按本地序号验证：本地确有该序号文件才标记，真实缺失的序号跳过，
+                # 不再按「前 N 章都在」的假设整段标记（本地序号断档/错乱时避免误标）。
+                if chapter_order(chapter, idx) not in local_orders:
+                    continue
                 key = chapter_key(chapter)
                 assumed_keys.add(key)
                 downloaded[key] = {"status": "downloaded", "updated_at": now, "source": "local-count"}
             if assumed_keys:
                 missing = [chapter for chapter in missing if chapter_key(chapter) not in assumed_keys]
-                file_missing_count = max(0, current_source_total - known_local_count)
-        # 文件数兜底：本地实际音频文件数已 >= 远端章节总数，说明文件其实都在
-        # （常见于重命名/刮削后文件名与远端章节标题对不上，导致逐章匹配漏判大量章节）。
-        # 此时不再报缺失，避免每次「补全缺失」都创建一个文件已存在、被全部跳过的无效下载任务。
-        current_source_total = current_source_total
+                file_missing_count = max(0, current_source_total - len(assumed_keys))
+        # 文件数兜底：本地音频文件总数已 >= 远端章节总数时，逐个验证缺失章节的本地文件
+        # 是否真实存在（常见于重命名/刮削后文件名与远端章节标题对不上，逐章匹配漏判，
+        # 但文件本身按序号前缀仍在磁盘上）。只有本地确有对应序号文件的章节才标记为已下载；
+        # 真实缺失的章节（非章节音频充数、VIP、新章节等）继续保留在 missing 中——
+        # 既不制造「文件已存在被跳过」的无效下载任务，也不再掩盖真实缺失。
         if not skip_local and current_source_total > 0 and file_count >= current_source_total and missing:
             now = utc_now_iso()
-            for chapter in remote_chapters or []:
-                if not isinstance(chapter, dict):
-                    continue
-                if chapter.get("_source_missing"):
-                    continue
+            still_missing = []
+            for chapter in missing:
                 k = chapter_key(chapter)
-                # 不覆盖「已确认受限」状态；其余按本地已存在标记为已下载
-                if (downloaded.get(k) or {}).get("status") != "restricted":
+                # 不覆盖「已确认受限」状态；其余仅在本地确有对应序号文件时标记为已下载
+                if (downloaded.get(k) or {}).get("status") == "restricted":
+                    still_missing.append(chapter)
+                    continue
+                if chapter_order(chapter, 0) in local_orders:
                     downloaded[k] = {"status": "downloaded", "updated_at": now, "source": "local-count-full"}
-            missing = []
-            file_missing_count = 0
+                else:
+                    still_missing.append(chapter)
+            missing = still_missing
+            file_missing_count = len(still_missing)
         return {
             "missing": self.dedupe_chapters(missing),
             "new_count": new_count,
@@ -1318,7 +1421,17 @@ class SubscriptionManager:
         if not item:
             return
         chapters = remote_chapters or item.get("chapters") or []
-        item["chapters"] = self.snapshot_chapters(chapters)
+        snapshots = self.snapshot_chapters(chapters)
+        item["chapters"] = snapshots
+        # 「最近更新」：远端章节里最新一章的发布时间（各平台字段统一解析后取最大）。
+        # 用于判断专辑是否已停更；平台不提供时间字段时保持为空，前端回退显示上次检测时间。
+        publish_times = []
+        for ch in snapshots:
+            normalized = self.normalize_publish_time(ch.get("_publish_time"))
+            if normalized:
+                publish_times.append(normalized)
+        if publish_times:
+            item["last_update_at"] = max(publish_times)
         item["last_check_at"] = utc_now_iso()
         item["updated_at"] = utc_now_iso()
         item["last_message"] = message
@@ -1393,11 +1506,25 @@ class SubscriptionManager:
         downloaded = subscription.setdefault("downloaded", {})
         now = utc_now_iso()
         for idx, chapter in enumerate(current_chapters, start=1):
+            key = chapter_key(chapter)
             if is_chapter_file_complete(album, chapter, idx, download_dir, local_files=local_files, local_index=local_index):
                 matched += 1
-                downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now, "source": "local"}
+                downloaded[key] = {"status": "downloaded", "updated_at": now, "source": "local"}
+            elif (downloaded.get(key) or {}).get("status") in ("downloaded", "skipped"):
+                # 标记为「已下载」但磁盘上实际没有该文件：多为旧版「按数量兜底」(local-count/
+                # local-count-full) 把整本书全部章节误标成已下载留下的脏状态。清除它，否则
+                # fast 模式的 state_count 会持续假报「已下载 N/N、缺失 0」，与本地实际文件数
+                # 不符，且该章节被误认为已完成而漏下。清除后本章按真实缺失统计。
+                downloaded.pop(key, None)
         file_count = local_index.get("file_count", 0)
-        downloaded_count = min(total, max(matched, file_count))
+        # file_count 是本地音频文件总数（含片头片尾、主播节目、其他专辑混入等非章节文件），
+        # 直接取 max(matched, file_count) 会在专辑目录混入非章节音频时把 downloaded 顶到
+        # total，UI 假报「已下载 N/N」而真实章节缺失。改为以「本地序号与远端章节序号的
+        # 交集」兜底：重命名/刮削后标题匹配不上时仍能按序号前缀确认文件在不在，非章节
+        # 文件（文件名不带章节序号）不会虚增计数。
+        local_orders = set(local_index.get("orders", {}).keys())
+        order_matched = sum(1 for ch in current_chapters if chapter_order(ch, 0) in local_orders)
+        downloaded_count = min(total, max(matched, order_matched))
         restricted_count = sum(1 for state in downloaded.values() if (state or {}).get("status") == "restricted")
         local_stats = {
             "total": total,
