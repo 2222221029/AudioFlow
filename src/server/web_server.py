@@ -1393,7 +1393,11 @@ def hydrate_download_chapters(album, chapters, chapter_ids=None):
     if _is_personal_qidian_album(album):
         all_chapters = _qidian_api_for_album(album).get_qidian_chapters(str(album_id)) or []
     else:
-        all_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        try:
+            all_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        except Exception as exc:
+            logging.warning("hydrate download chapters failed: %s", exc)
+            return []
     normalized = [normalize_chapter(chapter, index) for index, chapter in enumerate(all_chapters, start=1)]
     wanted = set(ids)
     return [chapter for chapter in normalized if chapter_identifier(chapter) in wanted or chapter.get("id") in wanted]
@@ -1422,7 +1426,11 @@ def load_all_album_chapters(album, voice=None):
     elif platform == "七猫听书" and active_voice:
         raw_chapters = search_manager.qimao_manager.get_chapters(str(album_id), active_voice)
     else:
-        raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        try:
+            raw_chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        except Exception as exc:
+            logging.warning("load all album chapters failed: %s", exc)
+            return []
     return [normalize_chapter(chapter, index) for index, chapter in enumerate(raw_chapters or [], start=1)]
 
 

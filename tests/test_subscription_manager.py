@@ -523,15 +523,30 @@ class SubscriptionManagerTest(unittest.TestCase):
         self.assertEqual(merged[-1]["id"], "1730")
 
     def test_merge_marks_removed_when_source_complete(self):
-        # 远端返回完整（>= 历史）时，历史多出的章节视为已从专辑移除（_source_missing 跳过）
-        saved = [{"id": "1", "title": "书 第1集"}, {"id": "2", "title": "书 第2集"}, {"id": "3", "title": "书 第3集"}]
-        current = [{"id": "1", "title": "书 第1集"}]  # 远端 1 集 + 新章 2、3？这里模拟远端增长
-        # 远端 3 集 >= 快照 3 集，历史多出的视为已移除
-        current_full = [{"id": "1", "title": "书 第1集"}, {"id": "4", "title": "书 第4集"}, {"id": "5", "title": "书 第5集"}]
+        # 远端返回完整（最大序号 >= 历史最大序号）时，历史多出的章节视为已从专辑移除
+        saved = [{"id": "1", "title": "书 第1集", "order_num": 1},
+                 {"id": "2", "title": "书 第2集", "order_num": 2},
+                 {"id": "3", "title": "书 第3集", "order_num": 3}]
+        # 远端 3 集、最大序号 5 >= 快照最大序号 3，视为完整；快照 2、3 不在远端视为已移除
+        current_full = [{"id": "1", "title": "书 第1集", "order_num": 1},
+                        {"id": "5", "title": "书 第5集", "order_num": 5},
+                        {"id": "6", "title": "书 第6集", "order_num": 6}]
         merged = SubscriptionManager.merge_subscription_chapters(saved, current_full)
-        # 快照里 2、3 不在远端，但远端数量(3) >= 快照(3) → 标 _source_missing
         missing = [ch for ch in merged if ch.get("_source_missing")]
         self.assertEqual({ch["id"] for ch in missing}, {"2", "3"})
+
+    def test_merge_keeps_history_when_latest_page_missing(self):
+        # 回归：喜马拉雅/酷我并发分页某页失败导致漏掉最新页（本次远端数量与历史相当，
+        # 但最大序号变小），必须保留历史章节参与检测，不能误标 _source_missing。
+        saved = [{"id": str(i), "title": f"书 第{i}集", "order_num": i} for i in range(1, 1731)]
+        # 本次远端漏掉最新 60 集（1671-1730），但中间有重复/数量接近
+        current = list(saved[:1670]) + list(saved[1665:1725])  # 数量 1730，但最大序号 1725 < 1730
+        merged = SubscriptionManager.merge_subscription_chapters(saved, current)
+        # 远端最大序号(1725) < 历史最大序号(1730) → 不标 _source_missing，全部保留
+        self.assertFalse(any(ch.get("_source_missing") for ch in merged))
+        # 且去重后的章节集合覆盖历史全部
+        ids = {ch["id"] for ch in merged}
+        self.assertEqual(len(ids), 1730)
 
     def test_diff_reports_regressed_history_as_missing(self):
         # 端到端：快照 1730 集、远端本次只返回 1670 集（合并保留历史）、本地 1670 集

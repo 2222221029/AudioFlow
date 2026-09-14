@@ -35,7 +35,7 @@ def sanitize_filename(filename):
     return filename or "unknown"
 
 
-AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav"}
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav", ".ogg", ".caf"}
 RESTRICTED_CHAPTER_RETRY_SECONDS = 24 * 60 * 60
 FAILED_CHAPTER_RETRY_BASE_SECONDS = 60 * 60
 FAILED_CHAPTER_RETRY_MAX_SECONDS = 24 * 60 * 60
@@ -1080,9 +1080,17 @@ class SubscriptionManager:
         item = self.get(subscription_id)
         if not item:
             return
-        item["last_check_at"] = utc_now_iso()
-        item["updated_at"] = utc_now_iso()
+        now = utc_now_iso()
+        item["updated_at"] = now
         item["last_message"] = message or "检测失败"
+        # 失败后 30 分钟内重试，而不是等完整检测间隔——否则「官方刚更新章节恰逢一次
+        # 检测失败」要等默认 6 小时才重试，期间官方新章节检测不到。
+        try:
+            item["last_check_at"] = (
+                parse_iso(now) - timedelta(seconds=self.interval_seconds() - 1800)
+            ).replace(microsecond=0).isoformat() + "Z"
+        except Exception:
+            item["last_check_at"] = now
         self.save()
 
     # 各平台章节/专辑返回的发布时间字段（喜马拉雅 track.created_at 为秒级时间戳、
@@ -1171,10 +1179,25 @@ class SubscriptionManager:
         ]
         if not missing_from_source:
             return current
-        source_regressed = len(current) < len(saved)
+        # 完整性锚点：远端章节的最大序号是否达到历史快照的最大序号。
+        # 仅比较数量会漏判——远端漏章但数量 >= 历史（如并发分页某页失败又与他页重复、
+        # 或官方删章数与漏章数恰好抵消）时，真实存在的章节会被误标 _source_missing
+        # 跳过检测，导致「官方已更新却无需补全」。用序号锚点：远端最大序号 < 历史
+        # 最大序号说明远端列表不完整（漏尾部新章节），保留历史章节正常参与检测。
+        def _max_order(chapters):
+            orders = []
+            for ch in chapters:
+                order = chapter_order(ch, 0)
+                if order and order > 0:
+                    orders.append(order)
+            return max(orders) if orders else 0
+
+        saved_max = _max_order(saved)
+        current_max = _max_order(current)
+        source_incomplete = saved_max > 0 and current_max < saved_max
         for ch in missing_from_source:
             merged = dict(ch)
-            if not source_regressed:
+            if not source_incomplete:
                 merged["_source_missing"] = True
             current.append(merged)
         return current
@@ -1408,6 +1431,26 @@ class SubscriptionManager:
         # 真实缺失的章节（非章节音频充数、VIP、新章节等）继续保留在 missing 中——
         # 既不制造「文件已存在被跳过」的无效下载任务，也不再掩盖真实缺失。
         if not skip_local and current_source_total > 0 and file_count >= current_source_total and missing:
+            # 兜底基于 file_count（索引统计）>= 远端总数，索引可能陈旧：外部删除文件后
+            # 1 小时内索引仍统计着已删文件（数量偏差小于预检阈值时不触发重扫），导致
+            # 真实缺失的章节被误标为已下载。触发兜底前强制失效并重扫一次磁盘，
+            # 用真实文件数重新判定，避免「删除后仍无需补全」。
+            self.invalidate_audio_index(download_dir)
+            fresh_files, fresh_scope, fresh_index = self.indexed_album_files(album, download_dir, max_age=0)
+            if not fresh_files:
+                fresh_files = collect_album_audio_files(
+                    album, download_dir,
+                    dir_cache=scan_cache.setdefault("dirs", {}),
+                    file_cache=scan_cache.setdefault("files", {}),
+                )
+            fresh_local_index = build_local_file_match_index(fresh_files, has_album_scope=bool(fresh_scope or album_dirs))
+            fresh_count = fresh_local_index.get("file_count", 0)
+            if fresh_count < current_source_total:
+                # 磁盘真实文件数已不足：不兜底，缺失照常保留
+                file_count = fresh_count
+                local_orders = set(fresh_local_index.get("orders", {}).keys())
+            else:
+                local_orders = set(fresh_local_index.get("orders", {}).keys())
             now = utc_now_iso()
             still_missing = []
             for chapter in missing:
@@ -1577,8 +1620,17 @@ class SubscriptionManager:
         restricted = 0
         if fast:
             states = subscription.get("downloaded") or {}
-            state_count = sum(1 for state in states.values() if (state or {}).get("status") in ("downloaded", "skipped"))
-            restricted = sum(1 for state in states.values() if (state or {}).get("status") == "restricted")
+            # 只统计与当前章节列表对应的 key：官方已下架/历史残留的 downloaded 条目
+            # 不计入，否则 UI 会虚报「已下载 N/N、缺失 0」而实际章节缺失。
+            current_keys = {chapter_key(ch) for ch in current_chapters if isinstance(ch, dict)}
+            state_count = sum(
+                1 for key, state in states.items()
+                if key in current_keys and (state or {}).get("status") in ("downloaded", "skipped")
+            )
+            restricted = sum(
+                1 for key, state in states.items()
+                if key in current_keys and (state or {}).get("status") == "restricted"
+            )
             local_stats = subscription.get("local_stats") or {}
             try:
                 local_count = int(local_stats.get("downloaded") or 0)

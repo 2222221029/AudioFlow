@@ -1228,18 +1228,18 @@ class XimalayaManager:
                         future = executor.submit(fetch_page, page)
                         future_to_page[future] = page
 
+                    page_chapters_map = {}
                     for future in concurrent.futures.as_completed(future_to_page, timeout=120):
                         try:
                             page_chapters = future.result(timeout=30)
-                            if page_chapters:
-                                chapters.extend(page_chapters)
-                                if platform_verbose_enabled():
-                                    log_event(
-                                        "INFO",
-                                        "大页加载进度",
-                                        current_page=future_to_page[future],
-                                        loaded=len(chapters),
-                                    )
+                            page_chapters_map[future_to_page[future]] = page_chapters or []
+                            if platform_verbose_enabled():
+                                log_event(
+                                    "INFO",
+                                    "大页加载进度",
+                                    current_page=future_to_page[future],
+                                    loaded=sum(len(v) for v in page_chapters_map.values()),
+                                )
                         except Exception as e:
                             page = future_to_page[future]
                             print(f"❌ 获取第 {page} 页章节失败: {e}")
@@ -1248,7 +1248,19 @@ class XimalayaManager:
                     print(f"⚠️ 并发章节加载中断: {e}")
                     return chapters
                 raise
-            
+
+            # 按页码顺序拼接：as_completed 返回顺序不定，直接 extend 会导致章节乱序，
+            # 本地文件名序号(ui_display_index)与内容错位，已下载章节被判缺失反复下载。
+            for page in range(1, total_pages + 1):
+                chapters.extend(page_chapters_map.get(page, []))
+            # 完整性校验：并发中某页失败会静默缺该区间章节，订阅永远补不上
+            if len(chapters) < total_episodes:
+                log_event(
+                    "WARN",
+                    "大页加载不完整（部分页获取失败），列表将不完整",
+                    loaded=len(chapters),
+                    total=total_episodes,
+                )
             log_event(
                 "INFO" if chapters else "WARN",
                 "大页加载完成" if chapters else "大页加载未返回章节",

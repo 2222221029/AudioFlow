@@ -1195,7 +1195,15 @@ class EnhancedSearchManager:
                 book_detail = self.qtfm_manager.get_book_details(album_id)
                 total_programs = 0
                 if book_detail:
-                    total_programs = book_detail.get('total_programs', 0)
+                    # 注意：qtfm get_book_details 返回的字段是 total_chapters（蜻蜓 API
+                    # 的 total_programs 恒不存在）——此前取错字段导致完整性兜底永不触发，
+                    # 蜻蜓订阅在 API 不返回 total 时永远只看到前 50 集。
+                    total_programs = (
+                        book_detail.get('total_chapters')
+                        or book_detail.get('program_count')
+                        or book_detail.get('total_programs')
+                        or 0
+                    )
                 
                 # 如果获取的章节数少于总章节数，尝试分页获取
                 if total_programs > 0 and len(chapters) < total_programs:
@@ -1297,7 +1305,9 @@ class EnhancedSearchManager:
             print(f"❌ 获取章节失败: {e}")
             import traceback
             traceback.print_exc()
-            return []
+            # 失败必须可见：静默 return [] 会让订阅检测回退历史快照并显示「已检查/
+            # 无需补全」，官方新章节永远检测不到。改为抛出，由调用方决定降级策略。
+            raise RuntimeError(f"获取章节列表失败: {e}") from e
     
     def get_audio_urls(self, track_id: str, platform: str, book_id: Optional[str] = None, voice_name: Optional[str] = None) -> Dict[str, str]:
         started = time.monotonic()

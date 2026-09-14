@@ -486,10 +486,9 @@ class YunTuManager:
                             album_info['total'] = total_num
                             album_info['pageTotal'] = total_pages
                         
-                        # 如果只有一页，直接返回
+                        # 如果只有一页：不直接返回，交给末尾的 total_num 完整性校验
                         if total_pages == 1:
-                            print(f"✅ 获取完成: {len(all_singles)}/{total_num} 集")
-                            return album_info, all_singles
+                            print(f"✅ 单页获取: {len(all_singles)}/{total_num} 集（等待完整性校验）")
                         
                         # 提示正在获取多页数据
                         if total_pages > 1:
@@ -514,6 +513,55 @@ class YunTuManager:
                 traceback.print_exc()
                 break
         
+        # 完整性校验：服务端可能按请求 page_size 截断（如请求 10000 只回 200 且 totalPage=1），
+        # 此时用较小的页大小重拉全量并去重合并，避免订阅/整本下载静默截断漏章。
+        total_num = int((album_info or {}).get('total') or 0) if album_info else 0
+        if total_num > 0 and len(all_singles) < total_num:
+            print(f"⚠️ 云听FM章节不完整: {len(all_singles)}/{total_num}，改用小页(200)补拉...")
+            retry_singles = []
+            retry_seen = set()
+            retry_page = 0
+            retry_total_pages = max(1, (total_num + 199) // 200)
+            while retry_page < retry_total_pages and len(retry_singles) < total_num and retry_page < 100:
+                try:
+                    data = {
+                        "albumId": str(album_id),
+                        "pageNo": str(retry_page),
+                        "pageSize": "200",
+                    }
+                    timestamp = get_timestamp_ms_str()
+                    params_str = self.sort_params(data)
+                    sign_text = params_str + f"&timestamp={timestamp}&key={self.secret_key}"
+                    sign = self.md5_sign(sign_text)
+                    headers = {
+                        "Content-Type": "application/json",
+                        "equipmentId": "0000",
+                        "platformCode": "WEB",
+                        "timestamp": timestamp,
+                        "sign": sign,
+                    }
+                    response = self.session.get(url, params=data, headers=headers, timeout=30)
+                    result = response.json()
+                    items = ((result.get('data') or {}).get('data') or []) if result.get('code') == 0 else []
+                    added = 0
+                    for item in items:
+                        key = str(item.get('id') or '')
+                        if key and key in retry_seen:
+                            continue
+                        if key:
+                            retry_seen.add(key)
+                        retry_singles.append(item)
+                        added += 1
+                    if not items or added == 0:
+                        break
+                except Exception as e:
+                    print(f"⚠️ 云听FM补拉第{retry_page}页失败: {e}")
+                    break
+                retry_page += 1
+                time.sleep(0.1)
+            if len(retry_singles) > len(all_singles):
+                print(f"✅ 云听FM补拉完成: {len(retry_singles)}/{total_num} 集")
+                all_singles = retry_singles
         print(f"✅ 获取完成: 共{len(all_singles)}集")
         return album_info, all_singles
     

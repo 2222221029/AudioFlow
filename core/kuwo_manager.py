@@ -301,6 +301,16 @@ class KuwoManager:
                         except Exception as e:
                             print(f"❌ 第 {page_num} 页获取异常: {e}")
                             page_results[page_num] = {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
+                # 失败页重试一次：静默跳过会导致该区间 24 集缺失且订阅永远补不上
+                for page_num in sorted(page_results.keys()):
+                    if not page_results[page_num].get('success'):
+                        try:
+                            retry = self._fetch_single_page(album_id, page_num)
+                            if retry and retry.get('success'):
+                                page_results[page_num] = retry
+                                print(f"🔁 第 {page_num} 页重试成功")
+                        except Exception as e:
+                            print(f"❌ 第 {page_num} 页重试失败: {e}")
 
             chapters = []
             for page_num in sorted(page_results.keys()):
@@ -325,6 +335,8 @@ class KuwoManager:
                             'kuwo_rid': chapter.get('rid', ''),
                         })
 
+            if total_chapters and len(chapters) < total_chapters:
+                print(f"⚠️ 酷我听书章节不完整: {len(chapters)}/{total_chapters} 章（部分页获取失败）")
             print(f"✅ 酷我听书章节加载完成，本页 {len(chapters)}/{total_chapters} 章")
             return chapters
             
