@@ -938,19 +938,17 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(chapters or [], start=1)]
     if not chapters and item.get("chapters"):
         chapters = item.get("chapters") or []
-    # 与历史已知章节合并取并集：避免单次章节 API 抖动（如喜马拉雅 new_api 被风控）导致
-    # 章节列表回退、漏掉曾经检测到的章节，从而订阅永远补不全那几集。
+    # 与历史已知章节合并取并集：避免单次章节 API 抖动（如酷我并发分页某页失败、
+    # 喜马拉雅 new_api 被风控）导致章节列表回退、漏掉曾经检测到的章节，从而订阅
+    # 永远补不全那几集。注意：只有当远端返回完整时，历史多出的章节才标 _source_missing
+    # 视为已移除；远端本次返回变少（API 抖动）时必须保留历史章节正常参与检测，
+    # 否则真实存在的章节会被误报「无需补全」（界面显示缺失、点补全却无事可做）。
     saved_chapters = item.get("chapters") or []
     if saved_chapters and chapters:
-        existing_keys = {chapter_key(ch) for ch in chapters if isinstance(ch, dict)}
-        appended = [
-            {**ch, "_source_missing": True}
-            for ch in saved_chapters
-            if isinstance(ch, dict) and chapter_key(ch) not in existing_keys
-        ]
-        if appended:
-            chapters = chapters + appended
-            set_progress("合并历史章节", merged_extra=len(appended))
+        chapters = subscription_manager.merge_subscription_chapters(saved_chapters, chapters)
+        merged_extra = sum(1 for ch in chapters if isinstance(ch, dict) and not ch.get("_source_missing")) - len(saved_chapters)
+        if merged_extra > 0:
+            set_progress("合并历史章节", merged_extra=merged_extra)
     set_progress("正在扫描本地文件", chapter_count=len(chapters))
     scan_cache = {}
     # Keep comparison and result persistence atomic with download-completion

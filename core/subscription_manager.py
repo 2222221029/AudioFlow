@@ -1151,6 +1151,34 @@ class SubscriptionManager:
                 continue
         return ""
 
+    @staticmethod
+    def merge_subscription_chapters(saved_chapters, current_chapters):
+        """合并历史章节与本次远端章节，避免 API 抖动漏报真实存在的章节。
+
+        本次远端返回少于历史快照（酷我并发分页某页失败、喜马拉雅被风控等）时，
+        历史多出的章节保留为普通章节参与差异检测——本地没有文件就会报缺失、可补全；
+        只有远端返回完整或增长时，历史多出的章节才视为已从专辑移除（_source_missing）
+        并跳过检测。此前无条件标 _source_missing 会把真实存在但本次没返回的章节
+        （如 1730 集专辑本次只返回 1670 集）永久漏报为「无需补全」。
+        """
+        current = list(current_chapters or [])
+        saved = [ch for ch in (saved_chapters or []) if isinstance(ch, dict)]
+        if not saved or not current:
+            return current
+        existing_keys = {chapter_key(ch) for ch in current if isinstance(ch, dict)}
+        missing_from_source = [
+            ch for ch in saved if chapter_key(ch) not in existing_keys
+        ]
+        if not missing_from_source:
+            return current
+        source_regressed = len(current) < len(saved)
+        for ch in missing_from_source:
+            merged = dict(ch)
+            if not source_regressed:
+                merged["_source_missing"] = True
+            current.append(merged)
+        return current
+
     def snapshot_chapters(self, chapters):
         # Persist only fields required for identity, file matching, permission
         # rechecks and a degraded API fallback.  Raw platform responses often

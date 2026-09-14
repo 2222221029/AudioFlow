@@ -508,5 +508,53 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertNotIn("last_update_at", subscription2)
 
 
+    def test_merge_keeps_history_when_source_regressed(self):
+        # 回归：远端本次返回少于历史快照（酷我并发分页某页失败/API 抖动）时，
+        # 历史多出的章节必须保留为普通章节参与检测——否则真实存在的章节被
+        # 标 _source_missing 跳过，点「补全」提示「无需补全」。
+        saved = [{"id": str(i), "title": f"书 第{i}集", "order_num": i} for i in range(1, 1731)]
+        current = [{"id": str(i), "title": f"书 第{i}集", "order_num": i} for i in range(1, 1671)]  # 本次只返回 1670
+
+        merged = SubscriptionManager.merge_subscription_chapters(saved, current)
+        # 远端回归：历史多出的 60 集保留（不标 _source_missing），参与检测
+        self.assertEqual(len(merged), 1730)
+        self.assertFalse(any(ch.get("_source_missing") for ch in merged))
+        # 顺序：本次在前、历史追加在后
+        self.assertEqual(merged[-1]["id"], "1730")
+
+    def test_merge_marks_removed_when_source_complete(self):
+        # 远端返回完整（>= 历史）时，历史多出的章节视为已从专辑移除（_source_missing 跳过）
+        saved = [{"id": "1", "title": "书 第1集"}, {"id": "2", "title": "书 第2集"}, {"id": "3", "title": "书 第3集"}]
+        current = [{"id": "1", "title": "书 第1集"}]  # 远端 1 集 + 新章 2、3？这里模拟远端增长
+        # 远端 3 集 >= 快照 3 集，历史多出的视为已移除
+        current_full = [{"id": "1", "title": "书 第1集"}, {"id": "4", "title": "书 第4集"}, {"id": "5", "title": "书 第5集"}]
+        merged = SubscriptionManager.merge_subscription_chapters(saved, current_full)
+        # 快照里 2、3 不在远端，但远端数量(3) >= 快照(3) → 标 _source_missing
+        missing = [ch for ch in merged if ch.get("_source_missing")]
+        self.assertEqual({ch["id"] for ch in missing}, {"2", "3"})
+
+    def test_diff_reports_regressed_history_as_missing(self):
+        # 端到端：快照 1730 集、远端本次只返回 1670 集（合并保留历史）、本地 1670 集
+        # → diff 必须报缺失 60，不能是「无需补全」
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "kw-73429992", "title": "酷我回归书", "platform": "酷我听书"}
+            saved = [{"id": str(i), "title": f"酷我回归书 第{i}集", "order_num": i} for i in range(1, 1731)]
+            subscription = manager.add_or_update(album, saved, download_tmp)
+            album_dir = Path(download_tmp) / "酷我听书" / "酷我回归书"
+            album_dir.mkdir(parents=True)
+            for i in range(1, 1671):
+                (album_dir / f"{i:04d}-酷我回归书 第{i}集.m4a").write_bytes(b"x" * 4096)
+            manager.build_audio_index(download_tmp, force=True)
+            # 本次远端 API 只返回 1670 集（模拟抖动）
+            current = [{"id": str(i), "title": f"酷我回归书 第{i}集", "order_num": i} for i in range(1, 1671)]
+            merged = SubscriptionManager.merge_subscription_chapters(saved, current)
+            diff = manager.diff_chapters(subscription, merged, download_tmp)
+            # 缺失 1671-1730 共 60 集（不会被「无需补全」掩盖）
+            missing_ids = {int(c["id"]) for c in diff["missing"]}
+            self.assertEqual(len(missing_ids), 60)
+            self.assertTrue(all(i in missing_ids for i in range(1671, 1731)))
+
+
 if __name__ == "__main__":
     unittest.main()
