@@ -924,9 +924,12 @@ class XimalayaManager:
         page_size: int = 200,
         log_summary: bool = True,
     ) -> List[Dict]:
-        """获取专辑章节列表 - 多 API 取章节数最多的一份
-        
+        """获取专辑章节列表 - 多 API 取章节数最多的一份，完整分页拉取全部章节
+
         分页加载（page_size<=1000）使用顺序请求，不在后台 QThread 里再开线程池。
+        首页返回的 exact_total 大于单页数量时自动继续翻页，直到取全所有章节——
+        修复订阅检测/整本下载只拿第一页 200 集、专辑超过 200 集后永远检测不到
+        新章节（显示「无需补全」但实际缺集）的问题。
         """
         with log_context(
             platform="喜马拉雅",
@@ -939,10 +942,55 @@ class XimalayaManager:
                 if page_size > 1000:
                     return self._fetch_chapters_concurrent(album_id, page_size)
 
-                chapters, _ = self.get_album_chapters_page(
+                chapters, exact_total = self.get_album_chapters_page(
                     album_id, page=page, page_size=page_size, log_summary=log_summary
                 )
-                return chapters
+                if not chapters:
+                    return chapters
+                if exact_total <= len(chapters):
+                    return chapters
+
+                # 专辑章节数超过单页数量：继续翻页直到取全（或连续无新增/超页数上限）
+                all_chapters = list(chapters)
+                seen = set()
+                for ch in all_chapters:
+                    key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                    if key:
+                        seen.add(key)
+                cursor = page + 1
+                total_pages = max(1, (exact_total + page_size - 1) // page_size) + 2
+                empty_runs = 0
+                while cursor <= total_pages and len(all_chapters) < exact_total and empty_runs < 3:
+                    more, _ = self.get_album_chapters_page(
+                        album_id, page=cursor, page_size=page_size, log_summary=False
+                    )
+                    if not more:
+                        empty_runs += 1
+                        cursor += 1
+                        continue
+                    added = 0
+                    for ch in more:
+                        key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                        if key and key in seen:
+                            continue
+                        if key:
+                            seen.add(key)
+                        all_chapters.append(ch)
+                        added += 1
+                    if added == 0:
+                        empty_runs += 1
+                    else:
+                        empty_runs = 0
+                    cursor += 1
+                if log_summary:
+                    log_event(
+                        "INFO",
+                        "章节分页加载完成",
+                        chapters=len(all_chapters),
+                        total=exact_total,
+                        pages=cursor - page,
+                    )
+                return all_chapters
 
             except RuntimeError as e:
                 if 'shutdown' in str(e).lower():
