@@ -69,6 +69,8 @@ class XimalayaManager:
         self.user_id = None
         self.user_token = None
         self._chapter_api_error = None
+        # 最近一次搜索命中的接口 URL（诊断用：判断结果顺序来自哪套搜索后端）
+        self.last_search_source = ""
         
         # 设置默认请求头（基于您原有文件的配置）
         self.session.headers.update({
@@ -2239,7 +2241,21 @@ class XimalayaManager:
                             # 尝试解析搜索结果
                             albums = self._parse_search_results(data)
                             if albums:
-                                print(f"✅ Cookie搜索成功: 找到 {len(albums)} 个专辑")
+                                self.last_search_source = config['url']
+                                # 记录命中接口：与官方 App 顺序对比时据此判断用的是哪套
+                                # 搜索后端（H5 页搜索最接近 App；legacy revision/search
+                                # 为旧接口；web revision/search/main 常被风控）
+                                try:
+                                    log_event(
+                                        "INFO",
+                                        "喜马拉雅搜索接口命中",
+                                        endpoint=config['url'],
+                                        results=len(albums),
+                                        query=keyword,
+                                    )
+                                except Exception:
+                                    pass
+                                print(f"✅ Cookie搜索成功: 找到 {len(albums)} 个专辑（接口 {config['url']}）")
                                 return albums
                                 
                         except Exception as json_error:

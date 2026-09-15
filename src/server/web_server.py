@@ -3159,7 +3159,13 @@ def api_search():
         annotate_album_library(normalize_album(item))
         for item in search_manager.search_books(keyword, platform)
     ]
-    return json_ok(results=results, count=len(results))
+    # 诊断信息：喜马拉雅结果顺序来自哪套搜索后端（便于与官方 App 对比）
+    search_source = ""
+    try:
+        search_source = str(getattr(search_manager.ximalaya_manager, "last_search_source", "") or "")
+    except Exception:
+        search_source = ""
+    return json_ok(results=results, count=len(results), search_source=search_source)
 
 
 @app.post("/api/album/chapters")
