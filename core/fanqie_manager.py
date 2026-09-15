@@ -754,6 +754,15 @@ class FanqieManager:
                                         print(f"❌ 处理章节数据失败: {e}")
                                         continue
                     
+                    # 完整性校验：对比章节总数与专辑声明的 chapter_count，
+                    # 接口截断/风控时告警（虽不阻断，但便于排查订阅漏更）
+                    try:
+                        declared_total = int((data.get('bookInfo') or {}).get('chapter_count') or 0)
+                        if declared_total > 0 and len(chapters) < declared_total:
+                            print(f"⚠️ 番茄章节不完整: {len(chapters)} < 声明 {declared_total}（接口可能截断）")
+                    except (TypeError, ValueError):
+                        pass
+
                     print(f"✅ 获取到 {len(chapters)} 个章节")
                     
                     # 实现客户端分页 - 根据请求的页码和页面大小返回对应章节
