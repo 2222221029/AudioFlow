@@ -651,7 +651,11 @@ class EnhancedSearchManager:
 
         if platform != 'all':
             results = self._search_platform_cached(keyword_stripped, platform)
-            return self._rank_search_results(keyword_stripped, results)
+            # 单平台搜索保留平台（App/官方接口）原生返回顺序，让结果排序与官方
+            # App 一致；此前用 _rank_search_results 以「播放量 65% 权重」重排，
+            # 会把热门但相关度低的专辑顶到前面，与 App 顺序不符。跨平台聚合搜索
+            # 仍需融合排序（见下方 all 分支）。
+            return self._dedupe_search_results(list(results or []))
 
         # 云听关键词能力不稳定，聚合搜索不调它；单独选择云听时仍保留链接/ID能力。
         grouped = {}

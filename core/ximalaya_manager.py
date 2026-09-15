@@ -287,7 +287,46 @@ class XimalayaManager:
                 if isinstance(value, list) and value and isinstance(value[0], dict):
                     if any(key in value[0] for key in ("title", "albumTitle", "albumInfo")):
                         return value
+        # 末位兜底：递归扫描任意嵌套层级，找形似专辑的数组。喜马拉雅 H5/App 搜索
+        # 响应结构时有变化（如结果嵌在 context/albumViews 深层），此前会导致
+        # 「返回 200 但解析到 0 个结果项」，从而退化到网页接口（顺序与 App 不一致）。
+        for candidate in XimalayaManager._deep_find_album_lists(payload):
+            if candidate:
+                return candidate
+        if payload is not data:
+            for candidate in XimalayaManager._deep_find_album_lists(data):
+                if candidate:
+                    return candidate
         return []
+
+    @staticmethod
+    def _looks_like_album(item) -> bool:
+        """判断一个 dict 是否形似专辑条目（兼容 albumInfo 包装）。"""
+        if not isinstance(item, dict):
+            return False
+        if isinstance(item.get("albumInfo"), dict):
+            return True
+        has_id = any(key in item for key in ("albumId", "album_id", "id"))
+        has_title = any(key in item for key in ("albumTitle", "album_title", "title", "name"))
+        return has_id and has_title
+
+    @classmethod
+    def _deep_find_album_lists(cls, payload, depth: int = 0) -> List[List[Dict]]:
+        """递归查找响应中形似专辑列表的数组，兼容任意嵌套结构。"""
+        if depth > 6:
+            return []
+        found: List[List[Dict]] = []
+        if isinstance(payload, dict):
+            for value in payload.values():
+                found.extend(cls._deep_find_album_lists(value, depth + 1))
+        elif isinstance(payload, list):
+            albums = [item for item in payload if cls._looks_like_album(item)]
+            if albums:
+                found.append(albums)
+            else:
+                for value in payload:
+                    found.extend(cls._deep_find_album_lists(value, depth + 1))
+        return found
     
     def set_cookie(self, cookie_string: str, is_server_cookie: bool = False):
         """设置Cookie
