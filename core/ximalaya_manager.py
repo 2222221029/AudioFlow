@@ -780,18 +780,19 @@ class XimalayaManager:
             ts = get_timestamp_ms_str()
             url = f"https://mobile.ximalaya.com/mobile/v1/album/info/ts-{ts}"
             params = {"albumId": album_id, "device": "android"}
+            mobile_credentials = getattr(self, "mobile_credentials", None) or {}
             headers = {
-                "User-Agent": (self.mobile_credentials or {}).get(
+                "User-Agent": mobile_credentials.get(
                     "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
                 ),
                 "Accept": "*/*",
                 "Cookie2": "$version=1",
                 "Accept-Language": "zh-CN,zh;q=0.9",
             }
-            mobile_cookie = ((self.mobile_credentials or {}).get("cookie") or "").strip() or self.cookie_string
+            mobile_cookie = (mobile_credentials.get("cookie") or "").strip() or getattr(self, "cookie_string", "") or ""
             if mobile_cookie:
                 headers["Cookie"] = mobile_cookie
-            x_tk = (self.mobile_credentials or {}).get("x_tk") or ""
+            x_tk = mobile_credentials.get("x_tk") or ""
             if x_tk:
                 headers["x-tk"] = x_tk
 
@@ -848,8 +849,9 @@ class XimalayaManager:
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                 'Referer': 'https://www.ximalaya.com/',
             }
-            if self.cookie_string:
-                headers['Cookie'] = self.cookie_string
+            cookie_string = getattr(self, "cookie_string", "") or ""
+            if cookie_string:
+                headers['Cookie'] = cookie_string
             
             response = self.session.get(url, params=params, headers=headers, timeout=10)
             

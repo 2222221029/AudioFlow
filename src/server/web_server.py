@@ -5426,6 +5426,131 @@ def api_personal(platform, feature):
         return json_error(str(e), status=500)
 
 
+def _load_ximalaya_personal_mobile_subscriptions(cookie, all_pages=False):
+    """用 App 移动端接口拉取喜马拉雅「我的订阅」列表。
+
+    替换被 WFP 风控的网页接口(revision/album/v1/sub/comprehensive)。
+    App 接口：subscribe/v6/subscribe/list/ts-{ms}（逆向自 com.ximalaya.ting.android）。
+    响应为 {data: {albums/list 或 data:[...]}} 的多种形态，解析时兼容处理。
+    """
+    from core.ximalaya_manager import XimalayaManager
+    from core.time_api import get_timestamp_ms_str
+
+    api = XimalayaManager()
+    api.set_cookie(cookie)
+    # 复用网页 Cookie 作为移动请求 Cookie；若配置了移动端凭证优先用它
+    mobile_credentials = getattr(api, "mobile_credentials", None) or {}
+    mobile_cookie = str(mobile_credentials.get("cookie") or "").strip() or cookie
+    ua = str(mobile_credentials.get("user_agent") or "ting_9.4.74.3(com.ximalaya.ting.android,Android)")
+    headers = {
+        "User-Agent": ua,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cookie": mobile_cookie,
+    }
+    x_tk = str(mobile_credentials.get("x_tk") or "").strip()
+    if x_tk:
+        headers["x-tk"] = x_tk
+
+    seen_ids = set()
+    items = []
+    page = 1
+    max_pages = 50 if all_pages else 1
+    page_size = 30
+    while page <= max_pages:
+        ts = get_timestamp_ms_str()
+        url = f"https://mobile.ximalaya.com/subscribe/v6/subscribe/list/ts-{ts}"
+        params = {"page": page, "count": page_size, "device": "android"}
+        try:
+            resp = api.session.get(url, params=params, headers=headers, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logging.warning("ximalaya mobile subscribe list failed: %s", exc)
+            break
+        if not isinstance(data, dict) or data.get("ret") not in (0, 200):
+            # 需要登录等错误：记录并停止（不是网页接口可回退的错误）
+            reason = str(data.get("msg") or data.get("message") or data.get("ret") or "") if isinstance(data, dict) else str(data)
+            logging.warning("ximalaya mobile subscribe list ret: %s", reason)
+            break
+        payload = data.get("data") or {}
+        if isinstance(payload, dict):
+            page_items = _extract_ximalaya_mobile_subscriptions(payload)
+            total = _to_int(payload.get("total") or payload.get("totalCount") or payload.get("count"), 0)
+        elif isinstance(payload, list):
+            page_items = _extract_ximalaya_mobile_subscriptions({"list": payload})
+            total = len(page_items)
+        else:
+            break
+        new_items = []
+        for item in page_items:
+            item_id = str(item.get("id") or "")
+            if not item_id or item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            new_items.append(item)
+        items.extend(new_items)
+        if not page_items or not new_items or len(page_items) < page_size or (total and len(items) >= total):
+            break
+        page += 1
+    return [it for it in items if it.get("id") and it.get("title")]
+
+
+def _extract_ximalaya_mobile_subscriptions(payload):
+    """从 App 订阅列表响应中提取专辑条目，兼容多种响应形态。"""
+    items = []
+    raw_lists = []
+    if isinstance(payload, dict):
+        for key in ("list", "albums", "albumList", "subscriptionList", "data", "items", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                raw_lists.append(value)
+        # 扁平化可能嵌套的 list
+        for lst in list(raw_lists):
+            for item in lst:
+                if isinstance(item, dict) and any(k in item for k in ("list", "albums", "albumList")):
+                    raw_lists.extend([v for v in item.values() if isinstance(v, list)])
+    elif isinstance(payload, list):
+        raw_lists.append(payload)
+
+    for raw in raw_lists:
+        for album in raw:
+            if not isinstance(album, dict):
+                continue
+            album_id = str(
+                album.get("albumId") or album.get("album_id") or album.get("id") or album.get("albumID") or ""
+            )
+            title = album.get("albumTitle") or album.get("album_title") or album.get("title") or album.get("name") or ""
+            anchor = album.get("anchor") if isinstance(album.get("anchor"), dict) else {}
+            cover = (
+                album.get("coverPath") or album.get("cover_path") or album.get("cover")
+                or album.get("albumCover") or album.get("coverLarge") or album.get("smallCover") or ""
+            )
+            author = (
+                album.get("anchorName") or album.get("nickname") or album.get("author")
+                or anchor.get("nickname") or anchor.get("anchorName") or ""
+            )
+            episodes = album.get("trackCount") or album.get("track_count") or album.get("episodes") or 0
+            items.append(_normalize_personal_item({
+                "id": album_id,
+                "title": title,
+                "author": author,
+                "cover": cover,
+                "episodes": episodes,
+            }, "喜马拉雅"))
+    # 去重
+    seen = set()
+    result = []
+    for item in items:
+        key = str(item.get("id") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        result.append(item)
+    return result
+
+
 def _load_ximalaya_personal(feature, all_pages=False):
     cookie = _get_personal_cookie("ximalaya")
     if not cookie:
@@ -5444,6 +5569,15 @@ def _load_ximalaya_personal(feature, all_pages=False):
         return []
     items = []
     if feature == "subscriptions":
+        # 优先使用 App 移动端订阅接口（subscribe/v6/subscribe/list），
+        # 可访问网页接口被 WFP 风控/受限的账号；失败时回退网页接口。
+        try:
+            mobile_items = _load_ximalaya_personal_mobile_subscriptions(cookie, all_pages=all_pages)
+            if mobile_items:
+                return mobile_items
+            logging.warning("ximalaya mobile subscribe list empty, fallback to web endpoint")
+        except Exception as exc:
+            logging.warning("ximalaya mobile subscribe list failed, fallback to web endpoint: %s", exc)
         # Ximalaya currently caps this endpoint around 30 records per page.
         # Requesting a larger size can still return 30, so use the cap as the
         # page size and keep paging until an empty/repeated/short page.
