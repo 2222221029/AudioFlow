@@ -1112,7 +1112,21 @@ class XimalayaManager:
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
             }
             
-            if self.cookie_string:
+            # 优先使用移动端 App 凭证（xmly_mobile）：喜马拉雅对部分专辑在无 App
+            # 登录态的移动接口请求下返回 ret=924「已下架」（实际是需 App 登录访问）。
+            # App 能正常播放/更新的专辑，用 App Cookie + x-tk + App UA 请求可绕过。
+            if self.mobile_credentials:
+                app_ua = self.mobile_credentials.get('user_agent') or ''
+                if app_ua:
+                    headers['User-Agent'] = app_ua
+                mobile_cookie = self.mobile_credentials.get('cookie') or ''
+                x_tk = self.mobile_credentials.get('x_tk') or ''
+                if x_tk:
+                    headers['x-tk'] = x_tk
+                if mobile_cookie:
+                    headers['Cookie'] = mobile_cookie
+                headers.setdefault('Cookie2', '$version=1')
+            elif self.cookie_string:
                 headers['Cookie'] = self.cookie_string
             
             response = self.session.get(new_api_url, params=params, headers=headers, timeout=15)
@@ -1175,7 +1189,19 @@ class XimalayaManager:
                 'Referer': 'https://www.ximalaya.com/'
             }
             
-            if self.cookie_string:
+            # 与 new_api 一致：优先使用移动端 App 凭证绕过专辑级 924 限制
+            if self.mobile_credentials:
+                app_ua = self.mobile_credentials.get('user_agent') or ''
+                if app_ua:
+                    headers['User-Agent'] = app_ua
+                mobile_cookie = self.mobile_credentials.get('cookie') or ''
+                x_tk = self.mobile_credentials.get('x_tk') or ''
+                if x_tk:
+                    headers['x-tk'] = x_tk
+                if mobile_cookie:
+                    headers['Cookie'] = mobile_cookie
+                headers.setdefault('Cookie2', '$version=1')
+            elif self.cookie_string:
                 headers['Cookie'] = self.cookie_string
             
             response = self.session.get(url, headers=headers, timeout=20)
