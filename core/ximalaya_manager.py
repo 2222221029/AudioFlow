@@ -49,6 +49,10 @@ def parse_ximalaya_album_id(value) -> Optional[str]:
     return None
 
 
+class XimalayaChapterError(Exception):
+    """喜马拉雅章节接口返回非 0 状态（如下架 924、需登录等）。"""
+
+
 class XimalayaManager:
     """喜马拉雅管理器"""
     
@@ -64,6 +68,7 @@ class XimalayaManager:
         self.session = requests.Session()
         self.user_id = None
         self.user_token = None
+        self._chapter_api_error = None
         
         # 设置默认请求头（基于您原有文件的配置）
         self.session.headers.update({
@@ -775,8 +780,16 @@ class XimalayaManager:
                 'pageNum': 1,
                 'pageSize': 1  # 只获取第一页来判断专辑信息
             }
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.ximalaya.com/',
+            }
+            if self.cookie_string:
+                headers['Cookie'] = self.cookie_string
             
-            response = self.session.get(url, params=params, timeout=10)
+            response = self.session.get(url, params=params, headers=headers, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -864,6 +877,11 @@ class XimalayaManager:
         exact_total = max(api_totals.values(), default=0)
         if platform_verbose_enabled() and len({value for value in api_totals.values() if value}) > 1:
             log_event("WARN", "章节接口返回的总数不一致，采用最大值", api_totals=api_totals, total=exact_total)
+        # 所有章节接口都无数据且 page==1 时，若记录了明确的非 0 状态（如下架 924/需登录），
+        # 抛出可识别异常供上层提示，避免静默「暂无章节」让用户无法判断原因。
+        if page == 1 and not any(api_results.values()) and self._chapter_api_error:
+            ret, msg = self._chapter_api_error
+            raise XimalayaChapterError(f"喜马拉雅章节接口返回异常(ret={ret}): {msg}")
         return api_results, exact_total
 
     def _pick_best_chapter_list(
@@ -1090,8 +1108,12 @@ class XimalayaManager:
             
             if response.status_code == 200:
                 data = response.json()
-                
-                if data.get('ret') == 0:
+                ret = data.get('ret')
+                if ret != 0:
+                    # 记录上游错误（如下架 924/需登录），供 multi_api 汇总诊断
+                    self._chapter_api_error = (ret, str(data.get('msg') or ''))
+                    return [], 0
+                if ret == 0:
                     page_data = data.get('data', {})
                     tracks = page_data.get('list', [])
                     exact_total = self._extract_chapter_total(page_data)
@@ -1188,7 +1210,12 @@ class XimalayaManager:
             return [], 0
     
     def _fetch_chapters_web_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
-        """Web API获取章节 (revision/album/v1/getTracksList)"""
+        """Web API获取章节 (revision/album/v1/getTracksList)
+
+        注意：网页接口(revision/album/v1/getTracksList)最需要登录 Cookie——对需要
+        登录/VIP/受限的专辑，无 Cookie 时返回 ret=924「已下架」。此前漏带 Cookie，
+        导致这类专辑的 web_api 恒失败。此处与 new_api/old_api 一致带上 Cookie。
+        """
         try:
             url = f"{self.api_url}/revision/album/v1/getTracksList"
             params = {
@@ -1196,13 +1223,25 @@ class XimalayaManager:
                 'pageNum': page,
                 'pageSize': page_size
             }
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.ximalaya.com/',
+            }
+            if self.cookie_string:
+                headers['Cookie'] = self.cookie_string
             
-            response = self.session.get(url, params=params, timeout=20)
+            response = self.session.get(url, params=params, headers=headers, timeout=20)
             
             if response.status_code == 200:
                 data = response.json()
-                
-                if data.get('ret') == 0:
+                ret = data.get('ret')
+                if ret != 0:
+                    # 记录上游错误（如下架 924/需登录），供 multi_api 汇总诊断
+                    self._chapter_api_error = (ret, str(data.get('msg') or ''))
+                    return [], 0
+                if ret == 0:
                     tracks_data = data.get('data', {})
                     tracks = tracks_data.get('tracks', [])
                     exact_total = self._extract_chapter_total(tracks_data)
