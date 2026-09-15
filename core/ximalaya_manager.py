@@ -940,7 +940,54 @@ class XimalayaManager:
         ):
             try:
                 if page_size > 1000:
-                    return self._fetch_chapters_concurrent(album_id, page_size)
+                    concurrent = self._fetch_chapters_concurrent(album_id, page_size)
+                    if concurrent:
+                        return concurrent
+                    # 并发路径因 get_album_detail 拿不到总数而返回空（网页详情接口被风控/
+                    # WFP 校验失败时 episodes=0），此时回退到串行分页：它靠首页 exact_total
+                    # 翻页、不依赖详情接口，避免「正在加载章节→暂无章节」。
+                    log_event("WARN", "并发大页加载为空，回退到串行分页加载")
+                    chapters, exact_total = self.get_album_chapters_page(
+                        album_id, page=page, page_size=200, log_summary=log_summary
+                    )
+                    if not chapters:
+                        return chapters
+                    if exact_total <= len(chapters):
+                        return chapters
+                    all_chapters = list(chapters)
+                    seen = set()
+                    for ch in all_chapters:
+                        key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                        if key:
+                            seen.add(key)
+                    cursor = 2
+                    total_pages = max(1, (exact_total + 199) // 200) + 2
+                    empty_runs = 0
+                    while cursor <= total_pages and len(all_chapters) < exact_total and empty_runs < 3:
+                        more, _ = self.get_album_chapters_page(
+                            album_id, page=cursor, page_size=200, log_summary=False
+                        )
+                        if not more:
+                            empty_runs += 1
+                            cursor += 1
+                            continue
+                        added = 0
+                        for ch in more:
+                            key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                            if key and key in seen:
+                                continue
+                            if key:
+                                seen.add(key)
+                            all_chapters.append(ch)
+                            added += 1
+                        if added == 0:
+                            empty_runs += 1
+                        else:
+                            empty_runs = 0
+                        cursor += 1
+                    if log_summary:
+                        log_event("INFO", "串行分页回退加载完成", chapters=len(all_chapters), total=exact_total)
+                    return all_chapters
 
                 chapters, exact_total = self.get_album_chapters_page(
                     album_id, page=page, page_size=page_size, log_summary=log_summary
