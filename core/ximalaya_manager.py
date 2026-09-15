@@ -771,8 +771,70 @@ class XimalayaManager:
             print(f"❌ 搜索异常: {e}")
             return []
     
+    def _fetch_album_info_mobile_v3(self, album_id: str) -> Optional[Dict]:
+        """App 移动端专辑详情接口 mobile/v1/album/info/ts-{ms}。
+
+        与 v3 章节接口配套，无需 xm-sign，可访问网页详情接口 WFP 407 拒绝的专辑。
+        """
+        try:
+            ts = get_timestamp_ms_str()
+            url = f"https://mobile.ximalaya.com/mobile/v1/album/info/ts-{ts}"
+            params = {"albumId": album_id, "device": "android"}
+            headers = {
+                "User-Agent": (self.mobile_credentials or {}).get(
+                    "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
+                ),
+                "Accept": "*/*",
+                "Cookie2": "$version=1",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            }
+            mobile_cookie = ((self.mobile_credentials or {}).get("cookie") or "").strip() or self.cookie_string
+            if mobile_cookie:
+                headers["Cookie"] = mobile_cookie
+            x_tk = (self.mobile_credentials or {}).get("x_tk") or ""
+            if x_tk:
+                headers["x-tk"] = x_tk
+
+            response = self.session.get(url, params=params, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            if not isinstance(data, dict) or not data.get("albumId"):
+                return None
+            is_finished_raw = data.get("isFinished")
+            return {
+                "id": str(album_id),
+                "title": data.get("title") or data.get("customTitle") or "",
+                "author": data.get("nickname") or data.get("anchorName") or data.get("announcer") or "",
+                "platform": "喜马拉雅",
+                "cover": self._extract_cover_url(data),
+                "plays": data.get("playTimes") or data.get("playCount") or 0,
+                "episodes": data.get("trackCount") or data.get("track_count") or 0,
+                "description": data.get("intro") or data.get("shortIntro") or "",
+                "category": data.get("categoryTitle") or data.get("category_title") or "",
+                "tags": data.get("tags") or [],
+                "created_at": str(data.get("createdAt") or data.get("createTime") or ""),
+                "updated_at": str(data.get("updatedAt") or ""),
+                "is_finished": bool(is_finished_raw) if isinstance(is_finished_raw, bool) else (
+                    str(is_finished_raw).lower() in ("1", "true") if is_finished_raw is not None else False
+                ),
+            }
+        except Exception as e:
+            print(f"⚠️ 移动端v3专辑详情接口异常: {e}")
+            return None
+
     def get_album_detail(self, album_id: str) -> Optional[Dict]:
-        """获取专辑详情"""
+        """获取专辑详情
+
+        优先使用 App 移动端 album/info 接口（无需 xm-sign、可访问网页接口 WFP 407
+        拒绝的受限专辑），失败时回退网页 getTracksList。
+        """
+        try:
+            mobile_detail = self._fetch_album_info_mobile_v3(album_id)
+            if mobile_detail:
+                return mobile_detail
+        except Exception:
+            pass
         try:
             url = f"{self.api_url}/revision/album/v1/getTracksList"
             params = {
@@ -848,6 +910,73 @@ class XimalayaManager:
             print(f"❌ 获取专辑详情异常: {e}")
             return None
     
+    def _fetch_chapters_mobile_v3(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
+        """App 移动端章节接口 v3 - 可访问网页/老接口标记为「已下架」(ret=924) 的专辑。
+
+        喜马拉雅 Android App 实际使用 mobile/v1/album/track/v3/ts-{ms} 获取专辑章节。
+        该接口不需要 xm-sign 动态签名（普通 App UA + Cookie 即可返回数据），并能
+        访问 App 内正常播放但老接口(web_api WFP 407 / mobile v1 924)拒绝的专辑。
+        返回 (chapters, totalCount)，isAsc=true 正序，order 按列表位置编号。
+        """
+        try:
+            ts = get_timestamp_ms_str()
+            url = f"https://mobile.ximalaya.com/mobile/v1/album/track/v3/ts-{ts}"
+            params = {
+                "albumId": book_id,
+                "device": "android",
+                "pageId": page,
+                "pageSize": page_size,
+                "isAsc": "true",
+            }
+            headers = {
+                "User-Agent": (self.mobile_credentials or {}).get(
+                    "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
+                ),
+                "Accept": "*/*",
+                "Cookie2": "$version=1",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            }
+            mobile_cookie = ((self.mobile_credentials or {}).get("cookie") or "").strip() or self.cookie_string
+            if mobile_cookie:
+                headers["Cookie"] = mobile_cookie
+            x_tk = (self.mobile_credentials or {}).get("x_tk") or ""
+            if x_tk:
+                headers["x-tk"] = x_tk
+
+            response = self.session.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code != 200:
+                return [], 0
+            data = response.json()
+            if data.get("ret") != 0:
+                self._chapter_api_error = (data.get("ret"), str(data.get("msg") or ""))
+                return [], 0
+            page_data = data.get("data") or {}
+            tracks = page_data.get("list") or []
+            total = self._extract_chapter_total(page_data) or int(page_data.get("totalCount") or 0)
+            chapters = []
+            for idx, item in enumerate(tracks, start=(page - 1) * page_size + 1):
+                chapters.append({
+                    "id": str(item.get("trackId") or ""),
+                    "title": item.get("title") or "",
+                    "duration": str(item.get("duration") or "0"),
+                    "size": "",
+                    "plays": item.get("playCount") or 0,
+                    "url": item.get("playUrl64") or item.get("playPathHq") or item.get("playPathAacv224") or "",
+                    "album": book_id,
+                    "order_num": idx,
+                    "is_paid": item.get("isPaid") or item.get("is_paid"),
+                    "is_vip": item.get("isVip") or item.get("vip") or item.get("vipOnly"),
+                    "is_free": item.get("isFree") or item.get("is_free"),
+                    "price": item.get("price") or 0,
+                    "created_at": item.get("createdAt") or item.get("createTime") or "",
+                    "is_finished": item.get("isFinished") or item.get("is_finished"),
+                    "play_url": item.get("playUrl64") or "",
+                })
+            return chapters, total
+        except Exception as e:
+            print(f"⚠️ 移动端v3章节接口异常: {e}")
+            return [], 0
+
     def _fetch_chapters_multi_api(self, album_id: str, page: int, page_size: int) -> Tuple[Dict[str, List[Dict]], int]:
         """顺序调用多个章节 API（避免在 QThread 内用线程池触发 interpreter shutdown）"""
         api_results = {}
@@ -862,6 +991,13 @@ class XimalayaManager:
         # 每个接口的错误码单独记录（old/new/web 各自），便于定位是哪个接口被
         # 风控（如 web_api 的 WFP 407、new_api 的旧 UA 限制、924 下架等）。
         self._api_ret_codes: dict = {}
+        # App 移动端 v3 接口最优先：无需 xm-sign、可访问老接口判定「已下架」的专辑
+        fetchers = [
+            ('mobile_v3', self._fetch_chapters_mobile_v3),
+            ('old_api', self._fetch_chapters_old_api),
+            ('new_api', self._fetch_chapters_new_api),
+            ('web_api', self._fetch_chapters_web_api),
+        ]
         for api_name, fetcher in fetchers:
             try:
                 self._chapter_api_error = None
