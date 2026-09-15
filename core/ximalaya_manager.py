@@ -859,8 +859,12 @@ class XimalayaManager:
             ('new_api', self._fetch_chapters_new_api),
             ('web_api', self._fetch_chapters_web_api),
         ]
+        # 每个接口的错误码单独记录（old/new/web 各自），便于定位是哪个接口被
+        # 风控（如 web_api 的 WFP 407、new_api 的旧 UA 限制、924 下架等）。
+        self._api_ret_codes: dict = {}
         for api_name, fetcher in fetchers:
             try:
+                self._chapter_api_error = None
                 result = fetcher(album_id, page, page_size)
                 if isinstance(result, tuple):
                     chapters, total = result
@@ -868,10 +872,17 @@ class XimalayaManager:
                     chapters, total = result, 0
                 api_results[api_name] = list(chapters or [])
                 api_totals[api_name] = max(0, int(total or 0))
+                if self._chapter_api_error:
+                    self._api_ret_codes[api_name] = self._chapter_api_error
             except Exception as e:
                 api_results[api_name] = []
                 api_totals[api_name] = 0
                 api_errors[api_name] = str(e)
+                self._api_ret_codes[api_name] = ("exc", str(e)[:120])
+        if self._api_ret_codes and platform_verbose_enabled():
+            log_event("WARN", "章节接口状态码", api_ret_codes={
+                k: f"{r[0]}:{r[1][:60]}" for k, r in self._api_ret_codes.items()
+            })
         if api_errors and platform_verbose_enabled():
             log_event("WARN", "部分章节接口调用异常", api_errors=api_errors)
         exact_total = max(api_totals.values(), default=0)

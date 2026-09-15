@@ -24,6 +24,7 @@ from core.cookie_manager import CookieManager
 from core.download_worker import DownloadWorker
 from core.enhanced_search_manager import EnhancedSearchManager
 from core.notification_manager import NotificationManager
+from core.ximalaya_manager import XimalayaChapterError
 from core.wecom_crypto import WeComCrypto, parse_wecom_message
 from core.lrts_manager import (
     LrtsLoginSessionError,
@@ -934,7 +935,14 @@ def _run_subscription_check(sid, queue_missing=False, source="subscription-check
             voice = resolve_voice_for_album(album, (get_album_voices(album) or [None])[0])
         chapters = search_manager.qimao_manager.get_chapters(str(album_id), voice) if voice else search_manager.qimao_manager.get_chapters(str(album_id))
     else:
-        chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        try:
+            chapters = search_manager.get_album_chapters(str(album_id), platform) or []
+        except XimalayaChapterError as exc:
+            # 喜马拉雅章节接口被风控(407 WFP)或专辑受限(924 下架)：不中断订阅检测，
+            # 回退历史快照继续 diff（本地已下载章节不受影响），并记录原因。
+            chapters = []
+            set_progress(f"喜马拉雅章节获取受限：{exc}")
+            logging.warning("subscription check: ximalaya chapters restricted: %s", exc)
     chapters = [normalize_chapter(chapter, index) for index, chapter in enumerate(chapters or [], start=1)]
     if not chapters and item.get("chapters"):
         chapters = item.get("chapters") or []
@@ -3216,11 +3224,19 @@ def api_chapters():
             }
             if platform in ("网易云听书", "netease"):
                 chapter_page_options["expected_total"] = _to_int(album.get("episodes"))
-            raw_chapters, exact_total = search_manager.get_album_chapters_page(
-                str(album_id),
-                platform,
-                **chapter_page_options,
-            )
+            try:
+                raw_chapters, exact_total = search_manager.get_album_chapters_page(
+                    str(album_id),
+                    platform,
+                    **chapter_page_options,
+                )
+            except XimalayaChapterError as exc:
+                # 喜马拉雅章节接口被风控(如 WFP 407)或专辑受限(924 下架)时，
+                # 返回明确错误而非 500/「暂无章节」，便于用户判断原因
+                return json_error(f"喜马拉雅获取章节失败：{exc}")
+            except Exception as exc:
+                logging.warning("album chapters page failed: %s", exc)
+                return json_error(f"获取章节失败：{exc}")
     if platform in ("网易云听书", "netease") and raw_chapters:
         first_chapter = next((item for item in raw_chapters if isinstance(item, dict)), {})
         raw_radio = first_chapter.get("_radio") if isinstance(first_chapter, dict) else None
