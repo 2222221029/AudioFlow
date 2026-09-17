@@ -127,7 +127,6 @@ function initialMobileView() {
       accounts: 'cookies',
       personal: 'personal',
       notifications: 'notifications',
-      agent: 'agent',
       themes: 'themes',
       settings: 'settings',
       more: 'more',
@@ -202,12 +201,6 @@ export function useAudioFlowApp() {
   const [subscriptionScheduler, setSubscriptionScheduler] = useState({});
   const [subscriptionJobs, setSubscriptionJobs] = useState({});
   const [notificationConfig, setNotificationConfig] = useState({enabled: false, scenes: {}, services: [], available_channels: []});
-  const [agentStatus, setAgentStatus] = useState({config: {enabled: false, provider: 'deepseek', runner: 'native', providers: {}, developer_agent: {}}, harness: {}, developer: {}, tools: []});
-  const [agentSessions, setAgentSessions] = useState([]);
-  const [agentSession, setAgentSession] = useState(null);
-  const [renamePlans, setRenamePlans] = useState([]);
-  const [renameFolders, setRenameFolders] = useState([]);
-  const [renameRules, setRenameRules] = useState({packs: [], effective: {rules: {}, applied: []}});
   const [cookies, setCookies] = useState({});
   const [config, setConfig] = useState({});
   const [logs, setLogs] = useState([]);
@@ -228,7 +221,6 @@ export function useAudioFlowApp() {
   const foregroundRefreshRef = useRef(0);
   const searchRequestRef = useRef(0);
   const albumRequestRef = useRef(0);
-  const renameAiPollersRef = useRef({});
   const hasCachedDataRef = useRef(downloads.length > 0 || subscriptions.length > 0);
   const initializedRef = useRef(false);
 
@@ -1075,248 +1067,6 @@ export function useAudioFlowApp() {
     return data.config || {};
   }, []);
 
-  const loadAgent = useCallback(async () => {
-    const [statusData, sessionsData, plansData, rulesData] = await Promise.all([
-      api('/api/agent/status'),
-      api('/api/agent/sessions'),
-      api('/api/rename-plans'),
-      api('/api/rename-rules'),
-    ]);
-    setAgentStatus(statusData || {});
-    setAgentSessions(sessionsData.sessions || []);
-    setRenamePlans(plansData.plans || []);
-    setRenameRules(rulesData || {packs: [], effective: {rules: {}, applied: []}});
-    return statusData;
-  }, []);
-
-  const reloadRenamePlans = useCallback(async () => {
-    const data = await api('/api/rename-plans');
-    setRenamePlans(data.plans || []);
-    return data.plans || [];
-  }, []);
-
-  const loadRenameFolders = useCallback(async () => {
-    const data = await api('/api/rename-plans/folders');
-    const folders = data.folders || [];
-    setRenameFolders(folders);
-    return folders;
-  }, []);
-
-  const analyzeRenameFolder = useCallback(async (relativePath, albumTitle) => runBusy('renameFolder:' + relativePath, async () => {
-    const data = await api('/api/rename-plans/analyze-folder', {
-      method: 'POST',
-      body: {relative_path: relativePath, album_title: albumTitle || undefined},
-    });
-    await reloadRenamePlans();
-    showToast('本地文件夹整理计划已生成', 'ok');
-    return data.plan;
-  }), [reloadRenamePlans, runBusy, showToast]);
-
-  const regenerateRenamePlan = useCallback(async (plan) => runBusy('renamePlan:' + plan.id, async () => {
-    const data = await api('/api/rename-plans/analyze', {
-      method: 'POST',
-      body: {task_id: plan.task_id, replace: true},
-    });
-    await reloadRenamePlans();
-    showToast('整理计划已按最新规则重新生成', 'ok');
-    return data.plan;
-  }), [reloadRenamePlans, runBusy, showToast]);
-
-  const reviewRenamePlan = useCallback(async (planId, choices) => runBusy('renamePlan:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/review`, {method: 'POST', body: choices});
-    await reloadRenamePlans();
-    showToast(data.plan?.status === 'pending_confirmation' ? '复核完成，等待最终确认' : '复核选择已保存', 'ok');
-    return data.plan;
-  }), [reloadRenamePlans, runBusy, showToast]);
-
-  const resolveRenamePlanSafe = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/resolve-safe`, {method: 'POST', body: {}});
-    await reloadRenamePlans();
-    showToast('风险和特殊文件将保持不动', 'ok');
-    return data.plan;
-  }), [reloadRenamePlans, runBusy, showToast]);
-
-  const confirmRenamePlan = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/confirm`, {
-      method: 'POST',
-      body: {},
-      timeoutMs: 15 * 60 * 1000,
-    });
-    await reloadRenamePlans();
-    showToast('有声书整理完成', 'ok');
-    return data.plan;
-  }), [reloadRenamePlans, runBusy, showToast]);
-
-  const cancelRenamePlan = useCallback(async (planId) => runBusy('renamePlan:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/cancel`, {method: 'POST', body: {}});
-    await reloadRenamePlans();
-    showToast('整理计划已取消', 'ok');
-    return data.plan;
-  }), [reloadRenamePlans, runBusy, showToast]);
-
-  const reloadRenameRules = useCallback(async () => {
-    const data = await api('/api/rename-rules');
-    setRenameRules(data || {packs: [], effective: {rules: {}, applied: []}});
-    return data;
-  }, []);
-
-  const saveRenameRuleDraft = useCallback(async (draft) => runBusy('renameRules', async () => {
-    const data = await api('/api/rename-rules/drafts', {method: 'POST', body: draft});
-    await reloadRenameRules();
-    showToast('重命名规则草稿已保存', 'ok');
-    return data.rule;
-  }), [reloadRenameRules, runBusy, showToast]);
-
-  const activateRenameRule = useCallback(async (ruleId) => runBusy('renameRules', async () => {
-    const data = await api(`/api/rename-rules/${encodeURIComponent(ruleId)}/activate`, {method: 'POST', body: {}});
-    await reloadRenameRules();
-    showToast('规则已启用，只影响之后生成的新计划', 'ok');
-    return data.rule;
-  }), [reloadRenameRules, runBusy, showToast]);
-
-  const deleteRenameRuleDraft = useCallback(async (ruleId) => runBusy('renameRules', async () => {
-    await api(`/api/rename-rules/${encodeURIComponent(ruleId)}`, {method: 'DELETE'});
-    await reloadRenameRules();
-    showToast('规则草稿已删除', 'ok');
-  }), [reloadRenameRules, runBusy, showToast]);
-
-  const testRenameRules = useCallback(async (rules, albumTitle, samples) => {
-    const data = await api('/api/rename-rules/test', {method: 'POST', body: {rules, album_title: albumTitle, samples}});
-    return data.results || [];
-  }, []);
-
-  const analyzeRenamePlanAI = useCallback(async (planId) => runBusy('renameAI:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/ai-analyze`, {method: 'POST', body: {}, timeoutMs: 3 * 60 * 1000});
-    setRenamePlans((prev) => prev.map((plan) => plan.id === planId ? data.plan : plan));
-    showToast(`AI 复核完成：${data.plan?.ai_analysis?.suggestions?.length || 0} 条建议`, 'ok');
-    return data.plan;
-  }), [runBusy, showToast]);
-
-  const startRenameAIClean = useCallback(async (planId) => {
-    try {
-      const data = await runBusy('renameAI:' + planId, async () => api(`/api/rename-plans/${encodeURIComponent(planId)}/ai-clean`, {method: 'POST', body: {}}));
-      if (data.plan) setRenamePlans((prev) => prev.map((plan) => plan.id === planId ? data.plan : plan));
-      if (renameAiPollersRef.current[planId]) clearInterval(renameAiPollersRef.current[planId]);
-      if (['completed', 'failed'].includes(data.plan?.ai_clean?.status)) {
-        showToast(data.plan?.ai_clean?.status === 'failed' ? '全量 AI 清洗失败' : '全量 AI 清洗已完成', data.plan?.ai_clean?.status === 'failed' ? 'err' : 'ok');
-        return data.plan;
-      }
-      const poll = window.setInterval(async () => {
-        const current = await api(`/api/rename-plans/${encodeURIComponent(planId)}`).catch(() => null);
-        if (!current?.plan) return;
-        setRenamePlans((prev) => prev.map((plan) => plan.id === planId ? current.plan : plan));
-        const status = current.plan.ai_clean?.status;
-        if (['completed', 'failed'].includes(status)) {
-          clearInterval(poll);
-          delete renameAiPollersRef.current[planId];
-          showToast(status === 'failed' ? `全量 AI 清洗失败：${current.plan.ai_clean?.error || ''}` : '全量 AI 清洗已完成', status === 'failed' ? 'err' : 'ok');
-        }
-      }, 3000);
-      renameAiPollersRef.current[planId] = poll;
-      return data.plan;
-    } catch (error) {
-      showToast(error.message, 'err');
-      return null;
-    }
-  }, [runBusy, showToast]);
-
-  const applyAIRenameSuggestions = useCallback(async (planId, suggestionIds) => runBusy('renameAI:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/ai-apply`, {method: 'POST', body: {suggestion_ids: suggestionIds}});
-    setRenamePlans((prev) => prev.map((plan) => plan.id === planId ? data.plan : plan));
-    showToast('选中的 AI 建议已写入计划，仍需最终确认', 'ok');
-    return data.plan;
-  }), [runBusy, showToast]);
-
-  const createAIRenameRuleDraft = useCallback(async (planId) => runBusy('renameAI:' + planId, async () => {
-    const data = await api(`/api/rename-plans/${encodeURIComponent(planId)}/ai-rule-draft`, {method: 'POST', body: {}, timeoutMs: 3 * 60 * 1000});
-    await reloadRenameRules();
-    showToast('AI 规则草稿已生成，请测试后启用', 'ok');
-    return data.rule;
-  }), [reloadRenameRules, runBusy, showToast]);
-
-  const loadAgentSession = useCallback(async (sessionId) => {
-    if (!sessionId) {
-      setAgentSession(null);
-      return null;
-    }
-    const data = await api('/api/agent/sessions/' + encodeURIComponent(sessionId));
-    setAgentSession(data.session || null);
-    return data.session || null;
-  }, []);
-
-  const saveAgentConfig = useCallback(async (nextConfig) => {
-    return runBusy('agentConfig', async () => {
-      const data = await api('/api/agent/config', {method: 'POST', body: nextConfig});
-      setAgentStatus((prev) => ({...prev, config: data.config || {}, developer: data.developer || prev.developer || {}}));
-      showToast(data.developer?.last_error ? `配置已保存，代码 Agent 启动失败：${data.developer.last_error}` : 'Agent 配置已保存', data.developer?.last_error ? 'err' : 'ok');
-      return data.config;
-    }).catch((error) => {
-      showToast('保存失败：' + error.message, 'err');
-      throw error;
-    });
-  }, [runBusy, showToast]);
-
-  const startDeveloperAgent = useCallback(async () => {
-    return runBusy('developerAgent', async () => {
-      const data = await api('/api/agent/developer/start', {method: 'POST', body: {}});
-      setAgentStatus((prev) => ({...prev, developer: data.status || {}}));
-      showToast('飞书完整代码 Agent 已启动', 'ok');
-      return data.status;
-    }).catch((error) => {
-      showToast('启动失败：' + error.message, 'err');
-      throw error;
-    });
-  }, [runBusy, showToast]);
-
-  const stopDeveloperAgent = useCallback(async () => {
-    return runBusy('developerAgent', async () => {
-      const data = await api('/api/agent/developer/stop', {method: 'POST', body: {}});
-      setAgentStatus((prev) => ({...prev, developer: data.status || {}}));
-      showToast('飞书完整代码 Agent 已停止', 'ok');
-      return data.status;
-    });
-  }, [runBusy, showToast]);
-
-  const testAgent = useCallback(async () => {
-    return runBusy('agentTest', async () => {
-      const data = await api('/api/agent/test', {method: 'POST', body: {}});
-      showToast(data.result?.reply || '模型连接成功', 'ok');
-      return data.result;
-    }).catch((error) => {
-      showToast('连接失败：' + error.message, 'err');
-      throw error;
-    });
-  }, [runBusy, showToast]);
-
-  const sendAgentMessage = useCallback(async (message) => {
-    const previousSession = agentSession;
-    const optimisticUser = {role: 'user', content: message, created_at: Date.now() / 1000, pending: true};
-    setAgentSession((prev) => ({
-      ...(prev || {id: 'pending', title: message.slice(0, 36), created_at: Date.now() / 1000}),
-      messages: [...(prev?.messages || []), optimisticUser],
-    }));
-    return runBusy('agentChat', async () => {
-      const data = await api('/api/agent/chat', {method: 'POST', body: {message, session_id: agentSession?.id}});
-      const completed = data.session ? {...data.session, last_latency_ms: data.latency_ms, response_mode: data.mode} : null;
-      setAgentSession(completed);
-      if (completed) {
-        const summary = Object.fromEntries(Object.entries(completed).filter(([key]) => key !== 'messages'));
-        setAgentSessions((prev) => [summary, ...prev.filter((item) => item.id !== completed.id)]);
-      }
-      return data.message;
-    }).catch((error) => {
-      setAgentSession(previousSession);
-      showToast('Agent 请求失败：' + error.message, 'err');
-      throw error;
-    });
-  }, [agentSession, runBusy, showToast]);
-
-  const deleteAgentSession = useCallback(async (sessionId) => {
-    await api('/api/agent/sessions/' + encodeURIComponent(sessionId), {method: 'DELETE'});
-    if (agentSession?.id === sessionId) setAgentSession(null);
-    const data = await api('/api/agent/sessions');
-    setAgentSessions(data.sessions || []);
-  }, [agentSession?.id]);
 
   const checkServiceConnection = useCallback(async ({reload = false} = {}) => {
     setServiceState('checking');
@@ -1487,10 +1237,6 @@ export function useAudioFlowApp() {
     return () => timers.forEach(clearTimeout);
   }, [loadDownloads, loadSubscriptions, showToast, subscriptionJobs]);
 
-  useEffect(() => () => {
-    Object.values(renameAiPollersRef.current).forEach((timer) => clearInterval(timer));
-  }, []);
-
   return {
     page,
     setPage,
@@ -1527,12 +1273,6 @@ export function useAudioFlowApp() {
     subscriptionScheduler,
     subscriptionJobs,
     notificationConfig,
-    agentStatus,
-    agentSessions,
-    agentSession,
-    renamePlans,
-    renameFolders,
-    renameRules,
     cookies,
     config,
     logs,
@@ -1622,31 +1362,6 @@ export function useAudioFlowApp() {
       clearEvents,
       loadDiagnostics,
       loadNotifications,
-      loadAgent,
-      loadAgentSession,
-      reloadRenamePlans,
-      loadRenameFolders,
-      analyzeRenameFolder,
-      reloadRenameRules,
-      regenerateRenamePlan,
-      reviewRenamePlan,
-      resolveRenamePlanSafe,
-      confirmRenamePlan,
-      cancelRenamePlan,
-      saveRenameRuleDraft,
-      activateRenameRule,
-      deleteRenameRuleDraft,
-      testRenameRules,
-      analyzeRenamePlanAI,
-      startRenameAIClean,
-      applyAIRenameSuggestions,
-      createAIRenameRuleDraft,
-      saveAgentConfig,
-      startDeveloperAgent,
-      stopDeveloperAgent,
-      testAgent,
-      sendAgentMessage,
-      deleteAgentSession,
       checkServiceConnection,
       saveNotifications,
       testNotifications,

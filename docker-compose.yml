@@ -1,6 +1,10 @@
 services:
   audioflow:
-    build: .
+    build:
+      context: .
+      # 全部使用官方源：Dockerfile 默认 npmjs.org / pypi.org / deb.debian.org，
+      # 构建环境能访问外网（GitHub Actions、直连或代理）时速度最快。
+      # 如需国内镜像源可自行加 build.args 覆盖（如 PIP_INDEX_URL 传阿里云）。
     container_name: audioflow
     restart: unless-stopped
     environment:

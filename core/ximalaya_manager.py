@@ -49,6 +49,10 @@ def parse_ximalaya_album_id(value) -> Optional[str]:
     return None
 
 
+class XimalayaChapterError(Exception):
+    """喜马拉雅章节接口返回非 0 状态（如下架 924、需登录等）。"""
+
+
 class XimalayaManager:
     """喜马拉雅管理器"""
     
@@ -64,6 +68,9 @@ class XimalayaManager:
         self.session = requests.Session()
         self.user_id = None
         self.user_token = None
+        self._chapter_api_error = None
+        # 最近一次搜索命中的接口 URL（诊断用：判断结果顺序来自哪套搜索后端）
+        self.last_search_source = ""
         
         # 设置默认请求头（基于您原有文件的配置）
         self.session.headers.update({
@@ -282,7 +289,46 @@ class XimalayaManager:
                 if isinstance(value, list) and value and isinstance(value[0], dict):
                     if any(key in value[0] for key in ("title", "albumTitle", "albumInfo")):
                         return value
+        # 末位兜底：递归扫描任意嵌套层级，找形似专辑的数组。喜马拉雅 H5/App 搜索
+        # 响应结构时有变化（如结果嵌在 context/albumViews 深层），此前会导致
+        # 「返回 200 但解析到 0 个结果项」，从而退化到网页接口（顺序与 App 不一致）。
+        for candidate in XimalayaManager._deep_find_album_lists(payload):
+            if candidate:
+                return candidate
+        if payload is not data:
+            for candidate in XimalayaManager._deep_find_album_lists(data):
+                if candidate:
+                    return candidate
         return []
+
+    @staticmethod
+    def _looks_like_album(item) -> bool:
+        """判断一个 dict 是否形似专辑条目（兼容 albumInfo 包装）。"""
+        if not isinstance(item, dict):
+            return False
+        if isinstance(item.get("albumInfo"), dict):
+            return True
+        has_id = any(key in item for key in ("albumId", "album_id", "id"))
+        has_title = any(key in item for key in ("albumTitle", "album_title", "title", "name"))
+        return has_id and has_title
+
+    @classmethod
+    def _deep_find_album_lists(cls, payload, depth: int = 0) -> List[List[Dict]]:
+        """递归查找响应中形似专辑列表的数组，兼容任意嵌套结构。"""
+        if depth > 6:
+            return []
+        found: List[List[Dict]] = []
+        if isinstance(payload, dict):
+            for value in payload.values():
+                found.extend(cls._deep_find_album_lists(value, depth + 1))
+        elif isinstance(payload, list):
+            albums = [item for item in payload if cls._looks_like_album(item)]
+            if albums:
+                found.append(albums)
+            else:
+                for value in payload:
+                    found.extend(cls._deep_find_album_lists(value, depth + 1))
+        return found
     
     def set_cookie(self, cookie_string: str, is_server_cookie: bool = False):
         """设置Cookie
@@ -766,8 +812,71 @@ class XimalayaManager:
             print(f"❌ 搜索异常: {e}")
             return []
     
+    def _fetch_album_info_mobile_v3(self, album_id: str) -> Optional[Dict]:
+        """App 移动端专辑详情接口 mobile/v1/album/info/ts-{ms}。
+
+        与 v3 章节接口配套，无需 xm-sign，可访问网页详情接口 WFP 407 拒绝的专辑。
+        """
+        try:
+            ts = get_timestamp_ms_str()
+            url = f"https://mobile.ximalaya.com/mobile/v1/album/info/ts-{ts}"
+            params = {"albumId": album_id, "device": "android"}
+            mobile_credentials = getattr(self, "mobile_credentials", None) or {}
+            headers = {
+                "User-Agent": mobile_credentials.get(
+                    "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
+                ),
+                "Accept": "*/*",
+                "Cookie2": "$version=1",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            }
+            mobile_cookie = (mobile_credentials.get("cookie") or "").strip() or getattr(self, "cookie_string", "") or ""
+            if mobile_cookie:
+                headers["Cookie"] = mobile_cookie
+            x_tk = mobile_credentials.get("x_tk") or ""
+            if x_tk:
+                headers["x-tk"] = x_tk
+
+            response = self.session.get(url, params=params, headers=headers, timeout=10)
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            if not isinstance(data, dict) or not data.get("albumId"):
+                return None
+            is_finished_raw = data.get("isFinished")
+            return {
+                "id": str(album_id),
+                "title": data.get("title") or data.get("customTitle") or "",
+                "author": data.get("nickname") or data.get("anchorName") or data.get("announcer") or "",
+                "platform": "喜马拉雅",
+                "cover": self._extract_cover_url(data),
+                "plays": data.get("playTimes") or data.get("playCount") or 0,
+                "episodes": data.get("trackCount") or data.get("track_count") or 0,
+                "description": data.get("intro") or data.get("shortIntro") or "",
+                "category": data.get("categoryTitle") or data.get("category_title") or "",
+                "tags": data.get("tags") or [],
+                "created_at": str(data.get("createdAt") or data.get("createTime") or ""),
+                "updated_at": str(data.get("updatedAt") or ""),
+                "is_finished": bool(is_finished_raw) if isinstance(is_finished_raw, bool) else (
+                    str(is_finished_raw).lower() in ("1", "true") if is_finished_raw is not None else False
+                ),
+            }
+        except Exception as e:
+            print(f"⚠️ 移动端v3专辑详情接口异常: {e}")
+            return None
+
     def get_album_detail(self, album_id: str) -> Optional[Dict]:
-        """获取专辑详情"""
+        """获取专辑详情
+
+        优先使用 App 移动端 album/info 接口（无需 xm-sign、可访问网页接口 WFP 407
+        拒绝的受限专辑），失败时回退网页 getTracksList。
+        """
+        try:
+            mobile_detail = self._fetch_album_info_mobile_v3(album_id)
+            if mobile_detail:
+                return mobile_detail
+        except Exception:
+            pass
         try:
             url = f"{self.api_url}/revision/album/v1/getTracksList"
             params = {
@@ -775,8 +884,17 @@ class XimalayaManager:
                 'pageNum': 1,
                 'pageSize': 1  # 只获取第一页来判断专辑信息
             }
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.ximalaya.com/',
+            }
+            cookie_string = getattr(self, "cookie_string", "") or ""
+            if cookie_string:
+                headers['Cookie'] = cookie_string
             
-            response = self.session.get(url, params=params, timeout=10)
+            response = self.session.get(url, params=params, headers=headers, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
@@ -835,6 +953,73 @@ class XimalayaManager:
             print(f"❌ 获取专辑详情异常: {e}")
             return None
     
+    def _fetch_chapters_mobile_v3(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
+        """App 移动端章节接口 v3 - 可访问网页/老接口标记为「已下架」(ret=924) 的专辑。
+
+        喜马拉雅 Android App 实际使用 mobile/v1/album/track/v3/ts-{ms} 获取专辑章节。
+        该接口不需要 xm-sign 动态签名（普通 App UA + Cookie 即可返回数据），并能
+        访问 App 内正常播放但老接口(web_api WFP 407 / mobile v1 924)拒绝的专辑。
+        返回 (chapters, totalCount)，isAsc=true 正序，order 按列表位置编号。
+        """
+        try:
+            ts = get_timestamp_ms_str()
+            url = f"https://mobile.ximalaya.com/mobile/v1/album/track/v3/ts-{ts}"
+            params = {
+                "albumId": book_id,
+                "device": "android",
+                "pageId": page,
+                "pageSize": page_size,
+                "isAsc": "true",
+            }
+            headers = {
+                "User-Agent": (self.mobile_credentials or {}).get(
+                    "user_agent", "ting_9.4.74.3(com.ximalaya.ting.android,Android)"
+                ),
+                "Accept": "*/*",
+                "Cookie2": "$version=1",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            }
+            mobile_cookie = ((self.mobile_credentials or {}).get("cookie") or "").strip() or self.cookie_string
+            if mobile_cookie:
+                headers["Cookie"] = mobile_cookie
+            x_tk = (self.mobile_credentials or {}).get("x_tk") or ""
+            if x_tk:
+                headers["x-tk"] = x_tk
+
+            response = self.session.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code != 200:
+                return [], 0
+            data = response.json()
+            if data.get("ret") != 0:
+                self._chapter_api_error = (data.get("ret"), str(data.get("msg") or ""))
+                return [], 0
+            page_data = data.get("data") or {}
+            tracks = page_data.get("list") or []
+            total = self._extract_chapter_total(page_data) or int(page_data.get("totalCount") or 0)
+            chapters = []
+            for idx, item in enumerate(tracks, start=(page - 1) * page_size + 1):
+                chapters.append({
+                    "id": str(item.get("trackId") or ""),
+                    "title": item.get("title") or "",
+                    "duration": str(item.get("duration") or "0"),
+                    "size": "",
+                    "plays": item.get("playCount") or 0,
+                    "url": item.get("playUrl64") or item.get("playPathHq") or item.get("playPathAacv224") or "",
+                    "album": book_id,
+                    "order_num": idx,
+                    "is_paid": item.get("isPaid") or item.get("is_paid"),
+                    "is_vip": item.get("isVip") or item.get("vip") or item.get("vipOnly"),
+                    "is_free": item.get("isFree") or item.get("is_free"),
+                    "price": item.get("price") or 0,
+                    "created_at": item.get("createdAt") or item.get("createTime") or "",
+                    "is_finished": item.get("isFinished") or item.get("is_finished"),
+                    "play_url": item.get("playUrl64") or "",
+                })
+            return chapters, total
+        except Exception as e:
+            print(f"⚠️ 移动端v3章节接口异常: {e}")
+            return [], 0
+
     def _fetch_chapters_multi_api(self, album_id: str, page: int, page_size: int) -> Tuple[Dict[str, List[Dict]], int]:
         """顺序调用多个章节 API（避免在 QThread 内用线程池触发 interpreter shutdown）"""
         api_results = {}
@@ -846,8 +1031,19 @@ class XimalayaManager:
             ('new_api', self._fetch_chapters_new_api),
             ('web_api', self._fetch_chapters_web_api),
         ]
+        # 每个接口的错误码单独记录（old/new/web 各自），便于定位是哪个接口被
+        # 风控（如 web_api 的 WFP 407、new_api 的旧 UA 限制、924 下架等）。
+        self._api_ret_codes: dict = {}
+        # App 移动端 v3 接口最优先：无需 xm-sign、可访问老接口判定「已下架」的专辑
+        fetchers = [
+            ('mobile_v3', self._fetch_chapters_mobile_v3),
+            ('old_api', self._fetch_chapters_old_api),
+            ('new_api', self._fetch_chapters_new_api),
+            ('web_api', self._fetch_chapters_web_api),
+        ]
         for api_name, fetcher in fetchers:
             try:
+                self._chapter_api_error = None
                 result = fetcher(album_id, page, page_size)
                 if isinstance(result, tuple):
                     chapters, total = result
@@ -855,15 +1051,27 @@ class XimalayaManager:
                     chapters, total = result, 0
                 api_results[api_name] = list(chapters or [])
                 api_totals[api_name] = max(0, int(total or 0))
+                if self._chapter_api_error:
+                    self._api_ret_codes[api_name] = self._chapter_api_error
             except Exception as e:
                 api_results[api_name] = []
                 api_totals[api_name] = 0
                 api_errors[api_name] = str(e)
+                self._api_ret_codes[api_name] = ("exc", str(e)[:120])
+        if self._api_ret_codes and platform_verbose_enabled():
+            log_event("WARN", "章节接口状态码", api_ret_codes={
+                k: f"{r[0]}:{r[1][:60]}" for k, r in self._api_ret_codes.items()
+            })
         if api_errors and platform_verbose_enabled():
             log_event("WARN", "部分章节接口调用异常", api_errors=api_errors)
         exact_total = max(api_totals.values(), default=0)
         if platform_verbose_enabled() and len({value for value in api_totals.values() if value}) > 1:
             log_event("WARN", "章节接口返回的总数不一致，采用最大值", api_totals=api_totals, total=exact_total)
+        # 所有章节接口都无数据且 page==1 时，若记录了明确的非 0 状态（如下架 924/需登录），
+        # 抛出可识别异常供上层提示，避免静默「暂无章节」让用户无法判断原因。
+        if page == 1 and not any(api_results.values()) and self._chapter_api_error:
+            ret, msg = self._chapter_api_error
+            raise XimalayaChapterError(f"喜马拉雅章节接口返回异常(ret={ret}): {msg}")
         return api_results, exact_total
 
     def _pick_best_chapter_list(
@@ -924,9 +1132,12 @@ class XimalayaManager:
         page_size: int = 200,
         log_summary: bool = True,
     ) -> List[Dict]:
-        """获取专辑章节列表 - 多 API 取章节数最多的一份
-        
+        """获取专辑章节列表 - 多 API 取章节数最多的一份，完整分页拉取全部章节
+
         分页加载（page_size<=1000）使用顺序请求，不在后台 QThread 里再开线程池。
+        首页返回的 exact_total 大于单页数量时自动继续翻页，直到取全所有章节——
+        修复订阅检测/整本下载只拿第一页 200 集、专辑超过 200 集后永远检测不到
+        新章节（显示「无需补全」但实际缺集）的问题。
         """
         with log_context(
             platform="喜马拉雅",
@@ -937,12 +1148,104 @@ class XimalayaManager:
         ):
             try:
                 if page_size > 1000:
-                    return self._fetch_chapters_concurrent(album_id, page_size)
+                    concurrent = self._fetch_chapters_concurrent(album_id, page_size)
+                    if concurrent:
+                        return concurrent
+                    # 并发路径因 get_album_detail 拿不到总数而返回空（网页详情接口被风控/
+                    # WFP 校验失败时 episodes=0），此时回退到串行分页：它靠首页 exact_total
+                    # 翻页、不依赖详情接口，避免「正在加载章节→暂无章节」。
+                    log_event("WARN", "并发大页加载为空，回退到串行分页加载")
+                    chapters, exact_total = self.get_album_chapters_page(
+                        album_id, page=page, page_size=200, log_summary=log_summary
+                    )
+                    if not chapters:
+                        return chapters
+                    if exact_total <= len(chapters):
+                        return chapters
+                    all_chapters = list(chapters)
+                    seen = set()
+                    for ch in all_chapters:
+                        key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                        if key:
+                            seen.add(key)
+                    cursor = 2
+                    total_pages = max(1, (exact_total + 199) // 200) + 2
+                    empty_runs = 0
+                    while cursor <= total_pages and len(all_chapters) < exact_total and empty_runs < 3:
+                        more, _ = self.get_album_chapters_page(
+                            album_id, page=cursor, page_size=200, log_summary=False
+                        )
+                        if not more:
+                            empty_runs += 1
+                            cursor += 1
+                            continue
+                        added = 0
+                        for ch in more:
+                            key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                            if key and key in seen:
+                                continue
+                            if key:
+                                seen.add(key)
+                            all_chapters.append(ch)
+                            added += 1
+                        if added == 0:
+                            empty_runs += 1
+                        else:
+                            empty_runs = 0
+                        cursor += 1
+                    if log_summary:
+                        log_event("INFO", "串行分页回退加载完成", chapters=len(all_chapters), total=exact_total)
+                    return all_chapters
 
-                chapters, _ = self.get_album_chapters_page(
+                chapters, exact_total = self.get_album_chapters_page(
                     album_id, page=page, page_size=page_size, log_summary=log_summary
                 )
-                return chapters
+                if not chapters:
+                    return chapters
+                if exact_total <= len(chapters):
+                    return chapters
+
+                # 专辑章节数超过单页数量：继续翻页直到取全（或连续无新增/超页数上限）
+                all_chapters = list(chapters)
+                seen = set()
+                for ch in all_chapters:
+                    key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                    if key:
+                        seen.add(key)
+                cursor = page + 1
+                total_pages = max(1, (exact_total + page_size - 1) // page_size) + 2
+                empty_runs = 0
+                while cursor <= total_pages and len(all_chapters) < exact_total and empty_runs < 3:
+                    more, _ = self.get_album_chapters_page(
+                        album_id, page=cursor, page_size=page_size, log_summary=False
+                    )
+                    if not more:
+                        empty_runs += 1
+                        cursor += 1
+                        continue
+                    added = 0
+                    for ch in more:
+                        key = str(ch.get('id') or ch.get('track_id') or ch.get('trackId') or '').strip()
+                        if key and key in seen:
+                            continue
+                        if key:
+                            seen.add(key)
+                        all_chapters.append(ch)
+                        added += 1
+                    if added == 0:
+                        empty_runs += 1
+                    else:
+                        empty_runs = 0
+                    cursor += 1
+                if log_summary:
+                    log_event(
+                        "INFO",
+                        "章节分页加载完成",
+                        chapters=len(all_chapters),
+                        total=exact_total,
+                        pages=cursor - page,
+                    )
+                return all_chapters
 
             except RuntimeError as e:
                 if 'shutdown' in str(e).lower():
@@ -988,15 +1291,33 @@ class XimalayaManager:
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
             }
             
-            if self.cookie_string:
+            # 优先使用移动端 App 凭证（xmly_mobile）：喜马拉雅对部分专辑在无 App
+            # 登录态的移动接口请求下返回 ret=924「已下架」（实际是需 App 登录访问）。
+            # App 能正常播放/更新的专辑，用 App Cookie + x-tk + App UA 请求可绕过。
+            if self.mobile_credentials:
+                app_ua = self.mobile_credentials.get('user_agent') or ''
+                if app_ua:
+                    headers['User-Agent'] = app_ua
+                mobile_cookie = self.mobile_credentials.get('cookie') or ''
+                x_tk = self.mobile_credentials.get('x_tk') or ''
+                if x_tk:
+                    headers['x-tk'] = x_tk
+                if mobile_cookie:
+                    headers['Cookie'] = mobile_cookie
+                headers.setdefault('Cookie2', '$version=1')
+            elif self.cookie_string:
                 headers['Cookie'] = self.cookie_string
             
             response = self.session.get(new_api_url, params=params, headers=headers, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
-                
-                if data.get('ret') == 0:
+                ret = data.get('ret')
+                if ret != 0:
+                    # 记录上游错误（如下架 924/需登录），供 multi_api 汇总诊断
+                    self._chapter_api_error = (ret, str(data.get('msg') or ''))
+                    return [], 0
+                if ret == 0:
                     page_data = data.get('data', {})
                     tracks = page_data.get('list', [])
                     exact_total = self._extract_chapter_total(page_data)
@@ -1047,7 +1368,19 @@ class XimalayaManager:
                 'Referer': 'https://www.ximalaya.com/'
             }
             
-            if self.cookie_string:
+            # 与 new_api 一致：优先使用移动端 App 凭证绕过专辑级 924 限制
+            if self.mobile_credentials:
+                app_ua = self.mobile_credentials.get('user_agent') or ''
+                if app_ua:
+                    headers['User-Agent'] = app_ua
+                mobile_cookie = self.mobile_credentials.get('cookie') or ''
+                x_tk = self.mobile_credentials.get('x_tk') or ''
+                if x_tk:
+                    headers['x-tk'] = x_tk
+                if mobile_cookie:
+                    headers['Cookie'] = mobile_cookie
+                headers.setdefault('Cookie2', '$version=1')
+            elif self.cookie_string:
                 headers['Cookie'] = self.cookie_string
             
             response = self.session.get(url, headers=headers, timeout=20)
@@ -1093,7 +1426,12 @@ class XimalayaManager:
             return [], 0
     
     def _fetch_chapters_web_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
-        """Web API获取章节 (revision/album/v1/getTracksList)"""
+        """Web API获取章节 (revision/album/v1/getTracksList)
+
+        注意：网页接口(revision/album/v1/getTracksList)最需要登录 Cookie——对需要
+        登录/VIP/受限的专辑，无 Cookie 时返回 ret=924「已下架」。此前漏带 Cookie，
+        导致这类专辑的 web_api 恒失败。此处与 new_api/old_api 一致带上 Cookie。
+        """
         try:
             url = f"{self.api_url}/revision/album/v1/getTracksList"
             params = {
@@ -1101,13 +1439,25 @@ class XimalayaManager:
                 'pageNum': page,
                 'pageSize': page_size
             }
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.ximalaya.com/',
+            }
+            if self.cookie_string:
+                headers['Cookie'] = self.cookie_string
             
-            response = self.session.get(url, params=params, timeout=20)
+            response = self.session.get(url, params=params, headers=headers, timeout=20)
             
             if response.status_code == 200:
                 data = response.json()
-                
-                if data.get('ret') == 0:
+                ret = data.get('ret')
+                if ret != 0:
+                    # 记录上游错误（如下架 924/需登录），供 multi_api 汇总诊断
+                    self._chapter_api_error = (ret, str(data.get('msg') or ''))
+                    return [], 0
+                if ret == 0:
                     tracks_data = data.get('data', {})
                     tracks = tracks_data.get('tracks', [])
                     exact_total = self._extract_chapter_total(tracks_data)
@@ -1180,18 +1530,18 @@ class XimalayaManager:
                         future = executor.submit(fetch_page, page)
                         future_to_page[future] = page
 
+                    page_chapters_map = {}
                     for future in concurrent.futures.as_completed(future_to_page, timeout=120):
                         try:
                             page_chapters = future.result(timeout=30)
-                            if page_chapters:
-                                chapters.extend(page_chapters)
-                                if platform_verbose_enabled():
-                                    log_event(
-                                        "INFO",
-                                        "大页加载进度",
-                                        current_page=future_to_page[future],
-                                        loaded=len(chapters),
-                                    )
+                            page_chapters_map[future_to_page[future]] = page_chapters or []
+                            if platform_verbose_enabled():
+                                log_event(
+                                    "INFO",
+                                    "大页加载进度",
+                                    current_page=future_to_page[future],
+                                    loaded=sum(len(v) for v in page_chapters_map.values()),
+                                )
                         except Exception as e:
                             page = future_to_page[future]
                             print(f"❌ 获取第 {page} 页章节失败: {e}")
@@ -1200,7 +1550,19 @@ class XimalayaManager:
                     print(f"⚠️ 并发章节加载中断: {e}")
                     return chapters
                 raise
-            
+
+            # 按页码顺序拼接：as_completed 返回顺序不定，直接 extend 会导致章节乱序，
+            # 本地文件名序号(ui_display_index)与内容错位，已下载章节被判缺失反复下载。
+            for page in range(1, total_pages + 1):
+                chapters.extend(page_chapters_map.get(page, []))
+            # 完整性校验：并发中某页失败会静默缺该区间章节，订阅永远补不上
+            if len(chapters) < total_episodes:
+                log_event(
+                    "WARN",
+                    "大页加载不完整（部分页获取失败），列表将不完整",
+                    loaded=len(chapters),
+                    total=total_episodes,
+                )
             log_event(
                 "INFO" if chapters else "WARN",
                 "大页加载完成" if chapters else "大页加载未返回章节",
@@ -1879,7 +2241,21 @@ class XimalayaManager:
                             # 尝试解析搜索结果
                             albums = self._parse_search_results(data)
                             if albums:
-                                print(f"✅ Cookie搜索成功: 找到 {len(albums)} 个专辑")
+                                self.last_search_source = config['url']
+                                # 记录命中接口：与官方 App 顺序对比时据此判断用的是哪套
+                                # 搜索后端（H5 页搜索最接近 App；legacy revision/search
+                                # 为旧接口；web revision/search/main 常被风控）
+                                try:
+                                    log_event(
+                                        "INFO",
+                                        "喜马拉雅搜索接口命中",
+                                        endpoint=config['url'],
+                                        results=len(albums),
+                                        query=keyword,
+                                    )
+                                except Exception:
+                                    pass
+                                print(f"✅ Cookie搜索成功: 找到 {len(albums)} 个专辑（接口 {config['url']}）")
                                 return albums
                                 
                         except Exception as json_error:

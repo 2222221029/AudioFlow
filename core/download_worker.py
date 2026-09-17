@@ -216,6 +216,23 @@ class DownloadWorker(QThread):
                     return candidate
         return None
 
+    @staticmethod
+    def _find_existing_fanqie_output(file_path):
+        """番茄畅听：按同名不同后缀找回已下载文件（避免 HQ 档后缀纠正后重复下载）。
+
+        高码率档是 MP3，但历史/兜底路径可能先落成 .m4a，纠正后缀后文件名会变，
+        所以这里把所有音频后缀都试一遍，只有大于 1KB 才算有效文件。
+        """
+        base = str(Path(file_path).with_suffix(''))
+        for extension in ('.mp3', '.m4a', '.mp4', '.aac'):
+            candidate = base + extension
+            try:
+                if os.path.exists(candidate) and os.path.getsize(candidate) > 1024:
+                    return candidate
+            except OSError:
+                continue
+        return None
+
     def _setting_enabled(self, key, default=False):
         value = self.cookie_manager.get_cookie(key)
         if value in ("", None):
@@ -361,11 +378,28 @@ class DownloadWorker(QThread):
                 max_workers = max(1, min(3, lrts_workers, total_chapters))
                 print(f"📚 懒人听书下载并发: {max_workers}（可用 LRTS_DOWNLOAD_THREADS=1-3 调整；URL 解析自动节流防风控）")
             if self.platform == '番茄畅听':
-                # ffmpeg 已限制为单进程单线程；默认 3 路兼顾 CDN 吞吐与 NAS CPU，
-                # 高性能设备可显式提高到 4 路。
-                fanqie_workers = int(os.getenv("FANQIE_DOWNLOAD_THREADS", "3") or "3")
-                max_workers = max(1, min(4, fanqie_workers, total_chapters))
-                print(f"🍅 番茄畅听下载并发: {max_workers}（可用 FANQIE_DOWNLOAD_THREADS=1-4 调整）")
+                # 高码率档（默认，pv_player=-1）是未加密 MP3 纯 HTTP 直通，不需要 ffmpeg、
+                # 不占 CPU，而且 CDN 对单连接限速（实测单流仅 5~10MB/s）→ 必须多路并发才跑得满带宽。
+                # 48kbps 标准档要 ffmpeg 解密（单进程单线程），CPU 受限，保持小并发。
+                quality_text = str(self.quality or '').lower()
+                standard_quality = any(t in quality_text for t in ('48k', '48 k', '标准', 'standard'))
+                default_workers = 4 if standard_quality else 12
+                hard_max = 4 if standard_quality else 16
+                env_workers = int(os.getenv("FANQIE_DOWNLOAD_THREADS", "") or 0)
+                if env_workers > 0:
+                    chosen = env_workers
+                    src = "FANQIE_DOWNLOAD_THREADS"
+                elif max_workers > 4:
+                    # 用户在设置里显式把并发调大（>4）时尊重用户设置
+                    chosen = max_workers
+                    src = "设置"
+                else:
+                    chosen = default_workers
+                    src = "默认"
+                max_workers = max(1, min(hard_max, chosen, total_chapters))
+                print(f"🍅 番茄畅听下载并发: {max_workers}（{src}；"
+                      f"{'标准档 ffmpeg 解密，上限 4' if standard_quality else '高码率档，上限 16'}，"
+                      f"可用 FANQIE_DOWNLOAD_THREADS 覆盖）")
             if self.platform in ('番茄听书', '七猫听书'):
                 print(f"📖 {self.platform} 并发下载，线程数: {max_workers}（与设置一致）")
             max_workers = max(1, min(64, max_workers, total_chapters))
@@ -819,6 +853,10 @@ class DownloadWorker(QThread):
             # ---- 文件扩展名 ----
             fanqie_audio_info = None
             if self.platform == '番茄畅听':
+                # 把设置里的音质文本告诉番茄畅听管理器，由它决定 pv_player
+                # （默认高码率档 -1：未加密 MP3；含 48K/标准 才回退 48kbps 流媒体档）
+                if hasattr(download_manager, 'set_changting_quality'):
+                    download_manager.set_changting_quality(self.quality)
                 fanqie_audio_info = download_manager.get_audio_download_info(
                     chapter_id, self.voice_config or '无损真人录制', self.album_id
                 )
@@ -826,7 +864,12 @@ class DownloadWorker(QThread):
                     print(f"❌ 无法获取番茄音频链接")
                     chapter['_error'] = '无法获取音频链接'
                     return False
-                file_extension = '.mp3' if str(self.quality or '').upper().startswith('MP3') else '.m4a'
+                # 高码率档是未加密 MP3，但 URL 里不含 .mp3、CDN 的 Content-Type 也乱报，
+                # 所以优先用管理器按 playinfo 判定的真实后缀，判不出才退回旧的音质文本逻辑
+                file_extension = (
+                    str(fanqie_audio_info.get('extension') or '').strip()
+                    or ('.mp3' if str(self.quality or '').upper().startswith('MP3') else '.m4a')
+                )
                 self._dbg(f"   🎵 番茄实际格式: {fanqie_audio_info.get('format')}{file_extension}")
             elif self.platform == '喜马拉雅':
                 file_extension = self._ximalaya_extension_for_quality(self.quality)
@@ -882,6 +925,11 @@ class DownloadWorker(QThread):
             # ---- 文件已存在检查 ----
             if self.platform == '喜马拉雅':
                 existing_output = self._find_existing_ximalaya_output(file_path, self.quality)
+                if existing_output:
+                    file_path = existing_output
+            elif self.platform == '番茄畅听':
+                # 高码率档落盘后会按文件头把 .m4a 纠正成 .mp3，这里按同名不同后缀找回已下载文件
+                existing_output = self._find_existing_fanqie_output(file_path)
                 if existing_output:
                     file_path = existing_output
             if os.path.exists(file_path):
@@ -1116,6 +1164,11 @@ class DownloadWorker(QThread):
                         )
                     else:
                         success = False
+                    if success:
+                        # 下载器可能按文件头把 .m4a 纠正成 .mp3，回收它报告的真实路径
+                        final_path = str(getattr(download_manager, 'last_output_path', '') or '')
+                        if final_path and os.path.exists(final_path):
+                            file_path = final_path
                     if not success:
                         self._dbg(f"🔄 CENC管线失败，回退普通下载...")
                         success = download_manager.download_audio(

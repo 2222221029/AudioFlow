@@ -1297,6 +1297,121 @@ def load_saved_device_identity() -> tuple[str, str, dict[str, str], str, str, di
 
 
 # ---------------------------------------------------------------------------
+# 码率档位（pv_player）与音频容器识别
+# ---------------------------------------------------------------------------
+# 服务端按 pv_player 分成两个桶（实测 25 个取值，只有 -1 会换资产）：
+#   "-1"       → 原始高码率档：未加密 MP3，实测 64 / 128 / 256 / 320 kbps（按专辑不同），
+#                is_encrypt=False，**不需要 ffmpeg**，原字节直通落盘。
+#   其余任何值 → 流媒体档：HE-AAC v2 48 kbps，CENC-AES-CTR 加密，需要 ffmpeg 解密。
+# 客户端版本号（如 69532）属于后者 —— 这正是官方 App 只能拿到 48 kbps 的原因。
+HQ_PV_PLAYER = "-1"
+STREAM_PV_PLAYER = "69532"
+
+_STANDARD_QUALITY_TOKENS = ("48k", "48 k", "标准", "standard", "stream")
+
+
+def resolve_pv_player(quality: str | None = None) -> str:
+    """返回 audio/playinfo 应使用的 pv_player 取值。
+
+    默认走高码率档（"-1"）。回退到 48kbps 流媒体档的两种方式：
+      · 环境变量 FANQIE_AUDIO_QUALITY=standard（或 48k）
+      · 调用方传入的 quality 字符串里含 48K / 标准 / standard
+    """
+    env = (os.environ.get("FANQIE_AUDIO_QUALITY") or "").strip().lower()
+    text = f"{env} {(quality or '').strip().lower()}".strip()
+    for token in _STANDARD_QUALITY_TOKENS:
+        if token in text:
+            return STREAM_PV_PLAYER
+    return HQ_PV_PLAYER
+
+
+def probe_audio_container(path: "str | Path") -> tuple[str, str]:
+    """按文件头签名判断真实容器，返回 (扩展名, 说明)。
+
+    只认容器签名，**不做"能否解码"的推断**：早期版本用字节熵 / 0xFF 游程 / 帧自洽率
+    判定 HQ 档"不可解码"，被真实 MP3 对照组完全推翻（详见 docs/番茄畅听码率与pv_player分析.md §1）。
+    """
+    p = Path(path)
+    try:
+        with p.open("rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return "", "无法读取"
+    if len(head) < 4:
+        return "", "文件过短"
+    if head[:3] == b"ID3":
+        return ".mp3", "ID3 标签 MP3"
+    if head[4:8] == b"ftyp":
+        return ".m4a", "MP4 容器（ftyp）"
+    if head[:4] == b"fLaC":
+        return ".flac", "FLAC"
+    if head[:4] == b"OggS":
+        return ".ogg", "Ogg"
+    if head[:4] == b"RIFF":
+        return ".wav", "RIFF/WAVE"
+    if head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+        return ".mp3", "裸 MPEG 音频帧"
+    return "", "未识别的容器签名"
+
+
+def correct_audio_extension(path: "str | Path") -> Path:
+    """按文件头纠正下载文件的后缀，返回（可能已改名后的）真实路径。
+
+    HQ 档（pv_player=-1）返回的是未加密 MP3，但 CDN 的 Content-Type 会乱报
+    （video/mp4、audio/mpeg、audio/mp4 都出现过），URL 里也不带 .mp3，
+    所以落盘后必须按文件头纠正，否则会得到"扩展名 .m4a、内容是 MP3"的文件。
+
+    认不出容器签名时**保留原文件并告警**，不删除也不改名。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return p
+    real_ext, detail = probe_audio_container(p)
+    if not real_ext:
+        print(f"⚠️ 音频容器未识别，保留原文件: {p.name}（{detail}）")
+        return p
+    if p.suffix.lower() == real_ext:
+        return p
+    target = p.with_suffix(real_ext)
+    if target.exists():
+        # 同名（不同后缀）的音频文件已存在 → 大概率是同一章重复下载：
+        #   · 已存在的不比新文件小：删掉这次多出来的错名文件，返回已有文件
+        #   · 已有的更小（半截文件）：删掉它，让正确后缀的文件落位
+        try:
+            if target.stat().st_size >= p.stat().st_size:
+                p.unlink()
+                print(f"🔄 已存在同名音频，删除本次重复文件: {p.name} → 保留 {target.name}")
+                return target
+            target.unlink()
+        except OSError as e:
+            print(f"⚠️ 后缀纠正：处理同名文件失败，保留原文件: {e}")
+            return p
+    try:
+        p.replace(target)
+    except OSError as e:
+        print(f"⚠️ 后缀纠正失败（保留原文件）: {p.name} → {real_ext}: {e}")
+        return p
+    print(f"🔄 按文件头纠正后缀: {p.name} → {target.name}（{detail}）")
+    return target
+
+
+def play_is_unencrypted(play: dict) -> bool:
+    """playinfo 是否返回"未加密原始档"（即 pv_player=-1 的高码率 MP3 档）。"""
+    if not isinstance(play, dict):
+        return False
+    if play.get("is_encrypt"):
+        return False
+    if spade_from_play(play):
+        return False
+    video_model = play.get("video_model")
+    if isinstance(video_model, str) and video_model.strip():
+        return False
+    if isinstance(video_model, dict) and video_model:
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # 听书 CENC 解密与下载
 # ---------------------------------------------------------------------------
 def find_ffmpeg() -> str | None:
@@ -1795,9 +1910,17 @@ def _common_query(device_id: str, install_id: str, cdid: str) -> dict[str, str]:
 
 
 class FanqieClient:
-    def __init__(self, *, use_capture: bool = False) -> None:
-        """默认懒初始化：优先加载已保存身份，首次 API 调用时才注册设备。"""
+    def __init__(self, *, use_capture: bool = False, pv_player: str | None = None) -> None:
+        """默认懒初始化：优先加载已保存身份，首次 API 调用时才注册设备。
+
+        pv_player: 覆盖公共 query 里的 pv_player（决定 audio/playinfo 下发哪个码率档）：
+          · None（默认）→ 用 _common_query 里的客户端版本号 69532 → 48kbps CENC 流媒体档
+          · "-1"        → 服务端下发原始高码率档：未加密 MP3，实测 64/128/256/320 kbps，
+                          不需要 ffmpeg 解密。目前只由「番茄畅听」平台传这个值，
+                          番茄听书仍用默认档，互不影响。
+        """
         self._use_capture = use_capture
+        self._pv_player_override = pv_player
         self._api_lock = threading.Lock()
         self._init_lock = threading.Lock()
         self._initialized = False
@@ -1886,6 +2009,9 @@ class FanqieClient:
                 val = session_ids.get(key)
                 if val:
                     self.common[key] = val
+        # 码率档位：-1 → 服务端下发未加密高码率 MP3；不传则保持客户端版本号（48kbps CENC 档）。
+        if self._pv_player_override is not None:
+            self.common["pv_player"] = str(self._pv_player_override)
         self.headers = {
             "accept": "application/json; charset=utf-8,application/x-protobuf",
             "accept-encoding": "gzip",

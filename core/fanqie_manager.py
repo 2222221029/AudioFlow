@@ -5,6 +5,7 @@
 从喜马拉雅源文件提取的完整实现
 """
 
+import os
 import requests
 import time
 import json
@@ -145,6 +146,12 @@ class FanqieManager:
         self._voices_cache: Dict[str, List[Dict]] = {}
         self._tone_info_cache: Dict[str, Dict] = {}
         self._signed_client = None
+        # 码率档位：DownloadWorker 逐章把配置里的音质文本传进来（None/默认 → 高码率档）
+        self._changting_quality: Optional[str] = None
+        # 最近一次成功落盘的真实路径（后缀可能按文件头纠正过），供 DownloadWorker 回读
+        self.last_output_path: Optional[str] = None
+        # 高码率档被服务端降级时只提醒一次，避免每章刷屏
+        self._hq_degraded_warned = False
     
     def search_books(self, keyword: str, max_pages: int = 3) -> List[Dict]:
         """搜索书籍 - 优化版本，减少请求次数提升速度
@@ -754,6 +761,15 @@ class FanqieManager:
                                         print(f"❌ 处理章节数据失败: {e}")
                                         continue
                     
+                    # 完整性校验：对比章节总数与专辑声明的 chapter_count，
+                    # 接口截断/风控时告警（虽不阻断，但便于排查订阅漏更）
+                    try:
+                        declared_total = int((data.get('bookInfo') or {}).get('chapter_count') or 0)
+                        if declared_total > 0 and len(chapters) < declared_total:
+                            print(f"⚠️ 番茄章节不完整: {len(chapters)} < 声明 {declared_total}（接口可能截断）")
+                    except (TypeError, ValueError):
+                        pass
+
                     print(f"✅ 获取到 {len(chapters)} 个章节")
                     
                     # 实现客户端分页 - 根据请求的页码和页面大小返回对应章节
@@ -838,9 +854,22 @@ class FanqieManager:
             play = self._get_play_dict(normalized_chapter_id, voice_config)
             if play:
                 url = play.get("main_url") or play.get("backup_url") or ""
-                ext = ".mp3" if ".mp3" in str(url).lower() else ".m4a"
-                encrypted = bool(play.get("is_encrypt") or (url and not str(url).startswith("http")))
-                print(f"🎵 官方playinfo: encrypted={encrypted}, ext={ext}")
+                unencrypted = self._play_is_unencrypted(play)
+                if unencrypted or ".mp3" in str(url).lower():
+                    # 高码率档是未加密原始 MP3：URL 里不一定带 .mp3，必须按档位判定
+                    ext = ".mp3"
+                else:
+                    ext = ".m4a"
+                encrypted = bool(
+                    not unencrypted
+                    and (play.get("is_encrypt") or (url and not str(url).startswith("http")))
+                )
+                print(f"🎵 官方playinfo: encrypted={encrypted}, ext={ext}, 高码率档={unencrypted}")
+                if encrypted and self._resolve_pv_player() == "-1" and not self._hq_degraded_warned:
+                    # 期望高码率档却拿到加密流：多半是请求过密被服务端风控降级，只提醒一次
+                    self._hq_degraded_warned = True
+                    print("⚠️ 番茄畅听：本应是高码率档，服务端却下发了 48kbps 加密流"
+                          "（通常是短时间请求过密触发风控）。可稍后重试，或把音质切成标准档并装 ffmpeg 解密。")
                 return {
                     "url": url,
                     "format": ext.lstrip("."),
@@ -854,7 +883,12 @@ class FanqieManager:
 
             url = self._get_audio_url_original(normalized_chapter_id, voice_config.get("name") or "无损真人录制")
             if url:
-                meta = self.resolve_audio_format(url)
+                # 这条 fallback 腿固定带 pv_player=-1（高码率档 = 未加密 MP3），
+                # 而 CDN 的 Content-Type 会乱报，所以后缀直接按档位定，不靠 HEAD 探测
+                if self._resolve_pv_player() == "-1":
+                    meta = {"format": "mp3", "extension": ".mp3"}
+                else:
+                    meta = self.resolve_audio_format(url)
                 return {"url": url, "api_type": "official_playinfo_legacy", "official": True, **meta}
             return None
         except Exception as e:
@@ -1300,12 +1334,17 @@ class FanqieManager:
         *,
         play: Optional[Dict] = None,
     ) -> bool:
-        """番茄畅听专用：走 playinfo → fanqie_portable.py CENC解密管线下载。
+        """番茄畅听专用：走 playinfo 拿 play dict → 下载落盘（两条路径）。
 
-        与 FanqieTingshuManager.download_chapter 逻辑对齐：
+        · 高码率档（默认，pv_player=-1）：未加密 MP3，**原字节直通落盘，全程不调用 ffmpeg**
+          （既不解密也不转码；实测 64 / 128 / 256 / 320 kbps）。
+        · 48kbps 标准档（音质文本含 48K/标准 时才走）：CENC 加密流，交给
+          fanqie_portable.py 用 ffmpeg `-decryption_key … -c copy` 解密——只剥加密层、不重编码；
+          AI 音色的 Opus 在目标为 m4a 时会被重编码为 AAC。
+
+        与 FanqieTingshuManager.download_chapter 对齐的部分：
         - 优先从 playinfo/ 取 play dict（含 is_encrypt）
-        - 调用 fanqie_portable.py 的 download_chapter_audio 处理 CENC 解密与 ffmpeg 转码
-        - 输出路径后缀为 .mp3 时自动转码（libmp3lame），为 .m4a 时保留 AAC
+        - 下载后按文件头纠正后缀（HQ 档 URL 不含 .mp3、CDN 的 Content-Type 会乱报）
         """
         try:
             from core.fanqie_tingshu_manager import _load_wanzheng_module
@@ -1341,7 +1380,10 @@ class FanqieManager:
                 raw_out.unlink()
             if tmp_out.is_file() and tmp_out.stat().st_size > 1024:
                 tmp_out.replace(out)
-                print(f"✅ 番茄畅听下载完成: {out} ({out.stat().st_size // 1024} KB)")
+                # HQ 档内容是 MP3，但目标名可能是 .m4a（旧逻辑按音质文本定后缀）→ 按文件头纠正
+                final_out = self._correct_output_extension(out)
+                self.last_output_path = str(final_out)
+                print(f"✅ 番茄畅听下载完成: {final_out} ({final_out.stat().st_size // 1024} KB)")
                 return True
             print(f"❌ 番茄畅听: 文件过小或解密失败")
             if tmp_out.exists():
@@ -1399,15 +1441,84 @@ class FanqieManager:
             print(f"❌ 下载异常: {e}")
             return False
 
+    # ------------------------------------------------------------------
+    # 码率档位（pv_player）
+    # ------------------------------------------------------------------
+    def set_changting_quality(self, quality: Optional[str]) -> None:
+        """设置番茄畅听的码率档位（DownloadWorker 逐章传入配置里的音质文本）。
+
+        None / 空 / 普通音质文本 → 默认**高码率档**：pv_player=-1，
+        服务端下发未加密 MP3，实测 64 / 128 / 256 / 320 kbps（按专辑不同），不需要 ffmpeg。
+        含 48K / 标准 / standard → 回退 48kbps CENC 流媒体档（需要 ffmpeg 解密）。
+        也可用环境变量 FANQIE_CHANGTING_QUALITY / FANQIE_AUDIO_QUALITY 全局回退。
+        """
+        text = str(quality or "").strip()
+        if text == self._changting_quality:
+            return
+        self._changting_quality = text
+        # 档位变了就丢弃签名客户端，下一次请求用新的 pv_player 重建（复用已保存设备身份，不重注册）
+        self._signed_client = None
+
+    def _resolve_pv_player(self):
+        """算出应使用的 pv_player 取值；底层模块没有新接口时返回 None（保持旧行为）。"""
+        try:
+            from core.fanqie_tingshu_manager import _load_wanzheng_module
+            mod = _load_wanzheng_module()
+            resolver = getattr(mod, "resolve_pv_player", None)
+            if resolver is None:
+                return None
+            return resolver(
+                self._changting_quality or os.environ.get("FANQIE_CHANGTING_QUALITY")
+            )
+        except Exception as e:
+            print(f"WARN: 解析番茄码率档位失败，使用默认档: {e}")
+            return None
+
+    @staticmethod
+    def _play_is_unencrypted(play: Dict) -> bool:
+        """playinfo 是否为「未加密原始档」（即 pv_player=-1 的高码率 MP3 档）。
+
+        服务端只有这一档不带 CENC：没有 is_encrypt、没有 video_model/spade_a，
+        返回的是可以直接落盘的 MP3；其余所有取值都是 48kbps 的加密 AAC 流。
+        """
+        if not isinstance(play, dict):
+            return False
+        if play.get("is_encrypt") or play.get("encryption_key") or play.get("spade_a"):
+            return False
+        if play.get("video_model"):
+            return False
+        return bool(play.get("main_url") or play.get("backup_url"))
+
+    def _correct_output_extension(self, path):
+        """下载后按文件头纠正后缀（HQ 档 URL 不含 .mp3，CDN 的 Content-Type 也乱报）。"""
+        try:
+            from core.fanqie_tingshu_manager import _load_wanzheng_module
+            fixer = getattr(_load_wanzheng_module(), "correct_audio_extension", None)
+            if fixer is None:
+                return Path(path)
+            result = fixer(path)
+            # 非路径返回值（如测试里注入的 Mock）不进 Path()，避免误判
+            return Path(result) if isinstance(result, (str, Path)) else Path(path)
+        except Exception as e:
+            print(f"⚠️ 后缀纠正跳过: {e}")
+            return Path(path)
+
     def _signed_fanqie_client(self):
-        """加载 fanqie_portable.py 的签名客户端，用于获取番茄官方动态音色。"""
+        """加载 fanqie_portable.py 的签名客户端（番茄畅听的 playinfo 走它）。
+
+        番茄畅听固定用高码率档 pv_player=-1；番茄听书另有自己的客户端实例，两者互不影响。
+        """
         if self._signed_client is not None:
             return self._signed_client
         try:
             from core.fanqie_tingshu_manager import _load_wanzheng_module
             mod = _load_wanzheng_module()
+            pv_player = self._resolve_pv_player()
             with contextlib.redirect_stdout(io.StringIO()):
-                self._signed_client = mod.FanqieClient(use_capture=False)
+                self._signed_client = mod.FanqieClient(use_capture=False, pv_player=pv_player)
+            if pv_player:
+                label = "未加密高码率 MP3" if pv_player == "-1" else "48kbps 流媒体档"
+                print(f"🎚️ 番茄畅听码率档位: pv_player={pv_player}（{label}）")
             return self._signed_client
         except Exception as e:
             print(f"WARN: 番茄动态音色客户端初始化失败: {e}")

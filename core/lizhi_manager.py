@@ -154,27 +154,61 @@ class LizhiManager:
             return []
         page = max(1, int(page or 1))
         page_size = max(1, min(int(page_size or 500), 500))
-        chapters: List[Dict] = []
+        raw_items: List[tuple] = []  # (序列位置, item) 保留原始顺序用于稳定排序
         current = page
+        empty_runs = 0
         while current <= 200:
-            data = self._request_json(f"/vodapi/user/{user_id}", {"pageNo": current, "pageSize": page_size})
-            if str(data.get("code")) not in ("0", ""):
-                print(f"[荔枝FM] 章节接口返回异常: {data.get('msg') or data.get('message')}")
-                break
-            items = data.get("data") or []
+            data = None
+            for attempt in range(3):
+                data = self._request_json(f"/vodapi/user/{user_id}", {"pageNo": current, "pageSize": page_size})
+                if str((data or {}).get("code")) in ("0", ""):
+                    break
+                print(f"[荔枝FM] 章节接口返回异常(第{attempt + 1}次): {(data or {}).get('msg') or (data or {}).get('message')}")
+                time.sleep(0.5 * (attempt + 1))
+            items = ((data or {}).get("data")) or []
             if not isinstance(items, list) or not items:
-                break
-            offset = len(chapters)
+                empty_runs += 1
+                # 连续多页无数据才判定到底，避免单次空页/异常误截断尾部章节
+                if empty_runs >= 3:
+                    break
+                current += 1
+                if max_pages is not None and (current - page) >= max_pages:
+                    break
+                time.sleep(0.08)
+                continue
+            empty_runs = 0
             for idx, item in enumerate(items, 1):
-                chapter = self._normalize_item(item, offset + idx)
-                if chapter:
-                    chapters.append(chapter)
+                raw_items.append((len(raw_items) + idx, item))
             if len(items) < page_size:
                 break
             current += 1
             if max_pages is not None and (current - page) >= max_pages:
                 break
             time.sleep(0.08)
+
+        # 用 createTime 稳定排序：/vodapi/user 接口返回顺序不确定，若"最新在前"（倒序）
+        # 会让序号每轮漂移，导致本地已下载章节被判缺失、反复下载。按发布时间升序
+        # 保证序号与章节内容稳定对应。无法解析时间时回退接口原始顺序。
+        def _sort_key(entry):
+            order_pos, item = entry
+            info = item.get("voiceInfo") or {}
+            created = str(info.get("createTime") or item.get("createTime") or "").strip()
+            if created and created.isdigit():
+                try:
+                    return (1, int(created))
+                except ValueError:
+                    pass
+            return (0, order_pos)
+
+        raw_items.sort(key=_sort_key)
+        chapters = []
+        for new_index, (_, item) in enumerate(raw_items, start=1):
+            chapter = self._normalize_item(item, new_index)
+            if chapter:
+                chapter["index"] = new_index
+                chapter["order"] = new_index
+                chapter["order_num"] = new_index
+                chapters.append(chapter)
         return chapters
 
     def get_book_detail(self, user_id: str) -> Optional[Dict]:

@@ -9,20 +9,14 @@ from src.server import web_server
 class WebStartupTests(unittest.TestCase):
     def test_background_services_continue_after_one_fails(self):
         scheduler = mock.Mock(side_effect=RuntimeError("scheduler failed"))
-        feishu = mock.Mock()
-        developer = mock.Mock()
 
         with (
             mock.patch.object(web_server, "ensure_subscription_scheduler", scheduler),
-            mock.patch.object(web_server.feishu_bridge, "start", feishu),
-            mock.patch.object(web_server.developer_agent_manager, "reconcile", developer),
             self.assertLogs(level="ERROR"),
         ):
             web_server._initialize_background_services()
 
         scheduler.assert_called_once_with()
-        feishu.assert_called_once_with()
-        developer.assert_called_once_with()
 
     def test_main_serves_without_running_background_services_synchronously(self):
         calls = []

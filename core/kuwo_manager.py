@@ -11,6 +11,7 @@ import time
 import random
 import math
 import os
+import re
 import uuid
 import concurrent.futures
 import threading
@@ -34,6 +35,20 @@ class KuwoManager:
         self._kw_token = None
         self.last_error = ""
         self.last_error_type = ""
+
+        # 分页抓取参数。酷我 albumInfo 在并发分页请求下会偶发把相邻页的响应返给
+        # 当前页请求（实测 10 线程时约 23% 的全量抓取会命中，一次错位就是整页 24 集：
+        # 同一批 rid 被重复下载、真实的 24 集永远进不了下载列表）。并发越低越不容易
+        # 触发，因此默认压到 3 并加请求间隔，同时由下面的页校验与重抓兜底。
+        try:
+            self._page_concurrency = max(1, int(os.environ.get("KUWO_PAGE_CONCURRENCY", "3")))
+        except (TypeError, ValueError):
+            self._page_concurrency = 3
+        try:
+            self._page_request_interval = max(0.0, float(os.environ.get("KUWO_PAGE_INTERVAL", "0.15")))
+        except (TypeError, ValueError):
+            self._page_request_interval = 0.15
+        self._page_size = 24
         
         # 写死的 Secret 和 Cookie（无需算法和登录）
         self._fixed_secret = "7363e89561110e6cb657c2fb7cedc85451a49cad02a8ce4d6bc236dce7ed52ce0144c917"
@@ -85,23 +100,24 @@ class KuwoManager:
         # 酷我不支持项目里的通用 M4A 档位，默认仍按用户要求优先无损。
         return "lossless"
         
-    def _safe_set_cookie(self, name: str, value: str, domain: str = ".kuwo.cn", path: str = "/"):
-        """安全地设置 Cookie"""
+    def _safe_set_cookie(self, name: str, value: str, domain: str = ".kuwo.cn", path: str = "/", session=None):
+        """安全地设置 Cookie（可指定目标 session，供错位页重抓时的独立会话使用）"""
+        target = session if session is not None else self.session
         try:
             # 先删除所有同名的 Cookie
             cookies_to_remove = []
-            for cookie in list(self.session.cookies):
+            for cookie in list(target.cookies):
                 if cookie.name == name:
                     cookies_to_remove.append((cookie.domain or ".kuwo.cn", cookie.path or "/", cookie.name))
-            
+
             for domain_rm, path_rm, name_rm in cookies_to_remove:
                 try:
-                    self.session.cookies.clear(domain_rm, path_rm, name_rm)
+                    target.cookies.clear(domain_rm, path_rm, name_rm)
                 except Exception:
                     pass
-            
+
             # 设置新 Cookie
-            self.session.cookies.set_cookie(create_cookie(
+            target.cookies.set_cookie(create_cookie(
                 name=name,
                 value=value,
                 domain=domain,
@@ -109,7 +125,23 @@ class KuwoManager:
             ))
         except Exception as e:
             print(f"[酷我听书] 设置 Cookie 失败: {name}, 错误: {e}")
-    
+
+    def _new_kuwo_session(self):
+        """新建独立会话（仅带固定 Cookie），用于重抓错位页。
+
+        复用原连接池重抓仍可能再次命中同一错配（错位发生在连接/网关层），
+        因此重抓一律走全新会话。
+        """
+        session = requests.Session()
+        session.headers.update(self.session.headers)
+        self._safe_set_cookie(
+            name="Hm_Iuvt_cdb524f42f23cer9b268564v7y735ewrq2324",
+            value=self._fixed_cookie_value,
+            domain=".kuwo.cn",
+            session=session,
+        )
+        return session
+
     def _kuwo_api_headers(self, referer: str = "https://www.kuwo.cn"):
         """生成请求头，使用固定的 Secret 和 Cookie"""
         return {
@@ -228,15 +260,16 @@ class KuwoManager:
             print(f"❌ 获取酷我听书详情失败: {e}")
             return None
     
-    def _fetch_single_page(self, album_id: str, page_num: int) -> Dict:
-        """获取单页章节数据（用于并发请求）"""
+    def _fetch_single_page(self, album_id: str, page_num: int, session=None) -> Dict:
+        """获取单页章节数据（用于并发请求；session 可传入独立会话用于重抓）"""
         try:
             req_id = str(uuid.uuid4()).replace('-', '')
             timestamp = int(time.time() * 1000)
-            url = f"https://www.kuwo.cn/api/www/album/albumInfo?albumId={album_id}&pn={page_num}&rn=24&reqId={req_id}&httpsStatus=1&plat=web_www&from=&_={timestamp}"
-            
+            url = f"https://www.kuwo.cn/api/www/album/albumInfo?albumId={album_id}&pn={page_num}&rn={self._page_size}&reqId={req_id}&httpsStatus=1&plat=web_www&from=&_={timestamp}"
+
             headers = self._kuwo_api_headers("https://www.kuwo.cn")
-            response = self.session.get(url, headers=headers, timeout=15)
+            http = session if session is not None else self.session
+            response = http.get(url, headers=headers, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
@@ -258,6 +291,171 @@ class KuwoManager:
             print(f"❌ 获取第 {page_num} 页失败: {e}")
             return {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
     
+    # ------------------------------------------------------------------
+    # 分页完整性与「响应错配」防护
+    #
+    # 背景：酷我 albumInfo 在并发分页请求下会偶发把相邻页的响应返给当前页请求。
+    # 实测并发 10 线程抓取 1952 集（82 页）时，30 轮中有 7 轮出现错位（约 23%）；
+    # 单线程顺序抓取 486 次请求 0 错位。错位响应的 success 仍为 True，所以只重试
+    # success=False 的页根本发现不了它；而一次错位就是一整页 24 集：错位页的 24 个
+    # 位置拿到了别的页的 rid（于是重复下载 24 集），真实的那 24 集永远进不了下载
+    # 列表（于是永久缺失）。下面用「跨页 rid 重复 + 页内集号自洽性」把它检出来，
+    # 并用独立会话串行重抓修复。
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _chapter_number_from_name(name) -> Optional[int]:
+        """尽力从章节名里提取集号（兼容「第433集」「-0433-」「0433-」等写法）。"""
+        text = str(name or "")
+        for pattern in (r'第\s*(\d+)\s*[集章回节]', r'-\s*(\d{2,5})\s*-', r'^\s*(\d{2,5})\s*[-_\s]'):
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            try:
+                value = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
+    @classmethod
+    def _result_rids(cls, result) -> List[str]:
+        if not result or not result.get('success'):
+            return []
+        return [
+            str(item.get('rid')) for item in (result.get('music_list') or [])
+            if str(item.get('rid') or '').strip()
+        ]
+
+    @classmethod
+    def _result_numbers(cls, result) -> List[int]:
+        numbers = []
+        for item in (result or {}).get('music_list') or []:
+            value = cls._chapter_number_from_name(item.get('name'))
+            if value is not None:
+                numbers.append(value)
+        return numbers
+
+    def _find_misaligned_pages(self, page_results: Dict[int, Dict], pages) -> List[int]:
+        """挑出疑似「拿到了别的页数据」的页。"""
+        scope = set(pages or [])
+        suspects = set()
+
+        # 1) 跨页 rid 重复：同一 rid 只属于一页，重复即说明有页拿错了响应
+        rid_owners = {}
+        for page_num, result in page_results.items():
+            for rid in self._result_rids(result):
+                rid_owners.setdefault(rid, set()).add(page_num)
+        for owners in rid_owners.values():
+            if len(owners) > 1:
+                suspects.update(owners)
+
+        # 2) 页内集号只允许「非严格递增」：出现倒序说明整页数据被替换成了别页数据。
+        #    不能把「集号重复」当异常——同一集拆成多段音频是正常结构（例如
+        #    「-1836-祖相（二）-001」与「-1836-祖相（二）-002」，且 1837 缺号），
+        #    按严格递增判定会让这类页每次抓取都固定误报并白白触发重抓。
+        for page_num, result in page_results.items():
+            numbers = self._result_numbers(result)
+            if len(numbers) >= 2 and any(later < earlier for earlier, later in zip(numbers, numbers[1:])):
+                suspects.add(page_num)
+
+        # 2b) 同一页内出现完全同名的条目：整页数据被部分替换的典型特征
+        for page_num, result in page_results.items():
+            names = [str(item.get('name') or '') for item in (result or {}).get('music_list') or []]
+            names = [name for name in names if name]
+            if len(names) != len(set(names)):
+                suspects.add(page_num)
+
+        # 3) 非末页却不足一整页：该页被截断或混入了别页数据
+        for page_num, result in page_results.items():
+            rids = self._result_rids(result)
+            if 0 < len(rids) < self._page_size and any(
+                other > page_num and self._result_rids(page_results.get(other)) for other in scope
+            ):
+                suspects.add(page_num)
+
+        return sorted(suspects & scope)
+
+    def _fetch_pages_concurrently(self, album_id: str, pages) -> Dict[int, Dict]:
+        """并发抓取一批页（并发数默认 3：并发越高越容易触发响应错配）。"""
+        results: Dict[int, Dict] = {}
+        pages = list(pages or [])
+        if not pages:
+            return results
+
+        def fetch(page_num):
+            # 请求间隔把并发请求在时间上摊开，进一步降低错配概率
+            if self._page_request_interval:
+                time.sleep(self._page_request_interval)
+            return self._fetch_single_page(album_id, page_num)
+
+        workers = max(1, min(self._page_concurrency, len(pages)))
+        if workers == 1:
+            for page_num in pages:
+                results[page_num] = fetch(page_num)
+            return results
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_page = {executor.submit(fetch, p): p for p in pages}
+            for future in concurrent.futures.as_completed(future_to_page):
+                page_num = future_to_page[future]
+                try:
+                    results[page_num] = future.result()
+                except Exception as exc:
+                    print(f"❌ 第 {page_num} 页获取异常: {exc}")
+                    results[page_num] = {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
+        return results
+
+    def _refetch_pages_serially(self, album_id: str, pages, reason: str = "") -> Dict[int, Dict]:
+        """串行 + 独立会话重抓指定页（实测该组合 486 次请求 0 错位）。"""
+        results: Dict[int, Dict] = {}
+        targets = sorted(set(pages or []))
+        for page_num in targets:
+            session = self._new_kuwo_session()
+            try:
+                results[page_num] = self._fetch_single_page(album_id, page_num, session=session)
+            except Exception as exc:
+                print(f"❌ 第 {page_num} 页重抓异常: {exc}")
+                results[page_num] = {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            if self._page_request_interval:
+                time.sleep(self._page_request_interval)
+        if targets and reason:
+            print(f"🔁 已串行重抓 {len(targets)} 页（{reason}）")
+        return results
+
+    def _load_pages_verified(self, album_id: str, requested_pages, seed_results=None) -> Dict[int, Dict]:
+        """抓取所需分页并修复响应错配页，最多重抓 2 轮。"""
+        requested_pages = list(requested_pages or [])
+        page_results = dict(seed_results or {})
+
+        todo = [p for p in requested_pages if p not in page_results]
+        if todo:
+            page_results.update(self._fetch_pages_concurrently(album_id, todo))
+
+        failed = [p for p in requested_pages if not (page_results.get(p) or {}).get('success')]
+        if failed:
+            page_results.update(self._refetch_pages_serially(album_id, failed, reason="失败页重试"))
+
+        for round_no in range(3):
+            suspects = self._find_misaligned_pages(page_results, requested_pages)
+            if not suspects:
+                return page_results
+            if round_no == 2:
+                print(
+                    f"❌ 酷我听书分页重抓后仍异常：第 {suspects} 页；"
+                    "本次目录可能仍缺少这些页的真实章节，建议稍后重试该下载任务"
+                )
+                return page_results
+            print(f"⚠️ 酷我听书分页疑似响应错配：第 {suspects} 页（第 {round_no + 1} 次重抓）")
+            page_results.update(self._refetch_pages_serially(album_id, suspects, reason="响应错配修复"))
+        return page_results
+
     def get_chapters(self, album_id: str, page: int = 1, page_size: int = 50) -> List[Dict]:
         """按 UI 页范围获取章节；整本请求仍会并发抓取所需的全部 API 页。"""
         try:
@@ -275,7 +473,7 @@ class KuwoManager:
                 print(f"❌ 获取第一页失败")
                 return []
 
-            api_page_size = 24
+            api_page_size = self._page_size
             total_chapters = int(first_page_result.get('total') or len(first_page_result.get('music_list') or []))
             start_index = (page - 1) * page_size
             if total_chapters and start_index >= total_chapters:
@@ -284,47 +482,47 @@ class KuwoManager:
             first_api_page = start_index // api_page_size + 1
             last_api_page = max(first_api_page, (max(end_index, 1) - 1) // api_page_size + 1)
             requested_pages = list(range(first_api_page, last_api_page + 1))
-            page_results = {1: first_page_result} if 1 in requested_pages else {}
-            remaining_pages = [item for item in requested_pages if item != 1]
-
-            if remaining_pages:
-                max_workers = min(10, len(remaining_pages))
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_to_page = {
-                        executor.submit(self._fetch_single_page, album_id, p): p 
-                        for p in remaining_pages
-                    }
-                    for future in concurrent.futures.as_completed(future_to_page):
-                        page_num = future_to_page[future]
-                        try:
-                            page_results[page_num] = future.result()
-                        except Exception as e:
-                            print(f"❌ 第 {page_num} 页获取异常: {e}")
-                            page_results[page_num] = {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
+            seed = {1: first_page_result} if 1 in requested_pages else {}
+            page_results = self._load_pages_verified(album_id, requested_pages, seed_results=seed)
 
             chapters = []
+            seen_rids: Dict[str, int] = {}
+            duplicate_chapters = 0
             for page_num in sorted(page_results.keys()):
                 result = page_results[page_num]
-                if result['success']:
-                    music_list = result['music_list']
-                    base_index = (page_num - 1) * api_page_size
-                    for idx, chapter in enumerate(music_list):
-                        global_index = base_index + idx
-                        if global_index < start_index or global_index >= end_index:
-                            continue
-                        duration = chapter.get('duration', 0)
-                        duration_formatted = f"{duration // 60:02d}:{duration % 60:02d}" if duration > 0 else "00:00"
-                        chapters.append({
-                            'id': str(chapter.get('rid', '')),
-                            'title': chapter.get('name', ''),
-                            'duration': duration_formatted,
-                            'size': '',
-                            'plays': 0,
-                            'album': album_id,
-                            'order_num': global_index + 1,
-                            'kuwo_rid': chapter.get('rid', ''),
-                        })
+                if not result.get('success'):
+                    continue
+                music_list = result['music_list']
+                base_index = (page_num - 1) * api_page_size
+                for idx, chapter in enumerate(music_list):
+                    global_index = base_index + idx
+                    if global_index < start_index or global_index >= end_index:
+                        continue
+                    rid = str(chapter.get('rid', '') or '')
+                    if rid and rid in seen_rids:
+                        # 响应错配残留：同一 rid 出现在两个位置。宁可少下这几集（订阅
+                        # 检测会重新判定为缺失并可补全），也绝不重复下载成一堆重复文件。
+                        duplicate_chapters += 1
+                        continue
+                    if rid:
+                        seen_rids[rid] = page_num
+                    duration = chapter.get('duration', 0)
+                    duration_formatted = f"{duration // 60:02d}:{duration % 60:02d}" if duration > 0 else "00:00"
+                    chapters.append({
+                        'id': rid,
+                        'title': chapter.get('name', ''),
+                        'duration': duration_formatted,
+                        'size': '',
+                        'plays': 0,
+                        'album': album_id,
+                        'order_num': global_index + 1,
+                        'kuwo_rid': chapter.get('rid', ''),
+                    })
 
+            if duplicate_chapters:
+                print(f"⚠️ 酷我听书分页出现 {duplicate_chapters} 个重复 rid（响应错配残留），已跳过重复项")
+            if total_chapters and len(chapters) < total_chapters:
+                print(f"⚠️ 酷我听书章节不完整: {len(chapters)}/{total_chapters} 章（部分页获取失败）")
             print(f"✅ 酷我听书章节加载完成，本页 {len(chapters)}/{total_chapters} 章")
             return chapters
             

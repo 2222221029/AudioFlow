@@ -508,5 +508,68 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertNotIn("last_update_at", subscription2)
 
 
+    def test_merge_keeps_history_when_source_regressed(self):
+        # 回归：远端本次返回少于历史快照（酷我并发分页某页失败/API 抖动）时，
+        # 历史多出的章节必须保留为普通章节参与检测——否则真实存在的章节被
+        # 标 _source_missing 跳过，点「补全」提示「无需补全」。
+        saved = [{"id": str(i), "title": f"书 第{i}集", "order_num": i} for i in range(1, 1731)]
+        current = [{"id": str(i), "title": f"书 第{i}集", "order_num": i} for i in range(1, 1671)]  # 本次只返回 1670
+
+        merged = SubscriptionManager.merge_subscription_chapters(saved, current)
+        # 远端回归：历史多出的 60 集保留（不标 _source_missing），参与检测
+        self.assertEqual(len(merged), 1730)
+        self.assertFalse(any(ch.get("_source_missing") for ch in merged))
+        # 顺序：本次在前、历史追加在后
+        self.assertEqual(merged[-1]["id"], "1730")
+
+    def test_merge_marks_removed_when_source_complete(self):
+        # 远端返回完整（最大序号 >= 历史最大序号）时，历史多出的章节视为已从专辑移除
+        saved = [{"id": "1", "title": "书 第1集", "order_num": 1},
+                 {"id": "2", "title": "书 第2集", "order_num": 2},
+                 {"id": "3", "title": "书 第3集", "order_num": 3}]
+        # 远端 3 集、最大序号 5 >= 快照最大序号 3，视为完整；快照 2、3 不在远端视为已移除
+        current_full = [{"id": "1", "title": "书 第1集", "order_num": 1},
+                        {"id": "5", "title": "书 第5集", "order_num": 5},
+                        {"id": "6", "title": "书 第6集", "order_num": 6}]
+        merged = SubscriptionManager.merge_subscription_chapters(saved, current_full)
+        missing = [ch for ch in merged if ch.get("_source_missing")]
+        self.assertEqual({ch["id"] for ch in missing}, {"2", "3"})
+
+    def test_merge_keeps_history_when_latest_page_missing(self):
+        # 回归：喜马拉雅/酷我并发分页某页失败导致漏掉最新页（本次远端数量与历史相当，
+        # 但最大序号变小），必须保留历史章节参与检测，不能误标 _source_missing。
+        saved = [{"id": str(i), "title": f"书 第{i}集", "order_num": i} for i in range(1, 1731)]
+        # 本次远端漏掉最新 60 集（1671-1730），但中间有重复/数量接近
+        current = list(saved[:1670]) + list(saved[1665:1725])  # 数量 1730，但最大序号 1725 < 1730
+        merged = SubscriptionManager.merge_subscription_chapters(saved, current)
+        # 远端最大序号(1725) < 历史最大序号(1730) → 不标 _source_missing，全部保留
+        self.assertFalse(any(ch.get("_source_missing") for ch in merged))
+        # 且去重后的章节集合覆盖历史全部
+        ids = {ch["id"] for ch in merged}
+        self.assertEqual(len(ids), 1730)
+
+    def test_diff_reports_regressed_history_as_missing(self):
+        # 端到端：快照 1730 集、远端本次只返回 1670 集（合并保留历史）、本地 1670 集
+        # → diff 必须报缺失 60，不能是「无需补全」
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            album = {"id": "kw-73429992", "title": "酷我回归书", "platform": "酷我听书"}
+            saved = [{"id": str(i), "title": f"酷我回归书 第{i}集", "order_num": i} for i in range(1, 1731)]
+            subscription = manager.add_or_update(album, saved, download_tmp)
+            album_dir = Path(download_tmp) / "酷我听书" / "酷我回归书"
+            album_dir.mkdir(parents=True)
+            for i in range(1, 1671):
+                (album_dir / f"{i:04d}-酷我回归书 第{i}集.m4a").write_bytes(b"x" * 4096)
+            manager.build_audio_index(download_tmp, force=True)
+            # 本次远端 API 只返回 1670 集（模拟抖动）
+            current = [{"id": str(i), "title": f"酷我回归书 第{i}集", "order_num": i} for i in range(1, 1671)]
+            merged = SubscriptionManager.merge_subscription_chapters(saved, current)
+            diff = manager.diff_chapters(subscription, merged, download_tmp)
+            # 缺失 1671-1730 共 60 集（不会被「无需补全」掩盖）
+            missing_ids = {int(c["id"]) for c in diff["missing"]}
+            self.assertEqual(len(missing_ids), 60)
+            self.assertTrue(all(i in missing_ids for i in range(1671, 1731)))
+
+
 if __name__ == "__main__":
     unittest.main()

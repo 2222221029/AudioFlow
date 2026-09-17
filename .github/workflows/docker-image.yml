@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+    # 参考 immich 等项目的做法：只改动文档/资源文件时不触发镜像构建，
+    # 避免无关提交浪费构建时长
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - 'assets/**'
+      - 'ACCEPTANCE_REPORT.md'
+      - 'AudioFlow_验收报告.md'
+      - '.gitignore'
+      - '*.md'
   workflow_dispatch:
 
 permissions:
@@ -47,6 +57,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 不传 build-args → Dockerfile 使用官方源（海外 runner 最快）。
+      # 国内源（阿里云/npmmirror）只应在飞牛 NAS 本地构建时经 docker-compose.yml 传入。
       - name: Build and push
         uses: docker/build-push-action@v6
         with:

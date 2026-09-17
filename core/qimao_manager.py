@@ -679,18 +679,26 @@ class QimaoManager:
             self._last_book_id = str(detail.get("book_id") or "")
             self._last_album_id = aid or str(album_id)
             self._last_kind = "album"
-            return self._album_chapters(self._last_album_id)
-
-        chapters, _, _ = self.load_chapters_for_voice(
-            bid,
-            voice_config=voice_config or (
-                self._match_voice(self.available_voices, {"raw": self.current_voice})
-                if self.current_voice
-                else None
-            ),
-            album_id_hint=aid,
-        )
-        return chapters
+            result = self._album_chapters(self._last_album_id)
+        else:
+            chapters, _, _ = self.load_chapters_for_voice(
+                bid,
+                voice_config=voice_config or (
+                    self._match_voice(self.available_voices, {"raw": self.current_voice})
+                    if self.current_voice
+                    else None
+                ),
+                album_id_hint=aid,
+            )
+            result = chapters
+        # 完整性校验：detail 声明的章节数与实际返回数对比，接口截断/分页缺失时告警
+        try:
+            declared = int(detail.get("chapter_count") or detail.get("total_num") or 0)
+            if declared > 0 and len(result) < declared:
+                print(f"⚠️ 七猫章节不完整: {len(result)} < 声明 {declared}（接口可能默认仅返回第一页）")
+        except (TypeError, ValueError):
+            pass
+        return result
 
     def download_chapter(
         self,

@@ -299,9 +299,26 @@ class SearchManager:
                     print(f"   ✅ 第 {page} 页获取到 {len(chapters)} 章")
                     all_chapters.extend(chapters)
                 else:
+                    # 失败页重试 2 次再放弃：直接 break 会静默截断该页区间，
+                    # 若为中间页则尾部新章节永远检测不到。
                     print(f"   ❌ 第 {page} 页获取失败 (chapters={chapters}, has_next={has_next})")
-                    # 如果获取失败，停止继续获取
-                    if not has_next or chapters is None:
+                    retried = False
+                    for attempt in range(2):
+                        try:
+                            import time as _time
+                            _time.sleep(1 + attempt)
+                            chapters_retry, has_next_retry = system.get_chapter_list(album_id, page)
+                        except Exception:
+                            chapters_retry, has_next_retry = None, has_next
+                        if chapters_retry:
+                            print(f"   🔁 第 {page} 页重试成功（第{attempt + 1}次）")
+                            all_chapters.extend(chapters_retry)
+                            has_next = has_next_retry
+                            retried = True
+                            break
+                    if retried:
+                        pass
+                    elif not has_next or chapters is None:
                         break
                 
                 if not has_next:
