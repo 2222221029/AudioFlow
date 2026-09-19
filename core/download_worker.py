@@ -7,6 +7,7 @@ import time
 import threading
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from core.naming import sanitize_segment
 from core.safe_logging import log_context
 
 # 每个失败章节最多自动重试次数
@@ -1295,10 +1296,9 @@ class DownloadWorker(QThread):
         return title if title else "未知章节"
 
     def _sanitize_filename(self, filename: str) -> str:
-        """清理文件名，移除非法字符"""
-        filename = str(filename or "").strip() or "未知"
-        for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
-            filename = filename.replace(char, '_')
-        if len(filename) > 200:
-            filename = filename[:200]
-        return filename
+        """清理文件名，移除非法字符。
+
+        规则集中在 `core.naming.sanitize_segment`；这里的参数保持与改造前
+        完全一致（上限 200、空值兜底「未知」、先去首尾空白），所以产物不变。
+        """
+        return sanitize_segment(filename, max_len=200, fallback="未知", strip=True)

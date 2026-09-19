@@ -317,7 +317,6 @@ class LrtsAppClient:
         self.q_seq = 1
         self.session = requests.Session()
         self.session.headers.update(APP_HEADERS)
-        self._last_path = ""
         self._quality_ceilings: dict[tuple[int, int], int] = {}
 
     def _next_q(self) -> str:
@@ -328,24 +327,32 @@ class LrtsAppClient:
             self.q_seq = current + 1
             return str(current)
 
-    def _signed_params(self, business: dict[str, Any]) -> dict[str, str]:
+    def _signed_params(self, business: dict[str, Any], path: str) -> dict[str, str]:
+        """生成带 sc 签名的完整查询参数。
+
+        `path` 必须显式传入，不能从实例状态读取：一次降档探测会在同一实例上
+        连续发多个不同 path 的请求，多线程共用实例时 `self._last_path` 会被
+        其他线程覆盖，导致用错误的 path 计算 sc。
+        """
         params = {key: str(value) for key, value in business.items() if value is not None}
         params.update({"imei": self.imei, "nwt": self.nwt, "q": self._next_q(), "mode": self.mode})
         if self.token:
             params["token"] = self.token
-        path = urlparse(self._last_path).path
         params["sc"] = calc_sc(path, params)
         return params
 
     def get(self, host: str, path: str, params: dict[str, Any] | None = None) -> dict:
-        self._last_path = path
-        response = self.session.get(host + path, params=self._signed_params(params or {}), timeout=30)
+        # 每个请求都过全局闸门。服务端对 getListenPath 有 status=114
+        # （下载过于频繁）风控，而一次降档探测会在循环内连发多次请求，
+        # 只在调用方入口过闸不足以约束它们（见 tests/test_lrts_signature.py）。
+        _throttle_audio_request()
+        response = self.session.get(host + path, params=self._signed_params(params or {}, path), timeout=30)
         response.raise_for_status()
         return response.json()
 
     def post(self, host: str, path: str, params: dict[str, Any] | None = None) -> dict:
-        self._last_path = path
-        response = self.session.post(host + path, data=self._signed_params(params or {}), timeout=30)
+        _throttle_audio_request()
+        response = self.session.post(host + path, data=self._signed_params(params or {}, path), timeout=30)
         response.raise_for_status()
         return response.json()
 
@@ -353,7 +360,14 @@ class LrtsAppClient:
         meta = rsa_encrypt_meta(build_device_info(self.imei))
         path = "/yyting/usercenter/tempToken.action"
         try:
-            response = self.session.get(READ_HOST + path, params={"sc": calc_sc(path, {}), "meta": meta}, timeout=30)
+            # sc 必须把 meta 与公共参数（imei/nwt/q/mode）一并参与 MD5，
+            # 否则服务端返回 status=483「请求验证失败」（逆向实测，见
+            # tests/test_lrts_signature.py）。此处不能再用 calc_sc(path, {})。
+            response = self.session.get(
+                READ_HOST + path,
+                params=self._signed_params({"meta": meta}, path),
+                timeout=30,
+            )
             data = response.json() if response.text else {}
             token = data.get("token") or (data.get("data") or {}).get("token")
             if token:
@@ -363,7 +377,11 @@ class LrtsAppClient:
             print(f"[lrts] tempToken failed: {exc}")
 
         path = "/yyting/usercenter/AutoRegister.action"
-        response = self.session.get(API_HOST + path, params={"meta": meta, "sc": calc_sc(path, {"meta": meta})}, timeout=30)
+        response = self.session.get(
+            API_HOST + path,
+            params=self._signed_params({"meta": meta}, path),
+            timeout=30,
+        )
         data = response.json() if response.text else {}
         if data.get("status") == 0 and data.get("token"):
             self.token = data["token"]

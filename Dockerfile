@@ -75,6 +75,11 @@ COPY --chown=audioflow:audioflow --from=frontend-build /app/dist /app/frontend/d
 RUN mkdir -p /app/data /app/config /app/downloads /app/logs /workspace \
     && chown -R audioflow:audioflow /app/data /app/config /app/downloads /app/logs /workspace
 
+# 规范化源码权限。COPY --chown 只改属主、不改 mode，而上面的 USER audioflow 意味着
+# 运行期是非 root：任何 mode 过严的源文件（例如本地工具写入产生的 000/600）都会让
+# import 直接抛 PermissionError，容器启动即失败。a+rX 只补读权限，目录补执行位。
+RUN chmod -R a+rX /app
+
 USER audioflow
 
 EXPOSE 8082

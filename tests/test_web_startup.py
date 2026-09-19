@@ -1,7 +1,8 @@
-import sys
 import types
 import unittest
 from unittest import mock
+
+from support import patched_module
 
 from src.server import web_server
 
@@ -39,7 +40,9 @@ class WebStartupTests(unittest.TestCase):
         with (
             mock.patch.object(web_server, "_initialize_background_services", initializer),
             mock.patch.object(web_server.threading, "Thread", DeferredThread),
-            mock.patch.dict(sys.modules, {"waitress": waitress}),
+            # 不使用 mock.patch.dict(sys.modules, ...)：它在退出时会恢复整个
+            # sys.modules 快照，把 patch 期间新导入的模块一并丢弃（见 tests/support.py）。
+            patched_module("waitress", waitress),
             mock.patch.dict(web_server.os.environ, {"FLASK_DEBUG": "", "HOST": "127.0.0.1", "PORT": "18082"}),
         ):
             web_server.main()

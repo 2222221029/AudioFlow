@@ -1291,9 +1291,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertTrue(ok)
         self.assertEqual(manager.last_download_source, "web_v3")
         self.assertEqual(manager.last_download_path, str(save_path))
+        # 96K 档位首选 level 由 /2（实测 48K）修正为 /3（实测 96K）
         self.assertEqual(
             get.call_args_list[1].args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/265392006/2",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/265392006/3",
         )
         api_query = parse_qs(urlparse(get.call_args_list[3].args[0]).query)
         self.assertEqual(api_query["device"], ["web"])
@@ -1597,9 +1598,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertEqual(manager.last_download_source, "legacy_web_redirect")
         self.assertEqual(manager.last_download_quality_label, "96K")
         self.assertEqual(manager.last_download_path, str(save_path))
+        # 96K 档位首选 level 由 /2（实测 48K）修正为 /3（实测 96K）
         self.assertEqual(
             get.call_args_list[2].args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/261300454/2",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/261300454/3",
         )
 
     def test_web_auto_technical_failure_does_not_call_authorized_api(self):
@@ -1620,7 +1622,9 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
                 )
 
         self.assertFalse(ok)
-        self.assertEqual(get.call_count, 4)
+        # HTTP 503 属于网关瞬时错误：修复后不再逐档降级（旧行为会让 5xx 伪装成
+        # "音质不可用"并产生静默降级），因此请求数由 4 降到 3。
+        self.assertEqual(get.call_count, 3)
         authorized.assert_not_called()
         self.assertEqual(manager.last_error_type, "download_failed")
         self.assertIn("HTTP 503", manager.last_error)
@@ -1669,9 +1673,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
 
         self.assertTrue(ok)
         self.assertEqual(get.call_count, 1)
+        # 96K 档位首选 level 由 /2（实测 48K）修正为 /3（实测 96K）
         self.assertEqual(
             get.call_args.args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/2",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/3",
         )
         self.assertEqual(get.call_args.kwargs["headers"]["Cookie"], "_token=member")
 
@@ -1703,9 +1708,10 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
 
         self.assertTrue(ok)
         self.assertEqual(get.call_count, 2)
+        # 96K 的降级链修正为 (3, 1, 0)：首选 /3 校验失败后依次降到 /1、/0
         self.assertEqual(
             get.call_args_list[1].args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/96",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/1",
         )
         self.assertEqual(manager.last_download_source, "legacy_web_redirect")
 

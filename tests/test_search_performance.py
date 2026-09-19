@@ -57,35 +57,46 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in results[:2]], ["exact-1", "exact-2"])
         self.assertEqual(results[2]["id"], "similar")
 
-    def test_single_platform_ranking_is_stable_for_equal_matches(self):
+    def test_single_platform_search_preserves_provider_order(self):
+        """单平台搜索保留平台原生返回顺序（与官方 App 一致）。
+
+        `core/enhanced_search_manager.py` 的 search_books 在单平台分支明确
+        跳过了 `_rank_search_results`：以「播放量 65% 权重」重排会把热门但
+        相关度低的专辑顶到前面，与官方 App 的顺序不符。融合排序只在跨平台
+        聚合（platform="all"）时进行，见 test_exact_album_names_are_ranked_first_across_platforms。
+        """
         manager = self.manager()
+        provider_order = [
+            {"id": "far", "title": "九州缥缈录"},
+            {"id": "same-1", "title": "九鼎记广播剧"},
+            {"id": "same-2", "title": "九鼎记广播剧"},
+            {"id": "exact", "title": "九鼎记"},
+        ]
         manager._search_platform_cached = MethodType(
-            lambda _manager, _keyword, _platform: [
-                {"id": "far", "title": "九州缥缈录"},
-                {"id": "same-1", "title": "九鼎记广播剧"},
-                {"id": "same-2", "title": "九鼎记广播剧"},
-                {"id": "exact", "title": "九鼎记"},
-            ],
+            lambda _manager, _keyword, _platform: list(provider_order),
             manager,
         )
 
         results = manager.search_books("九鼎记", "酷我听书")
 
-        self.assertEqual([item["id"] for item in results], ["exact", "same-1", "same-2", "far"])
-
-    def test_popular_keyword_match_beats_unplayed_exact_title(self):
-        manager = self.manager()
-        manager._search_platform_cached = MethodType(
-            lambda _manager, _keyword, _platform: [
-                {"id": "exact-small", "title": "道诡异仙", "plays": 12},
-                {"id": "popular", "title": "道诡异仙 多人精品有声剧", "playCount": "1.8亿"},
-            ],
-            manager,
+        self.assertEqual(
+            [item["id"] for item in results],
+            ["far", "same-1", "same-2", "exact"],
         )
 
-        results = manager.search_books("道诡异仙", "喜马拉雅")
+    def test_popular_keyword_match_beats_unplayed_exact_title(self):
+        """融合排序中播放量是更强的信号（仅在跨平台聚合路径生效）。
 
-        self.assertEqual([item["id"] for item in results], ["popular", "exact-small"])
+        单平台走原生顺序（见 test_single_platform_search_preserves_provider_order），
+        因此这里直接对融合排序函数断言，保留"热门压制冷门精确匹配"这一原始意图。
+        """
+        manager = self.manager()
+        ranked = manager._rank_search_results("道诡异仙", [
+            {"id": "exact-small", "title": "道诡异仙", "plays": 12},
+            {"id": "popular", "title": "道诡异仙 多人精品有声剧", "playCount": "1.8亿"},
+        ])
+
+        self.assertEqual([item["id"] for item in ranked], ["popular", "exact-small"])
 
     def test_unrelated_popular_album_never_beats_keyword_match(self):
         books = [

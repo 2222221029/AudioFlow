@@ -143,6 +143,9 @@ class KuwoPaginationIntegrityTest(unittest.TestCase):
     def test_get_chapters_repairs_misaligned_page_and_keeps_rids_unique(self):
         manager = KuwoManager()
         manager._page_request_interval = 0
+        # 本用例构造的是"每页 24 集"的数据：显式设定分页大小，
+        # 使测试只依赖错位检测逻辑本身，而不受全局默认档位变化影响。
+        manager._page_size = 24
         good1 = self._page(1, [f"第{i}集" for i in range(1, 25)], [f"r{i}" for i in range(1, 25)])
         good2 = self._page(2, [f"第{i}集" for i in range(25, 49)], [f"r{i}" for i in range(25, 49)])
         wrong2 = self._page(2, [f"第{i}集" for i in range(1, 25)], [f"r{i}" for i in range(1, 25)])
@@ -171,6 +174,8 @@ class KuwoPaginationIntegrityTest(unittest.TestCase):
         manager = KuwoManager()
         manager._page_request_interval = 0
         manager._page_concurrency = 1
+        # 同 test_get_chapters_repairs_...：本用例的数据是"每页 24 集"。
+        manager._page_size = 24
         good1 = self._page(1, [f"第{i}集" for i in range(1, 25)], [f"r{i}" for i in range(1, 25)])
         # 第 2 页无论重抓多少次都返回第 1 页的数据（模拟服务端持续错配）
         wrong2 = self._page(2, [f"第{i}集" for i in range(1, 25)], [f"r{i}" for i in range(1, 25)])

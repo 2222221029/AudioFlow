@@ -7,6 +7,7 @@ com.ximalaya.ting.android.xmloader.XMApplication.apk
 __pycache__/
 *.py[cod]
 *.pyo
+.pytest_cache/
 
 *.log
 *.out

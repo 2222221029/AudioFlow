@@ -1,11 +1,12 @@
 import json
-import sys
 import unittest
 from unittest import mock
 
 import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+
+from support import patched_module
 
 from core.qr_login import (
     QRSession,
@@ -54,7 +55,11 @@ class NeteaseQrLoginTest(unittest.TestCase):
             mock.patch("core.qr_login._netease_device_id", return_value="A" * 52),
             mock.patch("core.qr_login._netease_now_ms", return_value=1700000000123),
             mock.patch("core.qr_login.time.sleep", return_value=None),
-            mock.patch.dict(sys.modules, {"qrcode": qrcode_module}),
+            # 不能用 mock.patch.dict(sys.modules, ...)：它退出时恢复整个快照，
+            # 会丢弃期间新导入的模块，进而使 pycryptodome 的
+            # Crypto.Cipher._mode_ecb 重复执行 cdef 并抛 cffi.FFIError。
+            # 详见 tests/support.py 的说明。
+            patched_module("qrcode", qrcode_module),
         ):
             _drive_netease(session)
         return session, http, qrcode_module

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # 与 requirements.txt 声明的运行要求一致（Python 3.12+）
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      # 说明：tests/conftest.py 会把 CONFIG_DIR/DATA_DIR/LOG_DIR/DOWNLOAD_DIR
+      # 指向临时目录。这一步不可省略 —— src/server/web_server.py 在模块级就调用
+      # ensure_runtime_dirs()，若 HOME 不可写会导致 8 个测试文件在收集阶段报
+      # PermissionError，整个测试套件无法启动。
+      - name: Run tests
+        run: python -m pytest -q

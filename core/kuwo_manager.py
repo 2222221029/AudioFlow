@@ -37,9 +37,9 @@ class KuwoManager:
         self.last_error_type = ""
 
         # 分页抓取参数。酷我 albumInfo 在并发分页请求下会偶发把相邻页的响应返给
-        # 当前页请求（实测 10 线程时约 23% 的全量抓取会命中，一次错位就是整页 24 集：
-        # 同一批 rid 被重复下载、真实的 24 集永远进不了下载列表）。并发越低越不容易
-        # 触发，因此默认压到 3 并加请求间隔，同时由下面的页校验与重抓兜底。
+        # 当前页请求（实测 10 线程时约 23% 的全量抓取会命中：同一批 rid 被重复下载、
+        # 真实的那一页永远进不了下载列表）。并发越低越不容易触发，因此默认压到 3
+        # 并加请求间隔，同时由下面的页校验与重抓兜底。
         try:
             self._page_concurrency = max(1, int(os.environ.get("KUWO_PAGE_CONCURRENCY", "3")))
         except (TypeError, ValueError):
@@ -48,7 +48,15 @@ class KuwoManager:
             self._page_request_interval = max(0.0, float(os.environ.get("KUWO_PAGE_INTERVAL", "0.15")))
         except (TypeError, ValueError):
             self._page_request_interval = 0.15
-        self._page_size = 24
+        # albumInfo 的 rn 上限实测为 100：传 500/1000 只返回 100 条，传 6127 直接 504。
+        # 旧值 24 会让"整本目录"抓取（enhanced_search_manager 以 page_size=10000 调用）
+        # 膨胀到约 417 个 API 页，参考实现同场景只需约 100 页。rn 变大也会放大单次
+        # 响应错位的影响面，但页数减少同时降低了错位发生的次数，且下面的页校验与
+        # 重抓兜底仍然生效。
+        try:
+            self._page_size = max(1, min(100, int(os.environ.get("KUWO_PAGE_SIZE", "100"))))
+        except (TypeError, ValueError):
+            self._page_size = 100
         
         # 写死的 Secret 和 Cookie（无需算法和登录）
         self._fixed_secret = "7363e89561110e6cb657c2fb7cedc85451a49cad02a8ce4d6bc236dce7ed52ce0144c917"
@@ -624,24 +632,31 @@ class KuwoManager:
                     if cached_data:
                         return dict(cached_data)
 
-            # 根据首选格式和比特率选择 br 参数
-            if preferred_format.lower() == 'mp3' and bitrate:
-                if bitrate == 320:
-                    br_param = '320kmp3'
-                elif bitrate == 192:
-                    br_param = '192kmp3'
-                elif bitrate == 128:
-                    br_param = '128kmp3'
-                else:
-                    br_param = '320kmp3'
+            # 档位（br）与容器（format）参数。
+            #
+            # 逆向依据：接口/酷我听书/kuwo_dl/config.py 与 work/re/API_INVENTORY.md
+            #   * br 档位取自 APK classes8.dex 常量池，实测有效的是 2000kflac
+            #     （唯一能真正返回 FLAC 的档位）/ 320kmp3 / 128kmp3。
+            #     192kmp3 **不在**该表中，请求它没有额外收益。
+            #   * format 决定容器：不钉 format 时 br=320kmp3 返回 aac/100k、
+            #     br=2000kflac 返回 ogg/100k；钉成 mp3 才稳定拿到 mp3 容器，
+            #     否则调用方会因 format != 'mp3' 反复降档重试。
+            #   * FLAC 档必须保持 format 未指定：钉成 mp3 会强制服务端返回 mp3，
+            #     即使该集存在无损音源也拿不到（参考实现写作 ("2000kflac", None, "flac")）。
+            if preferred_format.lower() == 'mp3':
+                br_param = '128kmp3' if bitrate == 128 else '320kmp3'
+                fmt_param = 'mp3'
             else:
-                format_map = {
-                    'flac': '2000kflac',
-                    'mp3': '320kmp3',
-                }
-                br_param = format_map.get(preferred_format.lower(), '2000kflac')
-            
-            url = f"https://mobi.kuwo.cn/mobi.s?f=web&user=1008611&source=kwplayerhd_ar_4.3.0.8_tianbao_T1A_qirui.apk&type=convert_url_with_sign&rid={rid}&br={br_param}"
+                br_param = '2000kflac'
+                fmt_param = None
+
+            url = (
+                "https://mobi.kuwo.cn/mobi.s?f=web&user=1008611"
+                "&source=kwplayerhd_ar_4.3.0.8_tianbao_T1A_qirui.apk"
+                f"&type=convert_url_with_sign&rid={rid}&br={br_param}"
+            )
+            if fmt_param:
+                url += f"&format={fmt_param}"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'

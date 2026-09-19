@@ -4,6 +4,7 @@ build/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 *.zip
 *.7z
 *.rar

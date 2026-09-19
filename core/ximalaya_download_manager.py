@@ -18,6 +18,8 @@ from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from urllib.parse import quote_plus
 
+from .naming import sanitize_segment
+
 from .ximalaya_credentials import (
     MOBILE_V4_ANONYMOUS_TICKET,
     has_ximalaya_mobile_credentials,
@@ -42,6 +44,33 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
     except (TypeError, ValueError):
         value = int(default)
     return max(int(minimum), min(value, int(maximum)))
+
+
+# ---------------------------------------------------------------------------
+# 旧版直连接口（mobile/redirect/free/play/{track_id}/{level}）的档位语义
+# ---------------------------------------------------------------------------
+# 实测依据：接口/喜马拉雅/喜马拉雅下载接口分析.md:65-83
+#   /0        → 无 CDN 音质标记，实测 ~24.8 kbps
+#   /1 /2     → …-aacv2-48K.m4a，实测 48.8 kbps
+#   /3 及以上 → …-aacv2-96K.m4a，实测 96.8 kbps（/3~/10 返回同一文件，96K 即最高档）
+#
+# 注意 level 2 **不是** 96K。旧实现把 '96K' 映射为 2，并注释断言
+# "level 2 and level 96 currently resolve to the same 96K M4A"，与实测冲突：
+# 请求 /2 拿到的是 48K 文件，而成功路径仍把标签记成 96K，形成静默降级
+# （见 tests/test_ximalaya_quality_chain.py）。
+LEGACY_REDIRECT_LEVELS = {
+    '24K': (0,),
+    '48K': (1, 0),
+    '64K': (1, 0),   # 该端点没有 64K 档，/1 实测即 48K
+    '96K': (3, 1, 0),
+}
+
+# 网关瞬时错误。换档位同样会失败，却会把网络抖动伪装成"音质不可用"，
+# 因此必须原地交给上层重试而不是降级。对应参考实现 ximalaya_dl.py:103 的 RETRYABLE。
+XIMALAYA_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504, 522, 524})
+
+# 「立即购买畅听」：付费集无权限的权威信号，比按文案关键词猜测可靠。
+XIMALAYA_RET_PURCHASE_REQUIRED = 726
 
 
 class XimalayaDownloadManager:
@@ -224,14 +253,11 @@ class XimalayaDownloadManager:
         if cookie_string:
             print(f"🍪 XimalayaDownloadManager已设置Cookie")
     
-        # Legacy redirect levels are endpoint-specific aliases.  For member
-        # tracks, level 2 and level 96 currently resolve to the same 96K M4A;
-        # prefer the standard level 2 route and retain level 96 as a fallback.
+        # 旧版直连的档位语义与降级链（实测依据见 LEGACY_REDIRECT_LEVELS）。
+        self.legacy_redirect_levels = LEGACY_REDIRECT_LEVELS
+        # 各档位的首选 level（= 降级链首项），供只关心首选档的调用点使用。
         self.quality_level_map = {
-            '24K': 0,   # 24k标准音质 (约3MB)
-            '48K': 1,   # 48k高清音质 (约6MB)
-            '64K': 1,   # 64k也映射到1 (约6MB)
-            '96K': 2,   # 96k超高音质（VIP）
+            quality: levels[0] for quality, levels in LEGACY_REDIRECT_LEVELS.items()
         }
         self.last_error = ""
         self.last_error_type = ""
@@ -2301,10 +2327,11 @@ class XimalayaDownloadManager:
         :param chapter_title: 章节标题
         :return: 下载是否成功
         """
-        primary_level = self.quality_level_map.get(audio_quality, 2)
-        quality_levels = [primary_level]
-        if audio_quality == '96K' and primary_level != 96:
-            quality_levels.append(96)
+        quality_levels = list(
+            self.legacy_redirect_levels.get(audio_quality)
+            or self.legacy_redirect_levels['96K']
+        )
+        primary_level = quality_levels[0]
 
         print(f"🎵 使用旧版直连API - 音质: {audio_quality} (Level {primary_level})")
 
@@ -2345,9 +2372,17 @@ class XimalayaDownloadManager:
                     close = getattr(response, 'close', None)
                     if close:
                         close()
-                    self._record_error(f"HTTP {status_code}", status_code)
                     if status_code in (401, 403):
+                        self._record_error(f"HTTP {status_code}", status_code)
                         return False
+                    if status_code in XIMALAYA_TRANSIENT_STATUS:
+                        # 并发下载时 502/503/504 很常见。换档位同样会失败，却会让
+                        # 失败被记成"音质不可用"并产生静默降级；交给上层章节重试。
+                        self._record_error(
+                            f"HTTP {status_code}", status_code, error_type='download_failed'
+                        )
+                        return False
+                    self._record_error(f"HTTP {status_code}", status_code)
                     if attempt_index + 1 < len(quality_levels):
                         print(f"   ↪️ Level {quality_level} 返回 HTTP {status_code}，尝试兼容别名")
                         continue
@@ -2370,6 +2405,15 @@ class XimalayaDownloadManager:
                     close = getattr(response, 'close', None)
                     if close:
                         close()
+                    if error_data.get('ret') == XIMALAYA_RET_PURCHASE_REQUIRED:
+                        # 「立即购买畅听」：付费集无权限的权威信号。换档位不会改变
+                        # 权限，必须显式归类为 restricted 并停止降级 —— 旧实现让它
+                        # 落到通用错误分支，靠错误文案里的"购买"二字偶然命中。
+                        self._record_error(
+                            f"权限不足: {error_data.get('msg') or '立即购买畅听'}",
+                            error_type='restricted',
+                        )
+                        return False
                     if error_data.get('ret') == 130:
                         if allow_public_fallback and self._download_confirmed_public_fallback(
                             track_id,
@@ -2453,10 +2497,12 @@ class XimalayaDownloadManager:
                 return True
             except Exception as exc:
                 temp_path.unlink(missing_ok=True)
-                self._record_error(f"download exception: {exc}")
-                if attempt_index + 1 < len(quality_levels):
-                    print(f"   ↪️ Level {quality_level} 下载异常，尝试兼容别名")
-                    continue
+                # 请求/传输异常属于瞬时故障：换档位同样会失败，且会把网络问题
+                # 伪装成音质问题。与 V4 路径（_download_mobile_quality_chain）的
+                # 语义保持一致：不降级，交给上层章节重试。
+                self._record_error(
+                    f"download exception: {exc}", error_type='download_failed'
+                )
                 print(f"❌ 旧版直连下载异常: {exc}")
                 return False
 
@@ -2548,14 +2594,10 @@ class XimalayaDownloadManager:
             
             print(f"   📋 找到 {len(play_url_list)} 个音频URL")
             
-            # 3. 查找匹配音质的MP3 URL
-            quality_level_map = {
-                '24K': 0,
-                '48K': 1,
-                '64K': 1,
-                '96K': 96,
-            }
-            target_level = quality_level_map.get(audio_quality, 1)
+            # 3. 查找匹配音质的MP3 URL（档位语义统一到 LEGACY_REDIRECT_LEVELS，
+            #    避免同一文件里出现两套互相冲突的 level 映射）
+            fallback_levels = self.legacy_redirect_levels.get(audio_quality)
+            target_level = (fallback_levels or self.legacy_redirect_levels['96K'])[0]
             
             # 优先查找精确匹配的MP3
             mp3_url_info = None
@@ -3375,21 +3417,12 @@ class XimalayaDownloadManager:
             return False
     
     def _sanitize_filename(self, filename: str) -> str:
-        """清理文件名"""
-        # 移除非法字符
-        illegal_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
-        for char in illegal_chars:
-            filename = filename.replace(char, '_')
-        
-        # 限制长度
-        if len(filename) > 150:
-            filename = filename[:150]
-        
-        # 确保不为空
-        if not filename:
-            filename = "未知音频"
-        
-        return filename
+        """清理文件名。
+
+        规则集中在 `core.naming.sanitize_segment`；参数保持与改造前一致
+        （上限 150、空值兜底「未知音频」、不做 strip），因此产物不变。
+        """
+        return sanitize_segment(filename, max_len=150, fallback="未知音频", strip=False)
 
 
 def test_download_manager():

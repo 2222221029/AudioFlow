@@ -11,6 +11,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from core.naming import sanitize_segment
+
 
 def utc_now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -26,13 +28,12 @@ def parse_iso(value):
 
 
 def sanitize_filename(filename):
-    filename = str(filename or "")
-    for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
-        filename = filename.replace(char, "_")
-    filename = filename.strip()
-    if len(filename) > 200:
-        filename = filename[:200]
-    return filename or "unknown"
+    """清理文件名片段。
+
+    规则集中在 `core.naming.sanitize_segment`；参数保持与改造前一致
+    （上限 200、空值兜底 "unknown"、去首尾空白），因此产物不变。
+    """
+    return sanitize_segment(filename, max_len=200, fallback="unknown", strip=True)
 
 
 AUDIO_EXTENSIONS = {".m4a", ".mp3", ".aac", ".flac", ".wav", ".ogg", ".caf"}
