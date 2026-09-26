@@ -571,5 +571,52 @@ class SubscriptionManagerTest(unittest.TestCase):
             self.assertTrue(all(i in missing_ids for i in range(1671, 1731)))
 
 
+    def test_failed_checks_back_off_exponentially(self):
+        """连续失败要指数退避，否则限流时会变成每个周期必然失败的死循环。"""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp:
+            manager = SubscriptionManager(config_tmp)
+            sub = manager.add_or_update(
+                {"id": "album-backoff", "title": "会限流的专辑", "platform": "网易云听书"}, []
+            )
+            sid = sub["id"]
+
+            expected = [1800, 3600, 7200, 14400, 21600]
+            for streak, want in enumerate(expected, start=1):
+                manager.mark_check_error(sid, "操作频繁，请稍候再试")
+                item = manager.get(sid)
+                self.assertEqual(item["consecutive_errors"], streak)
+                self.assertEqual(item["next_retry_in_seconds"], want)
+
+            # 退避必须有上限，不能无限增长
+            for _ in range(5):
+                manager.mark_check_error(sid, "还是失败")
+            self.assertEqual(manager.get(sid)["next_retry_in_seconds"], 21600)
+
+    def test_successful_check_resets_the_backoff(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp:
+            manager = SubscriptionManager(config_tmp)
+            sub = manager.add_or_update(
+                {"id": "album-reset", "title": "恢复正常", "platform": "喜马拉雅"}, []
+            )
+            sid = sub["id"]
+
+            manager.mark_check_error(sid, "失败一次")
+            manager.mark_check_error(sid, "失败两次")
+            self.assertEqual(manager.get(sid)["consecutive_errors"], 2)
+
+            manager.update_check_result(
+                sid,
+                [],
+                {"missing": [], "new_count": 0, "file_missing_count": 0, "partial_count": 0},
+                message="已检查",
+                refresh_local=False,
+            )
+
+            item = manager.get(sid)
+            self.assertEqual(item["consecutive_errors"], 0)
+            # 下次失败应重新从 30 分钟起算
+            manager.mark_check_error(sid, "又失败")
+            self.assertEqual(manager.get(sid)["next_retry_in_seconds"], 1800)
+
 if __name__ == "__main__":
     unittest.main()

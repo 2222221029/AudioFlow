@@ -30,6 +30,15 @@ class NeteaseCloudAudiobookManager:
     max_program_pages = 200
     program_page_attempts = 3
     program_page_retry_delays = (0.35, 0.8)
+    #: 目录分页之间的间隔。原先页与页之间没有任何停顿，一张 2781 章的专辑会连发
+    #: 6 个请求，很容易被网易云按「操作频繁」限流（code=405）。
+    program_page_interval = 1.2
+    #: 命中限流时的专用退避序列。限流不是"拿到坏数据"，立即失败只会让订阅在
+    #: 每个调度周期都必然再撞一次。
+    program_page_rate_limit_delays = (5.0, 15.0, 45.0)
+    #: 限流的判定标记（code 与 message 任一命中）
+    rate_limit_codes = ("405",)
+    rate_limit_markers = ("操作频繁", "请求过于频繁", "稍候再试", "too frequent", "rate limit")
     preset_key = "0CoJUm6Qyw8W8jud"
     iv = "0102030405060708"
     rsa_exponent = "010001"
@@ -219,6 +228,9 @@ class NeteaseCloudAudiobookManager:
 
         print(f"📚 获取网易云听书完整节目列表: {radio_id}")
         for page in range(1, self.max_program_pages + 1):
+            if page > 1 and self.program_page_interval > 0:
+                # 页间留出间隔：网易云对同一 IP 的连续分页请求限流很紧
+                time.sleep(self.program_page_interval)
             data = self._fetch_program_page(radio_id, offset=offset, limit=limit)
             programs = [item for item in (data.get("programs") or []) if isinstance(item, dict)]
             if not programs:
@@ -265,6 +277,14 @@ class NeteaseCloudAudiobookManager:
                 return number
         return 0
 
+    @classmethod
+    def _is_rate_limited(cls, code, message) -> bool:
+        """判定是否为网易云的限流响应（它把限流码放在 JSON 的 code 里）。"""
+        if str(code or "") in cls.rate_limit_codes:
+            return True
+        text = str(message or "")
+        return any(marker in text for marker in cls.rate_limit_markers)
+
     def _fetch_program_page(
         self,
         radio_id: str,
@@ -281,6 +301,7 @@ class NeteaseCloudAudiobookManager:
         last_data = {}
         last_error = None
         for attempt in range(1, self.program_page_attempts + 1):
+            rate_limited = False
             try:
                 data = self._post_weapi(
                     "/weapi/dj/program/byradio",
@@ -292,26 +313,39 @@ class NeteaseCloudAudiobookManager:
                 code = str(data.get("code") or "200")
                 if code != "200":
                     message = str(data.get("message") or data.get("msg") or "未知错误")
-                    raise RuntimeError(f"网易云节目接口返回 {code}：{message}")
-                last_data = data
-                programs = data.get("programs")
-                if isinstance(programs, list) and programs:
-                    return data
-                if (
-                    isinstance(programs, list)
-                    and data.get("more") is False
-                    and self._program_total(data, programs) == 0
-                    and int(expected_total or 0) <= 0
-                ):
-                    return data
-                last_error = None
+                    if self._is_rate_limited(code, message):
+                        # 限流：走专用退避重试，而不是当普通错误立刻上抛 —— 后者会让
+                        # 订阅在每个调度周期都必然再撞一次限流。
+                        rate_limited = True
+                        last_error = RuntimeError(f"网易云节目接口返回 {code}：{message}")
+                    else:
+                        raise RuntimeError(f"网易云节目接口返回 {code}：{message}")
+                else:
+                    last_data = data
+                    programs = data.get("programs")
+                    if isinstance(programs, list) and programs:
+                        return data
+                    if (
+                        isinstance(programs, list)
+                        and data.get("more") is False
+                        and self._program_total(data, programs) == 0
+                        and int(expected_total or 0) <= 0
+                    ):
+                        return data
+                    last_error = None
             except requests.RequestException as exc:
                 last_error = exc
 
             if attempt >= self.program_page_attempts:
                 break
-            delay = self.program_page_retry_delays[min(attempt - 1, len(self.program_page_retry_delays) - 1)]
-            print(f"⚠️ 网易云节目页暂未返回有效数据，{delay:.2f} 秒后重试（{attempt + 1}/{self.program_page_attempts}）")
+            if rate_limited:
+                delays = self.program_page_rate_limit_delays
+                delay = delays[min(attempt - 1, len(delays) - 1)]
+                print(f"⚠️ 网易云接口限流（操作频繁），{delay:.1f} 秒后重试"
+                      f"（{attempt + 1}/{self.program_page_attempts}）")
+            else:
+                delay = self.program_page_retry_delays[min(attempt - 1, len(self.program_page_retry_delays) - 1)]
+                print(f"⚠️ 网易云节目页暂未返回有效数据，{delay:.2f} 秒后重试（{attempt + 1}/{self.program_page_attempts}）")
             time.sleep(delay)
 
         if last_error is not None:

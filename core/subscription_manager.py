@@ -1086,12 +1086,24 @@ class SubscriptionManager:
         item["last_message"] = message or "检测失败"
         # 失败后 30 分钟内重试，而不是等完整检测间隔——否则「官方刚更新章节恰逢一次
         # 检测失败」要等默认 6 小时才重试，期间官方新章节检测不到。
+        #
+        # 但固定 30 分钟在平台限流时会退化成死循环：每个周期都重试、每个周期都失败。
+        # 所以按连续失败次数做指数退避（30min → 1h → 2h → 4h，上限 6 小时），
+        # 成功一次即归零（见 record_check）。
+        try:
+            streak = int(item.get("consecutive_errors") or 0) + 1
+        except (TypeError, ValueError):
+            streak = 1
+        item["consecutive_errors"] = streak
+        interval = self.interval_seconds()
+        backoff = min(1800 * (2 ** (streak - 1)), 21600, interval)
         try:
             item["last_check_at"] = (
-                parse_iso(now) - timedelta(seconds=self.interval_seconds() - 1800)
+                parse_iso(now) - timedelta(seconds=interval - backoff)
             ).replace(microsecond=0).isoformat() + "Z"
         except Exception:
             item["last_check_at"] = now
+        item["next_retry_in_seconds"] = int(backoff)
         self.save()
 
     # 各平台章节/专辑返回的发布时间字段（喜马拉雅 track.created_at 为秒级时间戳、
@@ -1506,6 +1518,9 @@ class SubscriptionManager:
             item["last_update_at"] = max(publish_times)
         item["last_check_at"] = utc_now_iso()
         item["updated_at"] = utc_now_iso()
+        # 检测成功 → 清空连续失败计数，让下次失败重新从 30 分钟起退避
+        item["consecutive_errors"] = 0
+        item.pop("next_retry_in_seconds", None)
         item["last_message"] = message
         stats = self.refresh_local_stats(item, item.get("download_dir") or "", save=False, scan_cache=scan_cache) if refresh_local and item.get("download_dir") else None
         item["last_diff"] = {
