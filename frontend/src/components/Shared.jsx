@@ -9,6 +9,10 @@ import {api} from '../services/api.js';
 
 const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
 const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
+const XMLY_PC_INTERFACE = '喜马拉雅电脑版接口（自动最高音质）';
+// 注意：下面这些 value 里刻意不出现“无损”字样。后端的
+// _is_ximalaya_lossless_quality() 是「文本包含『无损』」判定，PC 的 256K
+// 只是客户端标称，并非真无损母带，不能被当成无损档处理。
 const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: XMLY_MOBILE_INTERFACE, label: '自动最佳（无损 → 128/64/24K）'},
   {value: '杜比全景声优先（自动降级）', label: '杜比全景声优先（推荐）'},
@@ -20,9 +24,15 @@ const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: 'M4A 128K', label: 'M4A 128/96K（level 2）'},
   {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
   {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
+  {value: XMLY_PC_INTERFACE, label: '电脑版 · 自动最佳（256K → 24K）'},
+  {value: 'PC 256K', label: 'PC 256K（电脑版最高档）'},
+  {value: 'PC 128K', label: 'PC 128K（电脑版 HQ）'},
+  {value: 'PC 64K', label: 'PC 64K（电脑版标准）'},
+  {value: 'PC 24K', label: 'PC 24K'},
 ];
 const XMLY_SUBSCRIPTION_QUALITY_OPTIONS = [
   {value: XMLY_WEB_INTERFACE, label: '网页版接口（默认）'},
+  {value: XMLY_PC_INTERFACE, label: '电脑版 · 自动最佳音质'},
   {value: XMLY_MOBILE_INTERFACE, label: '移动端 V4 · 自动最高音质'},
   {value: '杜比全景声优先（自动降级）', label: '移动端 V4 · 杜比全景声优先'},
   {value: '无损优先（自动降级）', label: '移动端 V4 · 无损优先'},
@@ -34,10 +44,15 @@ const XMLY_MOBILE_QUALITY_HELP = {
   '无损优先（自动降级）': '每集按无损 → 128/96K → 64K → 24K 下载。没有无损的单集会立即降级。',
   '杜比全景声': '严格请求 level 12，不可用时不会降级。文件为 E-AC-3 M4A，Windows 默认播放器可能不支持，请使用兼容播放器。',
   'Audio Vivid 菁彩声': '严格请求 level 13，不可用时不会降级。需要支持 Audio Vivid / AVS3-P3 的播放器。',
-  '无损真人录制': '严格请求 level 3，不可用时不会降级；实际文件可能是 WAV、FLAC 或 M4A。',
+  '无损真人录制': '严格请求移动端 level 3，不可用时不会降级；实际文件可能是 WAV、FLAC 或 M4A。',
   'M4A 128K': '严格请求移动端 level 2；部分旧资源可能标记为约 96K。',
   'M4A 64K': '严格请求移动端 level 1。',
   'M4A 24K': '严格请求移动端 level 0。',
+  [XMLY_PC_INTERFACE]: '走电脑版 download/v2 通道，每集按 256K → 128K → 64K → 24K 自动选择。只需要网页登录态：设备号与 xm-sign 签名都在本地生成，不需要 App 票据或 Frida。无权限的档位才会降级，网络错误不会降档。',
+  'PC 256K': '电脑版客户端索引 3，是该通道的最高档（客户端标称，约为 256kbps，并非 24bit 母带）。实际档位以服务端回传为准。',
+  'PC 128K': '电脑版 HQ 高清档（索引 2）。取址结果按服务端回传的实际档位标记。',
+  'PC 64K': '电脑版标准档（索引 1）。',
+  'PC 24K': '电脑版省流档（索引 0）。',
 };
 
 async function copyText(text) {
@@ -1360,11 +1375,15 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
             <div className="xmly-credential-status" aria-label="喜马拉雅凭证状态">
               <span className={`xmly-credential-pill ${info.has_web_cookie ? 'ready' : ''}`}>网页登录：{info.has_web_cookie ? '已设置' : '未设置'}</span>
               <span
+                className={`xmly-credential-pill ${info.has_web_cookie ? 'ready' : ''}`}
+                title="电脑版取流只需要网页登录态：1&_device 设备号与 xm-sign 签名都在本地生成，不需要 App 票据或 Frida。"
+              >电脑版：{info.has_web_cookie ? '随网页登录可用' : '需先登录网页版'}</span>
+              <span
                 className={`xmly-credential-pill ${info.has_mobile_ticket ? 'ready' : (mobileCredential.has_ticket ? 'warning' : '')}`}
                 title={mobileCredential.message || ''}
               >移动版 V4：{mobileCredential.local_ticket_ready
                 ? '本地出票就绪'
-                : (info.has_mobile_ticket ? '格式完整' : (mobileCredential.has_mobile_cookie || mobileCredential.has_ticket ? '凭证不完整' : '未设置'))}</span>
+                : (info.has_mobile_ticket ? '已就绪' : (mobileCredential.has_mobile_cookie || mobileCredential.has_ticket ? '凭证不完整' : '未设置'))}</span>
             </div>
           )}
           <div className="cookie-actions">
@@ -1384,7 +1403,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           {platform.key === 'xmly' && (
             <div className="xmly-ticket-editor">
               <label className="field-label" htmlFor="xmlyMobileV4Cookie">移动版 V4 App Cookie</label>
-              <div className="cookie-desc">粘贴实体 Android App 的完整 Cookie，也支持粘贴同一次 <code>baseInfo</code> 请求头或导出的 cURL。该凭证独立保存且不会回显，不会修改网页登录 Cookie。</div>
+              <div className="cookie-desc">扫码登录后，App 端凭证会由网页 token 自动派生（设备号与 <code>x-tk</code> 本地生成），通常无需在这里操作。需要指定一台实体 Android 设备、或想覆盖自动派生的结果时，再粘贴完整 Cookie —— 也支持粘贴同一次 <code>baseInfo</code> 请求头或导出的 cURL。该凭证独立保存且不会回显，不会修改网页登录 Cookie。</div>
               <textarea
                 id="xmlyMobileV4Cookie"
                 value={mobileCookie}
@@ -1412,7 +1431,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               {mobileCredential.message && mobileCredential.state !== 'missing_ticket' && (
                 <div className={`cookie-note ${info.has_mobile_ticket ? 'ok' : 'warn'}`}>{mobileCredential.message}</div>
               )}
-              <div className="cookie-desc">Cookie 必须包含已登录账号 token，以及稳定的 <code>1&amp;_device=android&amp;设备ID</code>。保存成功后应显示“本地出票就绪”；AudioFlow 会为每次 V4 请求本地生成 <code>x-tk</code>，无需 Bridge/ReDroid。请勿随机更换设备 ID。</div>
+              <div className="cookie-desc">Cookie 必须包含已登录账号 token，以及稳定的 <code>1&amp;_device=android&amp;设备ID</code>。保存成功后应显示“本地出票就绪”；AudioFlow 会为每次 V4 请求本地生成 <code>x-tk</code>，无需 Bridge/ReDroid。请勿随机更换设备 ID。<br />同一个 <code>1&amp;_token</code> 在网页端、电脑版与 App 端通用，所以扫码一次即可覆盖三端；这里手工保存的凭证会覆盖自动派生结果，删除后不会自动重建。</div>
             </div>
           )}
         </>
@@ -1537,6 +1556,9 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
   const [lrtsMode, setLrtsMode] = useState('sms');
   const [manualCredential, setManualCredential] = useState('');
   const [savingManualCredential, setSavingManualCredential] = useState(false);
+  // 喜马拉雅扫码后后端派生的三端凭证摘要（对象或 null），用于在弹窗里
+  // 明确告诉用户「哪三端已经就绪」，而不是只弹一句「登录成功」。
+  const [derivedSummary, setDerivedSummary] = useState(null);
   const sessionRef = useRef('');
 
   useEffect(() => {
@@ -1561,9 +1583,19 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
             // 懒人听书：账号密码输入模式
             if (session.status === 'success') {
               clearInterval(timer);
+              // 喜马拉雅扫码后，后端会就地派生电脑版与 App 端凭证并把摘要
+              // 放进 extra.universal；派生成功时留一点时间让用户看到提示。
+              const universal = session.extra?.universal;
+              const derived = Boolean(universal && universal.ok);
+              setMessage(derived
+                ? '登录成功：已自动派生电脑版与 App 端凭证'
+                : (session.message || '登录成功'));
+              if (derived) setDerivedSummary(universal);
               // 懒人听书：需要额外调保存接口
               onDone?.();
-              onClose();
+              // 派生成功时留出时间让用户看清三端状态，再关闭弹窗
+              if (derived) setTimeout(() => onClose(), 2600);
+              else onClose();
             } else if (['failed', 'expired', 'cancelled'].includes(session.status)) {
               clearInterval(timer);
               setError(session.message || session.status);
@@ -1763,9 +1795,28 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
       <div className="qr-box">
         {qr ? <img className="qr-img" src={qr} alt="QR code" /> : <span className="loading" />}
       </div>
+      {derivedSummary && (
+        <div aria-label="三端凭证状态">
+          <div className="xmly-credential-status">
+            {[
+              {label: '网页端', ok: Boolean(derivedSummary.web_cookie_ready)},
+              {label: '电脑版', ok: Boolean(derivedSummary.pc_cookie_ready && derivedSummary.pc_device_present)},
+              {label: 'App 端', ok: Boolean(derivedSummary.mobile_cookie_ready && derivedSummary.ticket_ready)},
+            ].map((item) => (
+              <span key={item.label} className={`xmly-credential-pill ${item.ok ? 'ready' : 'warning'}`}>
+                {item.label}：{item.ok ? '已就绪' : '未就绪'}
+              </span>
+            ))}
+          </div>
+          <div className="modal-sub modal-note">
+            账号 uid {derivedSummary.uid || '—'}
+            {derivedSummary.device_uuid ? ` · 设备 ${String(derivedSummary.device_uuid).slice(0, 8)}…` : ''}
+          </div>
+        </div>
+      )}
       <div className="modal-sub modal-note">
         使用对应 App 扫码，登录成功后会自动保存 Cookie。
-        {platform.key === 'xmly' && ' 喜马拉雅扫码只授权网页会话，不会导出手机 App 请求头；此前单独保存的移动端凭证会保留。'}
+        {platform.key === 'xmly' && ' 扫码成功后会自动派生电脑版与 App 端凭证（设备号与 x-tk 都在本地生成），无需再手工抓包；已单独保存的移动端凭证会被保留。'}
         {scope === 'personal' ? '此 Cookie 仅用于个人中心。' : ''}
       </div>
     </>
@@ -2164,7 +2215,7 @@ export function SettingsPage({app}) {
           <div className="settings-section-head"><div><h4>下载设置</h4><span>常用的保存位置、音质与下载性能</span></div></div>
           <div className="settings-grid">
             <div className="field-row settings-span-2"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
-            <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option></select></div>
+            <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option><option value={XMLY_PC_INTERFACE}>喜马拉雅电脑版 · 自动最佳</option><option value="PC 256K">PC 256K（电脑版最高档）</option><option value="PC 128K">PC 128K（电脑版 HQ）</option></select></div>
             <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64" /></div>
             <div className="field-row settings-span-2">
               <label className="field-label">自动整理（仅手动下载）</label>

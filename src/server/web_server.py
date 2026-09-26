@@ -172,12 +172,20 @@ wecom_sessions = {}
 WECOM_SESSION_TTL_SECONDS = int(os.getenv("WECOM_SESSION_TTL_SECONDS", "600") or "600")
 WECOM_SESSION_MAX_ITEMS = int(os.getenv("WECOM_SESSION_MAX_ITEMS", "500") or "500")
 XMLY_WEB_SUBSCRIPTION_QUALITY = "喜马拉雅网页版接口"
+XMLY_PC_INTERFACE = "喜马拉雅电脑版接口（自动最高音质）"
+XMLY_PC_QUALITIES = {
+    "PC 256K",
+    "PC 128K",
+    "PC 64K",
+    "PC 24K",
+}
 XMLY_SUBSCRIPTION_QUALITIES = {
     XMLY_WEB_SUBSCRIPTION_QUALITY,
+    XMLY_PC_INTERFACE,
     "喜马拉雅移动端接口（自动最高音质）",
     "杜比全景声优先（自动降级）",
     "无损优先（自动降级）",
-}
+} | XMLY_PC_QUALITIES
 SUBSCRIPTIONS_FILE = config_dir() / "subscriptions.json"
 TASKS_FILE = config_dir() / "tasks.json"
 BACKGROUND_EVENTS_FILE = log_dir() / "events.jsonl"
@@ -402,7 +410,7 @@ def ximalaya_subscription_quality(album, value=None, *, default_web=False):
     )
     if platform != "喜马拉雅":
         if value not in (None, ""):
-            raise ValueError("只有喜马拉雅订阅支持单独选择网页版、杜比或无损")
+            raise ValueError("只有喜马拉雅订阅支持单独选择网页版、电脑版、杜比或无损")
         return None
     quality = str(value or "").strip()
     if not quality and default_web:
@@ -2955,6 +2963,9 @@ def _wecom_async_command(service_id, user_id, text):
                 "杜比全景声": "杜比全景声优先（自动降级）",
                 "全景声": "杜比全景声优先（自动降级）",
                 "无损": "无损优先（自动降级）",
+                "电脑": XMLY_PC_INTERFACE,
+                "电脑版": XMLY_PC_INTERFACE,
+                "PC": XMLY_PC_INTERFACE,
             }.get(quality_alias, XMLY_WEB_SUBSCRIPTION_QUALITY)
             subscription_quality = ximalaya_subscription_quality(
                 album,

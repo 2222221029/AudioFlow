@@ -442,7 +442,7 @@ def ximalaya_mobile_credential_status(value: Any) -> Dict[str, Any]:
     elif not user_agent:
         state, message = "missing_user_agent", "缺少同一次移动端请求中的 User-Agent"
     else:
-        state, message = "complete", "移动端请求头格式完整，将在下载时验证账号与音质权限"
+        state, message = "complete", "移动端凭证已就绪，将在下载时验证账号与音质权限"
 
     return {
         "state": state,

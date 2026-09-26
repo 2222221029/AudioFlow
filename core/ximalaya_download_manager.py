@@ -28,6 +28,14 @@ from .ximalaya_credentials import (
     ximalaya_mobile_credential_status,
 )
 from .ximalaya_local_ticket import LocalTicketError, generate_mobile_ticket
+from .ximalaya_pc_source import (
+    PC_QUALITY_TIERS,
+    PC_RET_MISSING_DEVICE,
+    PC_RET_NOT_LOGGED_IN,
+    PcSourceError,
+    PcTrackSource,
+    extract_login_token,
+)
 
 
 def _positive_env_float(name: str, default: float, minimum: float = 0.0) -> float:
@@ -72,6 +80,23 @@ XIMALAYA_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504, 522, 524})
 # 「立即购买畅听」：付费集无权限的权威信号，比按文案关键词猜测可靠。
 XIMALAYA_RET_PURCHASE_REQUIRED = 726
 
+#: Web V3 的 trackQualityLevel。服务端在 ``>= 2`` 时才把 M4A_128 / FHQ
+#: （24bit WAV 无损）加进 playUrlList；取 3 与源项目实测一致。
+WEB_V3_QUALITY_LEVEL = 3
+
+# PC 通道（mobile/download/v2/track）档位。这是客户端内部索引，不是线性码率
+# 排序：0=24K / 1=64K / 2=128K / 3=256K（客户端标称"无损"）。服务端会用
+# data.downloadQualityLevel 回传该集实际采用的档位。
+PC_QUALITY_LABELS: Dict[str, int] = {
+    "PC 256K": 3,
+    "PC 128K": 2,
+    "PC 64K": 1,
+    "PC 24K": 0,
+}
+
+#: PC 通道的自动降级链（由高到低）
+PC_QUALITY_CHAIN = (3, 2, 1, 0)
+
 
 class XimalayaDownloadManager:
     """喜马拉雅下载管理器"""
@@ -87,6 +112,7 @@ class XimalayaDownloadManager:
     _MOBILE_V4_ANONYMOUS_TICKET = MOBILE_V4_ANONYMOUS_TICKET
     WEB_AUTO_QUALITY = "喜马拉雅网页版接口"
     MOBILE_AUTO_QUALITY = "喜马拉雅移动端接口（自动最高音质）"
+    PC_AUTO_QUALITY = "喜马拉雅电脑版接口（自动最高音质）"
     MOBILE_DOLBY_PREFERRED_QUALITY = "杜比全景声优先（自动降级）"
     MOBILE_VIVID_PREFERRED_QUALITY = "Audio Vivid 优先（自动降级）"
     MOBILE_LOSSLESS_PREFERRED_QUALITY = "无损优先（自动降级）"
@@ -506,9 +532,33 @@ class XimalayaDownloadManager:
             print(f"   RETRY: Web V3 {reason}，{delay:.1f} 秒后重试")
             time.sleep(delay)
 
+    #: Web V3 的容器质量排名（越大越好）。FHQ 是 24bit PCM WAV 母带（无损，
+    #: 实测单集 40~300MB），必须排在 M4A/AAC 之前。旧实现按"是不是 M4A/AAC"
+    #: 打分，把 FHQ 判成低优先级 —— 服务端明明返回了无损，最终仍然选中体积
+    #: 只有它 1/20 的 M4A_128。这与源项目文档「trackQualityLevel ≥ 2 才会把
+    #: M4A_128 / FHQ 加进列表」配套，缺了排序就等于白拿。
+    _WEB_CONTAINER_RANK = (
+        (("FHQ", "FLAC", "LOSSLESS"), 3),
+        (("M4A", "AAC"), 2),
+        (("MP3",), 1),
+    )
+
+    @classmethod
+    def _web_container_rank(cls, type_name) -> int:
+        """按容器质量给 Web V3 音质类型排名（无损 > M4A/AAC > MP3 > 未知）。"""
+        upper = str(type_name or "").upper()
+        for markers, rank in cls._WEB_CONTAINER_RANK:
+            if any(marker in upper for marker in markers):
+                return rank
+        return 0
+
     @classmethod
     def _select_web_play_candidate(cls, track_info: Dict):
-        """Choose the best decrypted web stream, preferring M4A containers."""
+        """Choose the best decrypted web stream.
+
+        排序为 ``(容器质量, qualityLevel, fileSize)`` 降序：无损母带优先，
+        其次更高档位，最后更大的文件。
+        """
         candidates = []
         for item in track_info.get("playUrlList") or []:
             encrypted_url = str(item.get("url") or "").strip()
@@ -521,8 +571,7 @@ class XimalayaDownloadManager:
                 continue
 
             type_name = str(item.get("type") or "WEB").strip()
-            upper_type = type_name.upper()
-            preferred_format = 2 if any(marker in upper_type for marker in ("M4A", "AAC")) else 1
+            container_rank = cls._web_container_rank(type_name)
             try:
                 quality_level = int(item.get("qualityLevel") or 0)
             except (TypeError, ValueError):
@@ -532,7 +581,7 @@ class XimalayaDownloadManager:
             except (TypeError, ValueError):
                 expected_size = 0
             candidates.append((
-                (preferred_format, quality_level, expected_size),
+                (container_rank, quality_level, expected_size),
                 audio_url,
                 expected_size,
                 type_name,
@@ -2162,7 +2211,32 @@ class XimalayaDownloadManager:
         self.last_download_quality_label = ""
         self.last_download_path = ""
 
+        # 明确指定 PC 档位（"PC 256K" 等）：直接走电脑版通道
+        pc_level = PC_QUALITY_LABELS.get(str(quality or "").strip())
+        if pc_level is not None:
+            print(f"🖥️ 使用喜马拉雅电脑版通道 - {self._pc_quality_label(pc_level)}")
+            return self._download_pc_track(
+                track_id, pc_level, save_path, chapter_title,
+                progress_callback=progress_callback,
+            )
+
+        if str(quality or "").strip() == self.PC_AUTO_QUALITY:
+            print("🖥️ 电脑版通道：按 256K → 128K → 64K → 24K 自动选择")
+            return self._download_pc_best_available(
+                track_id, save_path, chapter_title, progress_callback=progress_callback
+            )
+
         if str(quality or "").strip() == self.MOBILE_AUTO_QUALITY:
+            if not self._has_mobile_credentials() and self._has_pc_credentials():
+                # 没有 App 票据时，PC 通道是不需要 Frida / 真机抓包的高音质备选
+                print("🎼 未配置移动端凭证，改用电脑版通道（仅需网页登录态）")
+                if self._download_pc_best_available(
+                    track_id, save_path, chapter_title,
+                    progress_callback=progress_callback,
+                ):
+                    return True
+                self.last_error = ""
+                self.last_error_type = ""
             print("🎼 使用喜马拉雅移动端 V4，按无损 → 128/96K → 64K → 24K 自动选择")
             return self._download_mobile_best_available(
                 track_id, save_path, chapter_title, progress_callback=progress_callback
@@ -2314,6 +2388,150 @@ class XimalayaDownloadManager:
                 return False
             return self._download_default(audio_urls, save_path, album_title, chapter_title)
     
+    # ── PC 通道（download/v2/track + 本地生成的 xm-sign）─────────────────
+    def _pc_source(self):
+        """惰性构造 PC 取流器；没有网页登录态时返回 None。
+
+        取流器自带 xm-sign 缓存，实例需要复用；Cookie 变化时重建。
+        """
+        token = extract_login_token(self.cookie_string)
+        if not token:
+            return None
+        uid = token.split("&", 1)[0].strip()
+        if not uid or uid == "0":
+            return None
+        cached = getattr(self, "_pc_source_state", None)
+        if cached and cached[0] == token:
+            return cached[1]
+        try:
+            source = PcTrackSource(session=self.session, cookie=self.cookie_string)
+        except PcSourceError as exc:
+            self._record_error(f"PC 通道初始化失败: {exc}")
+            return None
+        self._pc_source_state = (token, source)
+        return source
+
+    def _has_pc_credentials(self) -> bool:
+        """PC 通道只需网页登录态：设备号与签名都在本地生成。"""
+        return self._pc_source() is not None
+
+    @staticmethod
+    def _pc_quality_label(level) -> str:
+        return PC_QUALITY_TIERS.get(level, f"PC level-{level}")
+
+    def _download_pc_track(self, track_id: str, level: int, save_path: str,
+                           chapter_title: str = "", progress_callback=None) -> bool:
+        """用电脑版 download/v2 通道下载单个章节。
+
+        与移动端 V4 的区别：**不需要 x-tk / 真机票据**，只要有网页登录态与
+        本地生成的 xm-sign 就能取址；代价是最高档 256K，拿不到无损/杜比。
+        """
+        source = self._pc_source()
+        if source is None:
+            self._record_error(
+                "PC 通道需要网页登录态（Cookie 缺少 1&_token）", error_type='restricted'
+            )
+            return False
+
+        result = source.resolve(track_id, level)
+        if not result.ok:
+            if result.ret in (PC_RET_NOT_LOGGED_IN, PC_RET_MISSING_DEVICE,
+                              XIMALAYA_RET_PURCHASE_REQUIRED):
+                error_type = 'restricted'
+            else:
+                error_type = 'download_failed'
+            self._record_error(f"PC 通道取址失败: {result.message}", result.ret, error_type)
+            return False
+
+        final_path = Path(save_path)
+        temp_path = final_path.with_name(final_path.name + '.part')
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            temp_path.unlink(missing_ok=True)
+            response = self.session.get(result.url, stream=True, timeout=(10, 180))
+            if response.status_code != 200:
+                status_code = response.status_code
+                close = getattr(response, 'close', None)
+                if close:
+                    close()
+                # 502/503/504 是并发下的常态限流，换档位同样会失败；不能把它
+                # 伪装成"音质不可用"而触发静默降级。
+                self._record_error(
+                    f"PC 通道媒体下载 HTTP {status_code}",
+                    status_code,
+                    error_type=('download_failed'
+                                if status_code in XIMALAYA_TRANSIENT_STATUS else None),
+                )
+                return False
+
+            try:
+                expected = int(response.headers.get('content-length') or 0)
+            except (TypeError, ValueError):
+                expected = 0
+            if not expected:
+                expected = int(result.file_size or 0)
+
+            total = 0
+            with temp_path.open('wb') as output:
+                for chunk in response.iter_content(chunk_size=512 * 1024):
+                    if not chunk:
+                        continue
+                    output.write(chunk)
+                    total += len(chunk)
+                    if progress_callback:
+                        progress_callback(total, expected)
+            close = getattr(response, 'close', None)
+            if close:
+                close()
+
+            validation_error = ''
+            if total <= 1024:
+                validation_error = f"文件过小（{total} 字节）"
+            elif expected and total != expected:
+                validation_error = f"文件不完整（应为 {expected} 字节，实际 {total} 字节）"
+            if validation_error:
+                temp_path.unlink(missing_ok=True)
+                self._record_error(f"PC 通道{validation_error}，已拒绝保存")
+                return False
+
+            os.replace(temp_path, final_path)
+            label = result.quality_label or self._pc_quality_label(level)
+            actual = result.level if result.level is not None else level
+            print(f"✅ PC 通道下载成功: {final_path.name} "
+                  f"({label}, 请求档位 {level}, {total / 1048576:.2f}MB)")
+            self.last_error = ''
+            self.last_error_type = ''
+            self.last_download_source = f"pc_download_v2_level_{actual}"
+            self.last_download_size = total
+            self.last_download_expected_size = expected
+            self.last_download_quality_label = label
+            self.last_download_path = str(final_path)
+            return True
+        except Exception as exc:
+            temp_path.unlink(missing_ok=True)
+            self._record_error(f"PC 通道下载异常: {exc}", error_type='download_failed')
+            return False
+
+    def _download_pc_best_available(self, track_id: str, save_path: str,
+                                    chapter_title: str = "",
+                                    progress_callback=None) -> bool:
+        """PC 通道自动链：256K → 128K → 64K → 24K。
+
+        只有"该档位无权限"才降档；网络/风控/完整性失败不降档，交给上层章节
+        重试 —— 与移动端 V4 质量链的语义保持一致。
+        """
+        for level in PC_QUALITY_CHAIN:
+            print(f"   ▶️ 尝试 {self._pc_quality_label(level)}")
+            if self._download_pc_track(track_id, level, save_path, chapter_title,
+                                       progress_callback=progress_callback):
+                return True
+            if self.last_error_type != 'restricted':
+                return False
+            self.last_error = ''
+            self.last_error_type = ''
+        return False
+
     def _download_m4a_direct_api(self, track_id: str, audio_quality: str, save_path: str,
                                  chapter_title: str, progress_callback=None,
                                  allow_public_fallback: bool = True) -> bool:
@@ -2532,7 +2750,11 @@ class XimalayaDownloadManager:
         try:
             # 1. 调用网页端API获取音频信息
             timestamp = int(time.time() * 1000)
-            web_api_url = f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}?device=web&trackId={track_id}"
+            web_api_url = (
+                f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}"
+                f"?device=web&trackId={track_id}"
+                f"&trackQualityLevel={WEB_V3_QUALITY_LEVEL}"
+            )
             
             # 使用网页端Headers
             web_headers = {
@@ -2937,7 +3159,11 @@ class XimalayaDownloadManager:
         urls = {}
         try:
             timestamp = int(time.time() * 1000)
-            web_api_url = f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}?device=web&trackId={track_id}"
+            web_api_url = (
+                f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}"
+                f"?device=web&trackId={track_id}"
+                f"&trackQualityLevel={WEB_V3_QUALITY_LEVEL}"
+            )
             response = self.session.get(web_api_url, timeout=10)
             
             if response.status_code == 200:
@@ -2964,28 +3190,32 @@ class XimalayaDownloadManager:
         return urls
     
     def _get_pc_audio_urls(self, track_id: str) -> Dict:
-        """获取PC端音频URL"""
+        """电脑版音频 URL（download/v2 通道）。
+
+        旧实现裸调 `revision/play/v1/audio`，该接口已被服务端下线（返回 404），
+        且没有带 PC 端必需的 xm-sign 头 —— 等于每次取流都白跑一次注定失败的
+        请求。现在改为走正式的 download/v2 通道。
+        """
         urls = {}
-        try:
-            pc_api_url = f"https://www.ximalaya.com/revision/play/v1/audio?id={track_id}&ptype=1"
-            response = self.session.get(pc_api_url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ret') == 200 and data.get('data'):
-                    url = data['data'].get('src', '')
-                    if url:
-                        urls['pc_default'] = {
-                            'url': url,
-                            'type': 'Unknown',
-                            'port': 'pc',
-                            'quality_level': 0
-                        }
-        except Exception as e:
-            print(f"⚠️ 获取PC端音频URL失败: {e}")
-        
+        source = self._pc_source()
+        if source is None:
+            return urls
+        for level in PC_QUALITY_CHAIN:
+            result = source.resolve(track_id, level)
+            if result.ok:
+                urls[f"pc_{result.tier}"] = {
+                    'url': result.url,
+                    'type': 'Unknown',
+                    'port': 'pc',
+                    'quality_level': result.level if result.level is not None else level,
+                    'file_size': result.file_size,
+                }
+                break
+            if result.ret in (PC_RET_NOT_LOGGED_IN, PC_RET_MISSING_DEVICE,
+                              XIMALAYA_RET_PURCHASE_REQUIRED):
+                break
         return urls
-    
+
     def _get_mini_program_audio_urls(self, track_id: str) -> Dict:
         """获取小程序音频URL"""
         urls = {}

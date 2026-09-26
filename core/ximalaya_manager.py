@@ -81,8 +81,9 @@ class XimalayaManager:
             'X-Requested-With': 'XMLHttpRequest',
         })
         
-        # 添加xm-sign字段（从参考文件中获取）
-        self.xm_sign = 'D256Y2bWKF5J/mrAkYx/IDBCUgI24xpXXFQE/gVJsU8b0X8a&&ptVWBRvUjLUvn9O8cP3uP9oALcOgOAzk0FOvKOLMRkM_1'
+        # PC 端签名（xm-sign）不再使用硬编码常量：该值是一次性的服务端下发
+        # 形态，无法长期复用，且旧实现里从未被任何代码读取。PC 端取流现在走
+        # core/ximalaya_pc_source.py + core/ximalaya_pc_sign.py（纯 Python 生成）。
         
         # 音频URL解密密钥和S-box
         self.key_www2 = bytes([204, 53, 135, 197, 39, 73, 58, 160, 79, 24, 12, 83, 180, 250, 101, 60, 206, 30, 10, 227, 36, 95, 161, 16, 135, 150, 235, 116, 242, 116, 165, 171])
@@ -593,6 +594,25 @@ class XimalayaManager:
             audio_urls['M4A_24k'] = dict(audio_urls['AAC_224'])
         return audio_urls
 
+    @staticmethod
+    def _web_container_format(type_name: str) -> str:
+        """Web V3 的 type → 展示用容器名。
+
+        不能按"不含 MP3/AAC 就当 M4A"处理：FHQ 是 24bit PCM WAV 无损母带
+        （实测单集 40~300MB），旧写法会把 39.7MB 的无损文件标成 M4A，
+        用户看到的是错误的有损标签。
+        """
+        upper = str(type_name or '').upper()
+        if 'FHQ' in upper or 'WAV' in upper:
+            return 'WAV'
+        if 'FLAC' in upper or 'LOSSLESS' in upper:
+            return 'FLAC'
+        if 'MP3' in upper:
+            return 'MP3'
+        if 'AAC' in upper or 'M4A' in upper:
+            return 'M4A'
+        return 'M4A'
+
     def _build_audio_urls_from_web_playlist(self, track_id: str, play_url_list: List) -> Dict:
         audio_urls = {}
         for url_info in play_url_list:
@@ -611,7 +631,7 @@ class XimalayaManager:
                 continue
 
             print(f"   🔓 {url_type} 直链: {decrypted_url[:80]}...")
-            fmt = 'MP3' if 'MP3' in url_type.upper() else ('AAC' if 'AAC' in url_type.upper() else 'M4A')
+            fmt = self._web_container_format(url_type)
             entry = {
                 'url': decrypted_url,
                 'size_mb': file_size / 1024 / 1024 if file_size else 0,
@@ -1744,7 +1764,12 @@ class XimalayaManager:
             # 网页端：AES 解密 playUrlList 为 CDN 直链（MP3/M4A）
             print("⚠️ 移动端直链不可用，尝试网页端 AES 解密")
             timestamp = get_timestamp_ms_str()
-            web_api_url = f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}?device=web&trackId={track_id}"
+            # trackQualityLevel >= 2 时服务端才会把 M4A_128 与 FHQ（24bit WAV
+            # 无损母带）加进 playUrlList；不传就只能在低档位里挑。
+            web_api_url = (
+                f"https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/{timestamp}"
+                f"?device=web&trackId={track_id}&trackQualityLevel=3"
+            )
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',

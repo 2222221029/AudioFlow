@@ -173,6 +173,61 @@ def _base64_image_to_data_url(value, content_type: str = "image/png") -> str:
 
 # ── 平台驱动 ────────────────────────────────────────────────────────
 
+def _active_cookie_manager():
+    """尽量复用 Web 服务已持有的 CookieManager 实例。
+
+    CookieManager 是"内存快照 + 整体覆写"模型：新建实例会在 save() 时用自己
+    的旧快照把别人的写入覆盖掉。所以优先在 sys.modules 里找回进程内已有的
+    实例，实在找不到才新建（例如在测试或命令行环境下）。
+    """
+    import sys
+    for module_name in ("web_server", "src.server.web_server"):
+        module = sys.modules.get(module_name)
+        manager = getattr(module, "cookie_manager", None) if module else None
+        if manager is not None:
+            return manager
+    try:
+        from core.cookie_manager import CookieManager
+        return CookieManager()
+    except Exception:
+        return None
+
+
+def _persist_universal_ximalaya_credentials(cookies) -> dict:
+    """扫码成功后派生三端通用凭证，并把移动端凭证就地保存。
+
+    依据：``1&_token`` 是账号级主令牌，三端完全通用；``1&_device`` 与 ``x-tk``
+    都能本地派生。因此扫码一次即可同时得到网页 / 电脑版 / App 三套凭证，
+    不需要分端抓包，也不需要 Frida 出票。
+
+    :return: 诊断摘要（不含 token / 票据本体）；失败时含 ``error`` 键
+    """
+    token = str((cookies or {}).get("1&_token") or "").strip()
+    if not token:
+        return {}
+    try:
+        from core.ximalaya_credentials import MOBILE_CREDENTIAL_PLATFORM
+        from core.ximalaya_universal_login import (
+            bundle_summary, derive_universal_credentials)
+
+        bundle = derive_universal_credentials(token)
+        credential = bundle.get("mobile_credentials") or {}
+        summary = bundle_summary(bundle)
+        if not credential.get("x_tk") or not credential.get("cookie"):
+            summary["ok"] = False
+            summary["error"] = bundle.get("ticket_error") or "移动端票据签发失败"
+            return summary
+
+        manager = _active_cookie_manager()
+        if manager is not None:
+            manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, credential)
+        summary["ok"] = True
+        summary["saved"] = manager is not None
+        return summary
+    except Exception as exc:      # 派生失败不应影响扫码登录本身
+        return {"ok": False, "error": str(exc)}
+
+
 def _drive_ximalaya(session: QRSession) -> None:
     from core.ximalaya_qr_login import XimalayaQRLoginWorker
     worker = XimalayaQRLoginWorker()
@@ -192,7 +247,16 @@ def _drive_ximalaya(session: QRSession) -> None:
         session.update(message=str(msg))
 
     def emit_ok(cookies):
-        session.update(status="success", message="登录成功", cookies=dict(cookies or {}))
+        payload = dict(cookies or {})
+        session.update(status="success", message="登录成功", cookies=payload)
+        # 扫码一次 → 三端通用：把网页 1&_token 派生成 App 凭证就地保存。
+        # 电脑版不需要额外保存 —— core/ximalaya_pc_source.py 会自行从网页
+        # Cookie 里提取 token，并本地生成设备号与 xm-sign。
+        universal = _persist_universal_ximalaya_credentials(payload)
+        if universal:
+            extra = dict(session.extra)
+            extra["universal"] = universal
+            session.update(extra=extra)
 
     def emit_fail(msg):
         if session.stopped:
