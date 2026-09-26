@@ -117,6 +117,31 @@ class XimalayaDownloadManager:
     #: 只出现在那个响应里。与 WEB_AUTO_QUALITY 的差别：网页自动模式为保护易被
     #: 风控的 Web V3，只在章节确认受限时才切过去；这个档位是主动选择，不走那层保护。
     WEB_LOSSLESS_QUALITY = "网页无损优先（FHQ WAV）"
+
+    # ── 网页无损专用节流 ────────────────────────────────────────────────
+    # baseInfo 在 trackQualityLevel>=2（要拿无损母带授权）时风控明显比普通网页档
+    # 更紧：整张专辑并发下载会大量返回 ret=1001「系统繁忙」。全局的
+    # _WEB_V3_MIN_INTERVAL 是按普通网页档调的（默认 0.25s ≈ 每秒 4 次），对这条
+    # 通道太激进，所以这里再串行化并留出更大的间隔。
+    _WEB_LOSSLESS_MIN_INTERVAL = _positive_env_float(
+        "XIMALAYA_WEB_LOSSLESS_MIN_INTERVAL", 1.5, 0.0
+    )
+    _WEB_LOSSLESS_LOCK = threading.Lock()
+    _WEB_LOSSLESS_LAST_AT = 0.0
+
+    @classmethod
+    def _wait_web_lossless_slot(cls):
+        """网页无损取址的串行闸门：同一时刻只放一个请求，并留出间隔。
+
+        持锁期间 sleep 是刻意的 —— 它把并发取址压成串行，代价是取址变慢，
+        换来的是不再被 ret=1001 反复拒绝。间隔可用
+        ``XIMALAYA_WEB_LOSSLESS_MIN_INTERVAL`` 调整，设 0 则只串行不等待。
+        """
+        with cls._WEB_LOSSLESS_LOCK:
+            wait = cls._WEB_LOSSLESS_LAST_AT + cls._WEB_LOSSLESS_MIN_INTERVAL - time.monotonic()
+            if wait > 0:
+                time.sleep(wait + random.uniform(0.0, 0.3))
+            cls._WEB_LOSSLESS_LAST_AT = time.monotonic()
     MOBILE_DOLBY_PREFERRED_QUALITY = "杜比全景声优先（自动降级）"
     MOBILE_VIVID_PREFERRED_QUALITY = "Audio Vivid 优先（自动降级）"
     MOBILE_LOSSLESS_PREFERRED_QUALITY = "无损优先（自动降级）"
@@ -737,9 +762,16 @@ class XimalayaDownloadManager:
         return None, last_data
 
     def _download_web_authorized(self, track_id: str, save_path: str,
-                                 chapter_title: str = "", progress_callback=None) -> bool:
-        """Download the stream authorized by the logged-in Ximalaya web account."""
+                                 chapter_title: str = "", progress_callback=None,
+                                 conservative: bool = False) -> bool:
+        """Download the stream authorized by the logged-in Ximalaya web account.
+
+        :param conservative: 走「网页无损优先」时为 True —— 取址前先过一道串行
+            闸门，避免整张专辑并发时被 ret=1001 反复拒绝。
+        """
         try:
+            if conservative:
+                self._wait_web_lossless_slot()
             track_info, data = self._request_web_track_info(track_id)
             if track_info is None:
                 return False
@@ -2242,6 +2274,7 @@ class XimalayaDownloadManager:
             return self._download_web_authorized(
                 track_id, save_path, chapter_title,
                 progress_callback=progress_callback,
+                conservative=True,
             )
 
         if str(quality or "").strip() == self.PC_AUTO_QUALITY:

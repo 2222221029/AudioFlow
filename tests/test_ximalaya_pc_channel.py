@@ -715,5 +715,69 @@ class XimalayaWebLosslessQualityTest(unittest.TestCase):
         self.assertIn(self.QUALITY, web_server.XMLY_SUBSCRIPTION_QUALITIES)
 
 
+class XimalayaWebLosslessThrottleTest(unittest.TestCase):
+    """网页无损档位的取址节流。
+
+    baseInfo 在 trackQualityLevel>=2 时风控比普通网页档更紧：整张专辑并发下载
+    会大量返回 ret=1001「系统繁忙，请稍后再试」。所以这条通道要串行化取址。
+    """
+
+    def test_conservative_flag_goes_through_the_gate(self):
+        from core.ximalaya_download_manager import XimalayaDownloadManager
+
+        manager = XimalayaDownloadManager(cookie_string="1&_token=1&x")
+        calls = []
+
+        def fake_gate(cls):
+            calls.append(1)
+
+        with (
+            mock.patch.object(XimalayaDownloadManager, "_wait_web_lossless_slot",
+                              classmethod(fake_gate)),
+            mock.patch.object(manager, "_request_web_track_info", return_value=({}, {})),
+        ):
+            manager._download_web_authorized("516265274", "/tmp/x.m4a", conservative=True)
+            self.assertEqual(len(calls), 1, "保守模式应当在取址前过闸门")
+
+            manager._download_web_authorized("516265274", "/tmp/x.m4a")
+            self.assertEqual(len(calls), 1, "普通网页档不应走这道闸门")
+
+    def test_gate_serializes_and_spaces_requests(self):
+        from core.ximalaya_download_manager import XimalayaDownloadManager as manager
+
+        manager._WEB_LOSSLESS_LAST_AT = 0.0
+        with (
+            mock.patch("core.ximalaya_download_manager.time.monotonic", return_value=1000.0),
+            mock.patch("core.ximalaya_download_manager.time.sleep") as sleep,
+        ):
+            manager._wait_web_lossless_slot()   # 首个请求：距上次已超间隔，不等待
+            self.assertEqual(sleep.call_count, 0)
+            manager._wait_web_lossless_slot()   # 紧接着的第二个：必须等待
+            self.assertEqual(sleep.call_count, 1)
+            self.assertGreaterEqual(sleep.call_args.args[0], manager._WEB_LOSSLESS_MIN_INTERVAL)
+
+    def test_web_lossless_quality_uses_conservative_route(self):
+        """档位分支必须把 conservative=True 传下去。"""
+        from core.ximalaya_download_manager import XimalayaDownloadManager
+
+        manager = XimalayaDownloadManager(cookie_string="1&_token=1&x")
+        captured = {}
+
+        def fake_web(track_id, save_path, chapter_title="", progress_callback=None,
+                     conservative=False):
+            captured["conservative"] = conservative
+            return True
+
+        with mock.patch.object(manager, "_download_web_authorized", side_effect=fake_web):
+            ok = manager.download_audio_by_quality(
+                "516265274",
+                XimalayaDownloadManager.WEB_LOSSLESS_QUALITY,
+                os.path.join(tempfile.mkdtemp(), "x.wav"),
+            )
+
+        self.assertTrue(ok)
+        self.assertIs(captured.get("conservative"), True)
+
+
 if __name__ == "__main__":
     unittest.main()
