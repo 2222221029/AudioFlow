@@ -663,5 +663,57 @@ class XimalayaQualityRoutingTest(unittest.TestCase):
             self.assertIn(quality, web_server.XMLY_SUBSCRIPTION_QUALITIES)
 
 
+class XimalayaWebLosslessQualityTest(unittest.TestCase):
+    """「网页无损优先」显式档位。
+
+    网页自动模式（WEB_AUTO_QUALITY）为保护易风控的 Web V3，只在章节确认受限时
+    才切到 baseInfo；这个档位是用户主动选择，因此直接走 baseInfo —— 那是唯一
+    会出现 FHQ（24bit WAV 母带）的响应。
+    """
+
+    QUALITY = "网页无损优先（FHQ WAV）"
+
+    def test_constant_matches_frontend_label(self):
+        from core.ximalaya_download_manager import XimalayaDownloadManager
+        self.assertEqual(XimalayaDownloadManager.WEB_LOSSLESS_QUALITY, self.QUALITY)
+
+    def test_requires_web_login_and_does_not_send_request(self):
+        from core.ximalaya_download_manager import XimalayaDownloadManager
+
+        manager = XimalayaDownloadManager(cookie_string="")
+        manager.session = _FakeSession([])
+        target = os.path.join(tempfile.mkdtemp(), "nope.m4a")
+
+        self.assertFalse(manager.download_audio_by_quality("516265274", self.QUALITY, target))
+        self.assertEqual(manager.last_error_type, "restricted")
+        # baseInfo 匿名必被风控拒（ret=1001），应当在发请求之前就挡下
+        self.assertEqual(manager.session.calls, [])
+        self.assertFalse(os.path.exists(target))
+
+    def test_not_routed_to_mobile_v4(self):
+        from core.download_worker import DownloadWorker
+        # 名字里带「无损」，但它是网页档位，绝不能被路由到移动端 V4 控制路径
+        self.assertFalse(DownloadWorker._is_ximalaya_mobile_v4_quality(self.QUALITY))
+        self.assertFalse(DownloadWorker._is_ximalaya_mobile_premium_quality(self.QUALITY))
+        # 同时仍按无损对待（文件名要打 [无损] 标记）
+        self.assertTrue(DownloadWorker._is_ximalaya_lossless_quality(self.QUALITY))
+        self.assertTrue(DownloadWorker._ximalaya_skip_url_fallback(self.QUALITY))
+
+    def test_lossless_marker_only_for_real_web_lossless(self):
+        from core.download_worker import DownloadWorker
+        self.assertEqual(
+            DownloadWorker._ximalaya_actual_quality_marker("web_v3_lossless"), "[无损]"
+        )
+        # 普通网页 M4A 不该被标成无损
+        self.assertEqual(DownloadWorker._ximalaya_actual_quality_marker("web_v3"), "")
+
+    def test_subscription_whitelist_accepts_web_lossless(self):
+        try:
+            from src.server import web_server
+        except Exception as exc:      # pragma: no cover
+            self.skipTest(f"web_server 不可导入: {exc}")
+        self.assertIn(self.QUALITY, web_server.XMLY_SUBSCRIPTION_QUALITIES)
+
+
 if __name__ == "__main__":
     unittest.main()

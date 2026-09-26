@@ -89,6 +89,10 @@ class DownloadWorker(QThread):
     @classmethod
     def _is_ximalaya_mobile_premium_quality(cls, quality):
         text = str(quality or '').strip()
+        # 「网页无损优先」由网页通道（v3/baseInfo）处理，虽然名字里带"无损"，
+        # 但不能被当成移动端档位 —— 否则会被路由到 V4 控制路径上去。
+        if '网页' in text:
+            return False
         return (
             cls._is_ximalaya_lossless_quality(quality)
             or cls._is_ximalaya_spatial_quality(quality)
@@ -118,7 +122,7 @@ class DownloadWorker(QThread):
         return (
             text.startswith('M4A 96')
             or cls._is_ximalaya_mobile_v4_quality(quality)
-            or text == '喜马拉雅网页版接口'
+            or text in ('喜马拉雅网页版接口', '网页无损优先（FHQ WAV）')
         )
 
     @classmethod
@@ -171,6 +175,9 @@ class DownloadWorker(QThread):
             'mobile_v4_level_13': '[Audio Vivid]',
             'mobile_v4_level_12': '[杜比全景声]',
             'mobile_v4_lossless': '[无损]',
+            # 网页端真的选到 FHQ/FLAC 时也标出来，便于区分「拿到了无损」与
+            # 「只是网页 M4A」
+            'web_v3_lossless': '[无损]',
         }.get(source, '')
 
     @classmethod

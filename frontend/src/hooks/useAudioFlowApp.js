@@ -89,12 +89,14 @@ const DEFAULT_QUALITY = 'M4A 96K';
 const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
 const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
 const XMLY_PC_INTERFACE = '喜马拉雅电脑版接口（自动最高音质）';
+const XMLY_WEB_LOSSLESS = '网页无损优先（FHQ WAV）';
 // 电脑版档位：只需要网页登录态即可取址（设备号与 xm-sign 都在本地生成，
 // 不需要 App 票据或 Frida）。缺失会导致用户选中的档位被静默回落到移动端。
 const XMLY_PC_QUALITIES = ['PC 256K', 'PC 128K', 'PC 64K', 'PC 24K'];
 const XMLY_SUBSCRIPTION_QUALITIES = new Set([
   XMLY_WEB_INTERFACE,
   XMLY_PC_INTERFACE,
+  XMLY_WEB_LOSSLESS,
   XMLY_MOBILE_INTERFACE,
   '杜比全景声优先（自动降级）',
   '无损优先（自动降级）',
@@ -102,6 +104,7 @@ const XMLY_SUBSCRIPTION_QUALITIES = new Set([
 const XMLY_DOWNLOAD_QUALITIES = new Set([
   XMLY_MOBILE_INTERFACE,
   XMLY_PC_INTERFACE,
+  XMLY_WEB_LOSSLESS,
   ...XMLY_PC_QUALITIES,
   'M4A 128K',
   'M4A 64K',

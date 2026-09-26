@@ -113,6 +113,10 @@ class XimalayaDownloadManager:
     WEB_AUTO_QUALITY = "喜马拉雅网页版接口"
     MOBILE_AUTO_QUALITY = "喜马拉雅移动端接口（自动最高音质）"
     PC_AUTO_QUALITY = "喜马拉雅电脑版接口（自动最高音质）"
+    #: 「网页无损优先」：用户显式选择直接走 v3/baseInfo —— FHQ（24bit WAV 母带）
+    #: 只出现在那个响应里。与 WEB_AUTO_QUALITY 的差别：网页自动模式为保护易被
+    #: 风控的 Web V3，只在章节确认受限时才切过去；这个档位是主动选择，不走那层保护。
+    WEB_LOSSLESS_QUALITY = "网页无损优先（FHQ WAV）"
     MOBILE_DOLBY_PREFERRED_QUALITY = "杜比全景声优先（自动降级）"
     MOBILE_VIVID_PREFERRED_QUALITY = "Audio Vivid 优先（自动降级）"
     MOBILE_LOSSLESS_PREFERRED_QUALITY = "无损优先（自动降级）"
@@ -830,7 +834,12 @@ class XimalayaDownloadManager:
 
             self.last_error = ""
             self.last_error_type = ""
-            self.last_download_source = "web_v3"
+            # 区分是否真的拿到无损：文件名据此打 [无损] 标记
+            self.last_download_source = (
+                "web_v3_lossless"
+                if str(quality_label or "").upper() in ("FHQ", "FLAC", "LOSSLESS")
+                else "web_v3"
+            )
             self.last_download_size = total_size
             self.last_download_expected_size = expected_size
             self.last_download_quality_label = quality_label
@@ -2220,6 +2229,21 @@ class XimalayaDownloadManager:
                 progress_callback=progress_callback,
             )
 
+        if str(quality or "").strip() == self.WEB_LOSSLESS_QUALITY:
+            # 用户主动选「网页无损优先」：直接打 v3/baseInfo，因为 FHQ 只在那里。
+            # 匿名请求会被风控直接拒（ret=1001），所以先确认有登录态。
+            if not self.cookie_string:
+                self._record_error(
+                    "网页无损需要网页登录态：v3/baseInfo 匿名请求会被风控拒绝",
+                    error_type="restricted",
+                )
+                return False
+            print("🌐 网页无损优先：直接使用 v3/baseInfo（FHQ 24bit WAV 母带所在通道）")
+            return self._download_web_authorized(
+                track_id, save_path, chapter_title,
+                progress_callback=progress_callback,
+            )
+
         if str(quality or "").strip() == self.PC_AUTO_QUALITY:
             print("🖥️ 电脑版通道：按 256K → 128K → 64K → 24K 自动选择")
             return self._download_pc_best_available(
@@ -2495,6 +2519,13 @@ class XimalayaDownloadManager:
                 self._record_error(f"PC 通道{validation_error}，已拒绝保存")
                 return False
 
+            # 按真实容器纠正扩展名。PC 通道的 downloadType 有时给 MP3，实际载荷
+            # 却是 M4A —— 直接沿用调用方给的 save_path 会产出「xxx.mp3 实际是
+            # m4a」的文件（联调时确实下到了这样一个文件）。与 web 通道
+            # （_download_web_authorized）保持一致：以文件头为准。
+            actual_extension = self._mobile_media_extension(temp_path, 3) or result.ext or '.m4a'
+            if final_path.suffix.lower() != actual_extension.lower():
+                final_path = final_path.with_suffix(actual_extension)
             os.replace(temp_path, final_path)
             label = result.quality_label or self._pc_quality_label(level)
             actual = result.level if result.level is not None else level

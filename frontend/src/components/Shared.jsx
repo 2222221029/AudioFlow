@@ -10,6 +10,10 @@ import {api} from '../services/api.js';
 const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
 const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
 const XMLY_PC_INTERFACE = '喜马拉雅电脑版接口（自动最高音质）';
+// 用户主动选择走网页播放器通道（v3/baseInfo），FHQ 无损母带只在那里。
+// 网页自动模式会保护易风控的 Web V3，只在章节受限时才切过去；这个档位
+// 是显式选择，所以直接打 baseInfo。
+const XMLY_WEB_LOSSLESS = '网页无损优先（FHQ WAV）';
 // 注意：下面这些 value 里刻意不出现“无损”字样。后端的
 // _is_ximalaya_lossless_quality() 是「文本包含『无损』」判定，PC 的 256K
 // 只是客户端标称，并非真无损母带，不能被当成无损档处理。
@@ -24,6 +28,7 @@ const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: 'M4A 128K', label: 'M4A 128/96K（level 2）'},
   {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
   {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
+  {value: XMLY_WEB_LOSSLESS, label: '网页无损优先（FHQ WAV 母带）'},
   {value: XMLY_PC_INTERFACE, label: '电脑版 · 自动最佳（256K → 24K）'},
   {value: 'PC 256K', label: 'PC 256K（电脑版最高档）'},
   {value: 'PC 128K', label: 'PC 128K（电脑版 HQ）'},
@@ -32,6 +37,7 @@ const XMLY_MOBILE_QUALITY_OPTIONS = [
 ];
 const XMLY_SUBSCRIPTION_QUALITY_OPTIONS = [
   {value: XMLY_WEB_INTERFACE, label: '网页版接口（默认）'},
+  {value: XMLY_WEB_LOSSLESS, label: '网页无损优先（FHQ WAV 母带）'},
   {value: XMLY_PC_INTERFACE, label: '电脑版 · 自动最佳音质'},
   {value: XMLY_MOBILE_INTERFACE, label: '移动端 V4 · 自动最高音质'},
   {value: '杜比全景声优先（自动降级）', label: '移动端 V4 · 杜比全景声优先'},
@@ -48,6 +54,7 @@ const XMLY_MOBILE_QUALITY_HELP = {
   'M4A 128K': '严格请求移动端 level 2；部分旧资源可能标记为约 96K。',
   'M4A 64K': '严格请求移动端 level 1。',
   'M4A 24K': '严格请求移动端 level 0。',
+  [XMLY_WEB_LOSSLESS]: '直接请求网页播放器接口 v3/baseInfo，只挑 FHQ 无损母带（24bit PCM WAV，单集常见 40~300MB）。注意：该接口风控较严，请勿对整张专辑并发使用；某集没有无损时会退回该接口里的最高可用档（通常是 M4A_128）。需要网页登录态。',
   [XMLY_PC_INTERFACE]: '走电脑版 download/v2 通道，每集按 256K → 128K → 64K → 24K 自动选择。只需要网页登录态：设备号与 xm-sign 签名都在本地生成，不需要 App 票据或 Frida。无权限的档位才会降级，网络错误不会降档。',
   'PC 256K': '电脑版客户端索引 3，是该通道的最高档（客户端标称，约为 256kbps，并非 24bit 母带）。实际档位以服务端回传为准。',
   'PC 128K': '电脑版 HQ 高清档（索引 2）。取址结果按服务端回传的实际档位标记。',
