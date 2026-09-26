@@ -29,7 +29,10 @@ const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
   {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
   {value: XMLY_WEB_LOSSLESS, label: '网页无损优先（FHQ WAV 母带）'},
-  {value: XMLY_PC_INTERFACE, label: '电脑版 · 自动最佳（256K → 24K）'},
+];
+// 电脑版通道有自己的一组档位，与移动端分开显示，避免切换接口后档位对不上。
+const XMLY_PC_QUALITY_OPTIONS = [
+  {value: XMLY_PC_INTERFACE, label: '自动最佳（256K → 128K → 64K → 24K）'},
   {value: 'PC 256K', label: 'PC 256K（电脑版最高档）'},
   {value: 'PC 128K', label: 'PC 128K（电脑版 HQ）'},
   {value: 'PC 64K', label: 'PC 64K（电脑版标准）'},
@@ -55,6 +58,9 @@ const XMLY_MOBILE_QUALITY_HELP = {
   'M4A 64K': '严格请求移动端 level 1。',
   'M4A 24K': '严格请求移动端 level 0。',
   [XMLY_WEB_LOSSLESS]: '直接请求网页播放器接口 v3/baseInfo，只挑 FHQ 无损母带（24bit PCM WAV，单集常见 40~300MB）。注意：该接口风控较严，请勿对整张专辑并发使用；某集没有无损时会退回该接口里的最高可用档（通常是 M4A_128）。需要网页登录态。',
+};
+// 电脑版档位的说明单独成表（原先混在移动端常量里）
+const XMLY_PC_QUALITY_HELP = {
   [XMLY_PC_INTERFACE]: '走电脑版 download/v2 通道，每集按 256K → 128K → 64K → 24K 自动选择。只需要网页登录态：设备号与 xm-sign 签名都在本地生成，不需要 App 票据或 Frida。无权限的档位才会降级，网络错误不会降档。',
   'PC 256K': '电脑版客户端索引 3，是该通道的最高档（客户端标称，约为 256kbps，并非 24bit 母带）。实际档位以服务端回传为准。',
   'PC 128K': '电脑版 HQ 高清档（索引 2）。取址结果按服务端回传的实际档位标记。',
@@ -404,7 +410,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, ximalayaInterface, setXimalayaInterface, subscriptionQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, pcQuality, setPcQuality, ximalayaInterface, setXimalayaInterface, subscriptionQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
   const library = selectedAlbum.library || {};
@@ -439,9 +445,20 @@ export function AlbumDetail({app, mobile = false}) {
           <label htmlFor="xmlyDownloadInterface">下载接口</label>
           <select id="xmlyDownloadInterface" value={ximalayaInterface} onChange={(event) => setXimalayaInterface(event.target.value)}>
             <option value={XMLY_WEB_INTERFACE}>网页版接口（稳定推荐）</option>
+            <option value={XMLY_PC_INTERFACE}>电脑版接口（无需 App 票据）</option>
             <option value={XMLY_MOBILE_INTERFACE}>移动端 V4（高音质）</option>
           </select>
-          {ximalayaInterface !== XMLY_WEB_INTERFACE && (
+          {ximalayaInterface === XMLY_PC_INTERFACE && (
+            <>
+              <label htmlFor="xmlyPcQuality">电脑版音质</label>
+              <select id="xmlyPcQuality" value={pcQuality} onChange={(event) => setPcQuality(event.target.value)}>
+                {XMLY_PC_QUALITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </>
+          )}
+          {ximalayaInterface === XMLY_MOBILE_INTERFACE && (
             <>
               <label htmlFor="xmlyDownloadQuality">移动端音质</label>
               <select id="xmlyDownloadQuality" value={downloadQuality} onChange={(event) => setDownloadQuality(event.target.value)}>
@@ -464,7 +481,9 @@ export function AlbumDetail({app, mobile = false}) {
           </select>
           <span>{ximalayaInterface === XMLY_WEB_INTERFACE
             ? '默认使用稳定的网页版下载链路，由接口自动提供可用音频；无需额外选择音质，适合连续批量下载。'
-            : XMLY_MOBILE_QUALITY_HELP[downloadQuality] || XMLY_MOBILE_QUALITY_HELP[XMLY_MOBILE_INTERFACE]}</span>
+            : (ximalayaInterface === XMLY_PC_INTERFACE
+              ? (XMLY_PC_QUALITY_HELP[pcQuality] || XMLY_PC_QUALITY_HELP[XMLY_PC_INTERFACE])
+              : (XMLY_MOBILE_QUALITY_HELP[downloadQuality] || XMLY_MOBILE_QUALITY_HELP[XMLY_MOBILE_INTERFACE]))}</span>
         </div>
       )}
       <ChapterToolbar

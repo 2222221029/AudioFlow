@@ -201,6 +201,9 @@ export function useAudioFlowApp() {
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [downloadQuality, setDownloadQuality] = useState(XMLY_MOBILE_INTERFACE);
   const [ximalayaInterface, setXimalayaInterface] = useState(XMLY_WEB_INTERFACE);
+  // 电脑版通道自己的音质选择（默认自动链 256K → 24K）。与移动端的
+  // downloadQuality 分开，切换接口时两边不会互相污染。
+  const [pcQuality, setPcQuality] = useState(XMLY_PC_INTERFACE);
   const [subscriptionQuality, setSubscriptionQuality] = useState(XMLY_WEB_INTERFACE);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
   const [downloadPagination, setDownloadPagination] = useState({page: 1, limit: 20, total: 0, total_pages: 1});
@@ -627,7 +630,9 @@ export function useAudioFlowApp() {
             quality: selectedAlbum.platform === '喜马拉雅'
               ? (ximalayaInterface === XMLY_WEB_INTERFACE
                 ? XMLY_WEB_INTERFACE
-                : ximalayaDownloadQuality(downloadQuality))
+                : (ximalayaInterface === XMLY_PC_INTERFACE
+                  ? (pcQuality || XMLY_PC_INTERFACE)
+                  : ximalayaDownloadQuality(downloadQuality)))
               : (config.quality || DEFAULT_QUALITY),
             voice: selectedVoice || undefined,
             warning: selectedAlbum.catalog_warning || undefined,
@@ -656,7 +661,7 @@ export function useAudioFlowApp() {
     }).catch((error) => {
       showToast(error.message, 'err');
     });
-  }, [config.quality, downloadQuality, loadDownloads, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast, ximalayaInterface]);
+  }, [config.quality, downloadQuality, loadDownloads, pcQuality, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast, ximalayaInterface]);
 
   const applyDownloadRange = useCallback((mode = 'select') => {
     const items = parseChapterRange(downloadRange, displayChapters);
@@ -1273,6 +1278,8 @@ export function useAudioFlowApp() {
     setDownloadQuality,
     ximalayaInterface,
     setXimalayaInterface,
+    pcQuality,
+    setPcQuality,
     subscriptionQuality,
     downloads,
     downloadPagination,
