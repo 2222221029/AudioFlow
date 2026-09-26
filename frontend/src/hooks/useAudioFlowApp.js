@@ -201,8 +201,10 @@ export function useAudioFlowApp() {
   const [selectedVoice, setSelectedVoice] = useState(null);
   const [downloadQuality, setDownloadQuality] = useState(XMLY_MOBILE_INTERFACE);
   const [ximalayaInterface, setXimalayaInterface] = useState(XMLY_WEB_INTERFACE);
-  // 电脑版通道自己的音质选择（默认自动链 256K → 24K）。与移动端的
-  // downloadQuality 分开，切换接口时两边不会互相污染。
+  // 每个通道各自记住自己的音质选择，切换接口时互不污染。
+  // 网页版：默认走旧版直连（最高 96K），可显式改选「网页无损优先」走 baseInfo；
+  // 电脑版：默认自动链 256K → 24K。
+  const [webQuality, setWebQuality] = useState(XMLY_WEB_INTERFACE);
   const [pcQuality, setPcQuality] = useState(XMLY_PC_INTERFACE);
   const [subscriptionQuality, setSubscriptionQuality] = useState(XMLY_WEB_INTERFACE);
   const [downloads, setDownloads] = useState(() => loadCachedList(DOWNLOADS_CACHE_KEY));
@@ -629,7 +631,7 @@ export function useAudioFlowApp() {
           options: {
             quality: selectedAlbum.platform === '喜马拉雅'
               ? (ximalayaInterface === XMLY_WEB_INTERFACE
-                ? XMLY_WEB_INTERFACE
+                ? (webQuality || XMLY_WEB_INTERFACE)
                 : (ximalayaInterface === XMLY_PC_INTERFACE
                   ? (pcQuality || XMLY_PC_INTERFACE)
                   : ximalayaDownloadQuality(downloadQuality)))
@@ -661,7 +663,7 @@ export function useAudioFlowApp() {
     }).catch((error) => {
       showToast(error.message, 'err');
     });
-  }, [config.quality, downloadQuality, loadDownloads, pcQuality, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast, ximalayaInterface]);
+  }, [config.quality, downloadQuality, loadDownloads, pcQuality, runBusy, selectedAlbum, selectedChapterList, selectedVoice, showToast, webQuality, ximalayaInterface]);
 
   const applyDownloadRange = useCallback((mode = 'select') => {
     const items = parseChapterRange(downloadRange, displayChapters);
@@ -1278,6 +1280,8 @@ export function useAudioFlowApp() {
     setDownloadQuality,
     ximalayaInterface,
     setXimalayaInterface,
+    webQuality,
+    setWebQuality,
     pcQuality,
     setPcQuality,
     subscriptionQuality,

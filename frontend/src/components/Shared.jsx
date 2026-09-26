@@ -14,6 +14,12 @@ const XMLY_PC_INTERFACE = '喜马拉雅电脑版接口（自动最高音质）';
 // 网页自动模式会保护易风控的 Web V3，只在章节受限时才切过去；这个档位
 // 是显式选择，所以直接打 baseInfo。
 const XMLY_WEB_LOSSLESS = '网页无损优先（FHQ WAV）';
+// 网页版接口自身的音质选择。默认沿用旧版直连（最高 96K）；选中无损时改走
+// v3/baseInfo —— FHQ（24bit WAV 母带）只在那个响应里。
+const XMLY_WEB_QUALITY_OPTIONS = [
+  {value: XMLY_WEB_INTERFACE, label: '自动（旧版直连，最高 96K）'},
+  {value: XMLY_WEB_LOSSLESS, label: '网页无损优先（FHQ WAV 母带）'},
+];
 // 注意：下面这些 value 里刻意不出现“无损”字样。后端的
 // _is_ximalaya_lossless_quality() 是「文本包含『无损』」判定，PC 的 256K
 // 只是客户端标称，并非真无损母带，不能被当成无损档处理。
@@ -28,7 +34,6 @@ const XMLY_MOBILE_QUALITY_OPTIONS = [
   {value: 'M4A 128K', label: 'M4A 128/96K（level 2）'},
   {value: 'M4A 64K', label: 'M4A 64K（level 1）'},
   {value: 'M4A 24K', label: 'M4A 24K（level 0）'},
-  {value: XMLY_WEB_LOSSLESS, label: '网页无损优先（FHQ WAV 母带）'},
 ];
 // 电脑版通道有自己的一组档位，与移动端分开显示，避免切换接口后档位对不上。
 const XMLY_PC_QUALITY_OPTIONS = [
@@ -57,9 +62,12 @@ const XMLY_MOBILE_QUALITY_HELP = {
   'M4A 128K': '严格请求移动端 level 2；部分旧资源可能标记为约 96K。',
   'M4A 64K': '严格请求移动端 level 1。',
   'M4A 24K': '严格请求移动端 level 0。',
-  [XMLY_WEB_LOSSLESS]: '直接请求网页播放器接口 v3/baseInfo，只挑 FHQ 无损母带（24bit PCM WAV，单集常见 40~300MB）。注意：该接口风控较严，请勿对整张专辑并发使用；某集没有无损时会退回该接口里的最高可用档（通常是 M4A_128）。需要网页登录态。',
 };
 // 电脑版档位的说明单独成表（原先混在移动端常量里）
+const XMLY_WEB_QUALITY_HELP = {
+  [XMLY_WEB_INTERFACE]: '默认使用稳定的网页版下载链路，由接口自动提供可用音频；无需额外选择音质，适合连续批量下载。',
+  [XMLY_WEB_LOSSLESS]: '直接请求网页播放器接口 v3/baseInfo，只挑 FHQ 无损母带（24bit PCM WAV，单集常见 40~300MB）。该接口风控较严，请勿对整张专辑并发使用；某集没有无损时会退回该接口里的最高可用档（通常是 M4A_128）。需要网页登录态。',
+};
 const XMLY_PC_QUALITY_HELP = {
   [XMLY_PC_INTERFACE]: '走电脑版 download/v2 通道，每集按 256K → 128K → 64K → 24K 自动选择。只需要网页登录态：设备号与 xm-sign 签名都在本地生成，不需要 App 票据或 Frida。无权限的档位才会降级，网络错误不会降档。',
   'PC 256K': '电脑版客户端索引 3，是该通道的最高档（客户端标称，约为 256kbps，并非 24bit 母带）。实际档位以服务端回传为准。',
@@ -410,7 +418,7 @@ function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterL
 }
 
 export function AlbumDetail({app, mobile = false}) {
-  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, pcQuality, setPcQuality, ximalayaInterface, setXimalayaInterface, subscriptionQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
+  const {selectedAlbum, displayChapters, chapters, chapterPagination, selectedChapters, selectedChapterList, voices, selectedVoice, downloadQuality, setDownloadQuality, webQuality, setWebQuality, pcQuality, setPcQuality, ximalayaInterface, setXimalayaInterface, subscriptionQuality, chapterSort, setChapterSort, downloadRange, setDownloadRange, actions, busy} = app;
   if (!selectedAlbum) return <div className="empty" id="detailEmpty"><Icon id="i-music" />选择结果查看详情</div>;
   const cover = coverOf(selectedAlbum);
   const library = selectedAlbum.library || {};
@@ -448,6 +456,16 @@ export function AlbumDetail({app, mobile = false}) {
             <option value={XMLY_PC_INTERFACE}>电脑版接口（无需 App 票据）</option>
             <option value={XMLY_MOBILE_INTERFACE}>移动端 V4（高音质）</option>
           </select>
+          {ximalayaInterface === XMLY_WEB_INTERFACE && (
+            <>
+              <label htmlFor="xmlyWebQuality">网页版音质</label>
+              <select id="xmlyWebQuality" value={webQuality} onChange={(event) => setWebQuality(event.target.value)}>
+                {XMLY_WEB_QUALITY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </>
+          )}
           {ximalayaInterface === XMLY_PC_INTERFACE && (
             <>
               <label htmlFor="xmlyPcQuality">电脑版音质</label>
@@ -480,7 +498,7 @@ export function AlbumDetail({app, mobile = false}) {
             ))}
           </select>
           <span>{ximalayaInterface === XMLY_WEB_INTERFACE
-            ? '默认使用稳定的网页版下载链路，由接口自动提供可用音频；无需额外选择音质，适合连续批量下载。'
+            ? (XMLY_WEB_QUALITY_HELP[webQuality] || XMLY_WEB_QUALITY_HELP[XMLY_WEB_INTERFACE])
             : (ximalayaInterface === XMLY_PC_INTERFACE
               ? (XMLY_PC_QUALITY_HELP[pcQuality] || XMLY_PC_QUALITY_HELP[XMLY_PC_INTERFACE])
               : (XMLY_MOBILE_QUALITY_HELP[downloadQuality] || XMLY_MOBILE_QUALITY_HELP[XMLY_MOBILE_INTERFACE]))}</span>

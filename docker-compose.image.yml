@@ -8,7 +8,7 @@ services:
     # 这里固定到具体版本号（而不是 :latest）：飞牛的容器列表会直接显示这个 tag，
     # 一眼能看出跑的是哪一版；升级时把下面这行的版本号改掉再 up -d 即可。
     # 想自动跟随最新版，把版本号换成 latest 并保留 pull_policy: always。
-    image: ghcr.dockerproxy.net/2222221029/audioflow:1.0.30
+    image: ghcr.dockerproxy.net/2222221029/audioflow:1.0.31
     pull_policy: always
     container_name: audioflow
     ports:
