@@ -9,12 +9,14 @@ import requests
 import time
 import base64
 import json
+import os
 import re
 import urllib.parse
 import threading
 from typing import List, Dict, Optional, Tuple
 from .safe_logging import log_context, log_event, platform_verbose_enabled
 from .time_api import get_timestamp_ms_str
+from . import page_fetch
 
 
 _XIMALAYA_ALBUM_PATH_RE = re.compile(r"/(?:album|soundbook)/(\d+)(?:[/?#]|$)", re.I)
@@ -1225,6 +1227,26 @@ class XimalayaManager:
                 if exact_total <= len(chapters):
                     return chapters
 
+                # ---- 并发分页（改造点）----
+                # 参考实现 XimalayaApp Core/PageFetch.cs 实测：671 集专辑
+                # 「串行 8.6s → 并发 6 路 2.1s」，且排序后内容一致。
+                #
+                # ⚠ 三条硬约束（缺一条就会退回串行）：
+                #   ① 只有**能算出总页数**时才并发 —— 并发路径必须先知道要抓几页；
+                #   ② 页号槽位对齐 + 抓完再按页号去重，结果与串行**逐条等价**；
+                #   ③ 任何一页失败都**不吞结果**，缺口交给下面的串行补抓兜底。
+                concurrent = self._fetch_chapters_pages_concurrent(
+                    album_id=album_id,
+                    first_page_chapters=chapters,
+                    first_page_number=page,
+                    page_size=page_size,
+                    exact_total=exact_total,
+                    log_summary=log_summary,
+                )
+                if concurrent is not None:
+                    return concurrent
+
+                # ---------- 串行兜底（原逻辑，一行未改）----------
                 # 专辑章节数超过单页数量：继续翻页直到取全（或连续无新增/超页数上限）
                 all_chapters = list(chapters)
                 seen = set()
@@ -1289,6 +1311,150 @@ class XimalayaManager:
         api_results, exact_total = self._fetch_chapters_multi_api(album_id, page, page_size)
         chapters = self._pick_best_chapter_list(api_results, log_summary=log_summary)
         return chapters, exact_total
+
+    # ------------------------------------------------------------------
+    # 并发分页（移植 XimalayaApp Core/PageFetch.cs 的范式）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _chapter_identity(chapter: Dict) -> str:
+        """章节稳定标识 —— 去重与"缺页判定"都用它，避免各处各写一份 key 提取。"""
+        if not isinstance(chapter, dict):
+            return ""
+        for key in ('id', 'track_id', 'trackId', 'chapter_id'):
+            value = chapter.get(key)
+            if value not in (None, ""):
+                return str(value).strip()
+        return ""
+
+    def _fetch_chapters_pages_concurrent(
+        self,
+        *,
+        album_id: str,
+        first_page_chapters: List[Dict],
+        first_page_number: int,
+        page_size: int,
+        exact_total: int,
+        log_summary: bool,
+    ) -> Optional[List[Dict]]:
+        """并发抓取第 2..N 页并**按页号重排**后与首页拼接。
+
+        返回 `None` = 放弃并发（调用方走原有串行路径）。**任何**前置条件不满足
+        都返回 None，绝不抛异常 —— 并发是加速手段，不是新增故障源。
+
+        ## 为什么并发是安全的
+
+        章节列表是**纯分页数据**：第 k 页的内容只由 (album_id, k, page_size)
+        决定，页与页之间没有顺序依赖（总页数已由首页的 `exact_total` 给出）。
+        所以"按页号收集、最后按页号拼接"的结果与串行**逐条等价**。
+
+        这与下载音频不同 —— 下载有范围/配额状态，不能盲目并发。
+
+        ## 参考实现踩过的坑（本项目据此设防）
+
+        * 酷我历史上「并发响应错配且 success 仍为 true」：根因是**按到达顺序
+          AddRange、没有重排**，最后一个到达的页被当成第一页。→ 本项目用
+          `results[页号-1]` 槽位对齐，天然免疫。
+        * 缺页静默：并发中某页失败会静默缺该区间章节 → 订阅永远补不上。
+          → 本项目**只要发现任何一页为 None 就整体放弃并发结果**，退回串行
+          补抓（`while cursor <= total_pages` 会带 seen 集合重抓所有缺页）。
+          宁可多花一次请求，不可产出不完整的章节表。
+        """
+        if not album_id or page_size <= 0 or exact_total <= 0:
+            return None
+
+        first_page_number = int(first_page_number or 1)
+        # 只处理"首页之后还有页"的情形；首页已拿到的部分原样复用
+        remaining_total = int(exact_total) - len(first_page_chapters)
+        if remaining_total <= 0:
+            return None
+
+        # 末页号 = ceil(总集数 / 每页条数)。
+        #
+        # ⚠ 这里**不能用首页的页码去推算**。曾经的写法
+        #     first_page_number + page_count(remaining_total, page_size) - 1
+        #   在"首页恰好是本专辑第 1 页"时把首页数了两遍，于是 60 集 10/页、
+        #   首页拿了 10 集的情况只抓到第 5 页，**第 6 页整页静默缺失**
+        #   （tests/test_ximalaya_concurrent_pagination.py 的等价性用例钉死了它）。
+        #   总页数只由 (exact_total, page_size) 决定，与"首页是第几页"无关。
+        last_page = page_fetch.page_count(exact_total, page_size)
+        if last_page <= first_page_number:
+            return None
+
+        # 并发度：喜马拉雅是风控平台，用 GentleConcurrency（=6）。
+        # ⚠ 判据是参考实现「实测过没有限速拐点」，不是感觉。
+        concurrency = page_fetch.GENTLE_CONCURRENCY
+        if os.getenv("XMLY_CHAPTER_PAGE_CONCURRENCY"):
+            try:
+                concurrency = max(1, min(16, int(os.environ["XMLY_CHAPTER_PAGE_CONCURRENCY"])))
+            except (TypeError, ValueError):
+                pass
+        # 只有 2、3 页时并发没有意义（省不下多少，却多担一份风险）
+        if last_page - first_page_number < 2:
+            return None
+
+        page_numbers = list(range(first_page_number + 1, last_page + 1))
+
+        def _fetch_one_page(page_number: int) -> Optional[List[Dict]]:
+            """抓一页。
+
+            ⚠ **必须让异常向上抛**，不能在这里 `try/except` 吞成 None ——
+            `page_fetch.fetch_all` 的「单页重试」正是靠捕获异常实现的
+            （tests/test_ximalaya_concurrent_pagination.py 的
+            `test_transient_failure_is_retried_before_giving_up` 钉死了它）。
+            这里吞掉 = 一次网络抖动直接变成缺页 = 整体退回串行，
+            等于并发路径在面对瞬时故障时**永远失效**。
+            """
+            more, _ = self.get_album_chapters_page(
+                album_id, page=page_number, page_size=page_size, log_summary=False
+            )
+            return more if more else None
+
+        results = page_fetch.fetch_all(
+            len(page_numbers),
+            fetch_page=lambda offset: _fetch_one_page(page_numbers[offset - 1]),
+            concurrency=concurrency,
+            retries=page_fetch.DEFAULT_PAGE_RETRIES,
+        )
+
+        holes = page_fetch.missing_pages(results)
+        if holes:
+            # ⚠ 关键防线：有缺页就**整体放弃**并发结果，交给串行路径带 seen 重抓。
+            #   串行路径本来就"一直翻到取全或连续 3 次无新增"，能兜住这些洞。
+            if log_summary or platform_verbose_enabled():
+                log_event(
+                    "WARN",
+                    "章节并发分页存在缺页，回退串行补抓",
+                    missing_pages=len(holes),
+                    first_missing=holes[0],
+                    total_pages=len(page_numbers),
+                )
+            return None
+
+        # 按页号拼接（results 已按页号对齐，直接展开即可）
+        ordered: List[Dict] = list(first_page_chapters)
+        for page_chapters in results:
+            if page_chapters:
+                ordered.extend(page_chapters)
+
+        # 跨页去重：服务端会话/缓存偶尔会让相邻页重复返回同一集。
+        # ⚠ 必须在**页号重排之后**去重，否则保留到的是错误的那一份。
+        ordered = page_fetch.dedupe_by_key(ordered, self._chapter_identity)
+
+        # 完整性检查：并发拿到的比串行少，说明估算的总页数不够（服务端
+        # pageSize 被截断等）。这种时候**不返回**，交给串行兜底 —— 正确性优先。
+        if len(ordered) < len(first_page_chapters):
+            return None
+        if log_summary:
+            log_event(
+                "INFO",
+                "章节并发分页完成",
+                chapters=len(ordered),
+                total=exact_total,
+                pages=len(page_numbers),
+                concurrency=concurrency,
+            )
+        return ordered
     
     def _fetch_chapters_new_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
         """新API获取章节 (mobile/v1/album/track)"""

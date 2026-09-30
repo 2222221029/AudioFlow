@@ -51,6 +51,8 @@ class DownloadWorker(QThread):
         self.coin_reference_id = None  # 自用版不使用旧额度机制，保留参数兼容旧调用
         self._progress_lock = threading.Lock()
         self._chapter_progress = {}
+        # 档位降级记录（渠道契约，见 _note_channel_downgrade）：写侧车与前端提示都用它
+        self._channel_downgrades = []
         self._completed_for_progress = 0
         self._thread_managers = threading.local()
         # CookieManager 只创建一次，所有线程共享读取（CookieManager 只做文件读取，线程安全）
@@ -521,6 +523,7 @@ class DownloadWorker(QThread):
 
             if self._is_stopped:
                 print(f"⏹️ 下载任务已停止")
+                self._write_download_report(state="stopped")
                 self.download_completed.emit(
                     self.task_id,
                     self.success_count,
@@ -531,6 +534,9 @@ class DownloadWorker(QThread):
                 return
 
             print(f"🎉 下载任务完成: 成功 {self.success_count} 个，失败 {self.failed_count} 个")
+            self._write_download_report(
+                state="completed" if self.failed_count == 0 else "partial"
+            )
             self.download_completed.emit(
                 self.task_id,
                 self.success_count,
@@ -543,6 +549,7 @@ class DownloadWorker(QThread):
             print(f"❌ 下载任务执行失败: {e}")
             import traceback
             traceback.print_exc()
+            self._write_download_report(state="failed")
             self.download_completed.emit(
                 self.task_id,
                 self.success_count,
@@ -550,6 +557,113 @@ class DownloadWorker(QThread):
                 self.success_chapters,
                 self.failed_chapters,
             )
+
+    def _note_channel_downgrade(self, chapter, result) -> None:
+        """记录「实际交付档位低于用户所选」这一事实。
+
+        移植分析 P0-4 的落地方式。参考实现 XimalayaApp 是硬性
+        「只走选定渠道，撞限就暂停任务」（`Core/DownloadEngine.cs:151-158`），
+        那对无人值守的订阅下载器不可行（会让订阅整夜空转）。
+
+        本项目的取舍：**保留兜底能力，但让降级可见** ——
+        * 记进 `chapter['_quality_note']`，随章节状态上报到前端；
+        * 汇总进 `_report.json` 的 `downgrades` 字段，重试/体检时可查；
+        * 不改变任何下载行为，因此不影响现有功能与成功率。
+
+        ⚠ 判定完全交给 `core.channel_contract`，本方法只做记录。
+        任一侧档位未知时它返回空串，不会误报。
+        """
+        try:
+            from core import channel_contract
+
+            source = str((result or {}).get('source') or '')
+            note = channel_contract.build_note(self.quality, source)
+            if not note.get('downgraded'):
+                return
+            chapter['_quality_note'] = note['note']
+            chapter['_quality_source'] = source
+            with self._progress_lock:
+                self._channel_downgrades.append({
+                    'id': str(chapter.get('id') or chapter.get('track_id') or ''),
+                    'order': chapter.get('order_num') or chapter.get('order') or 0,
+                    'title': str(chapter.get('title') or '')[:200],
+                    'quality': str(self.quality or ''),
+                    'source': source,
+                    'source_label': note['source_label'],
+                    'note': note['note'],
+                })
+            print(f"   ⚠️ 档位降级：{chapter.get('title', '')[:30]} → {note['source_label']}")
+        except Exception as exc:  # noqa: BLE001 - 记录绝不能影响下载
+            self._dbg(f"⚠️ 记录档位降级失败(已忽略): {exc}")
+
+    def _write_download_report(self, state: str = "") -> None:
+        """在专辑目录写 `_report.json` 侧车（含失败清单与档位降级）。
+
+        移植自 XimalayaApp `Core/DownloadEngine.cs:478-491`。
+
+        ## 为什么必须写
+
+        改造前 `web_server.api_download_retry_failed` 只能「重跑全集 + 跳过已存在」
+        来近似失败重试 —— 每次都要重新枚举整个专辑的章节列表（几百到几千集的
+        接口往返），并且在已知缺失的集上再失败一遍。
+
+        有了这份侧车，重试可以**直接定位到那几集**。
+
+        ## 为什么吞掉所有异常
+
+        侧车是「让重试更快」的加速器，不是下载正确性的一部分。写盘失败
+        （目录只读、磁盘满）不该把已经下好的专辑判成失败。
+        参考实现也是同样的处理（`catch { }`）。
+        """
+        try:
+            from core import download_report
+
+            album_dir = self._album_base_dir(self._sanitize_filename(self.album_title))
+            errors = []
+            for chapter in self.failed_chapters:
+                message = str(chapter.get('_error') or '').strip()
+                if message:
+                    errors.append(f"#{chapter.get('order_num', '?')} {chapter.get('title', '')}: {message}")
+
+            report = download_report.build_report(
+                album_id=self.album_id,
+                album_title=self.album_title,
+                platform=self.platform,
+                quality=self.quality or "",
+                task_id=self.task_id,
+                total=len(self.chapters),
+                done=self.success_count,
+                skipped=0,        # worker 层不单列跳过计数（跳过发生在单集内）
+                failed=self.failed_count,
+                failed_items=self.failed_chapters,
+                errors=errors,
+                state=state,
+            )
+            # 渠道契约：把本次任务的档位降级一并落盘（移植分析 P0-4）
+            # ⚠ `getattr` 兜底：侧车写入**绝不能**因为缺个锁就整份失败 ——
+            #   写不出报告 = 用户同时失去失败清单与降级记录两件事。
+            lock = getattr(self, "_progress_lock", None)
+            if lock is not None:
+                with lock:
+                    downgrades = list(getattr(self, "_channel_downgrades", None) or [])
+            else:
+                downgrades = list(getattr(self, "_channel_downgrades", None) or [])
+            if downgrades:
+                report["downgrades"] = downgrades
+                try:
+                    from core import channel_contract
+
+                    report["downgrade_summary"] = channel_contract.summarize_downgrades(downgrades)
+                except Exception:  # noqa: BLE001
+                    report["downgrade_summary"] = f"{len(downgrades)} 集档位低于所选"
+
+            written = download_report.write_report(album_dir, report)
+            if written and self.failed_count:
+                print(f"📄 已记录失败清单（{self.failed_count} 集）: {os.path.basename(written)}")
+            if written and downgrades:
+                print(f"📄 已记录档位降级（{len(downgrades)} 集）：{report.get('downgrade_summary', '')}")
+        except Exception as exc:  # noqa: BLE001 - 侧车绝不能让下载失败
+            self._dbg(f"⚠️ 写下载报告失败(已忽略): {exc}")
 
     # ------------------------------------------------------------------
     # 兼容旧调用
@@ -580,15 +694,16 @@ class DownloadWorker(QThread):
         if not self._wait_until_active():
             return False
         self.chapter_status_updated.emit(self.task_id, chapter, 'downloading')
-        # 动态导入异常类型，避免循环依赖
-        try:
-            from core.lrts_manager import RateLimitError as _RateLimitError
-        except Exception:
-            _RateLimitError = None
-        try:
-            from core.lrts_manager import IllegalRequestError as _IllegalRequestError
-        except Exception:
-            _IllegalRequestError = None
+        # ⚠ 异常分级统一走 core.errors。改造前是动态 import：
+        #      from core.lrts_manager import RateLimitError except: None
+        #   模块一改名，_RateLimitError 静默变 None，**重试逻辑无声失效**且不报错。
+        #   现在恒为元组（可能是空元组），isinstance(x, ()) 恒 False、不抛 TypeError。
+        import core as _core_pkg
+        from core import errors as _errors
+
+        _core_pkg.register_platform_errors()
+        _RateLimitError = _errors.RATE_LIMIT_TYPES
+        _IllegalRequestError = _errors.ILLEGAL_REQUEST_TYPES
 
         is_ximalaya_v4 = (
             self.platform == '喜马拉雅'
@@ -660,8 +775,15 @@ class DownloadWorker(QThread):
             # Account entitlement and structurally invalid credentials cannot
             # recover by retrying the same chapter with the same saved bundle.
             # Stop immediately instead of issuing duplicate premium requests.
-            if str(chapter.get('_error_type') or '') in {'restricted', 'quality_unavailable'}:
-                print(f"   ⛔ 章节 {chapter_index} 为凭证/权限或音质不可用错误，不再自动重试")
+            #
+            # ⚠ 改造点：判据从「硬编码两个字面量」改成 `errors.should_retry()`。
+            #   原来这里只挡 restricted / quality_unavailable，新增的 content_invalid
+            #   （下到的不是音频，换多少次都是同一个错误页）与 illegal_request
+            #   （平台判定非法请求，短间隔重试只会继续失败）会白跑满重试次数。
+            #   反过来，transient / rate_limited / 未知标签 仍然可重试 ——
+            #   保持既有行为，不把真实故障吞成静默失败。
+            if not _errors.should_retry(chapter.get('_error_type')):
+                print(f"   ⛔ 章节 {chapter_index} 为凭证/权限、音质不可用或内容无效错误，不再自动重试")
                 return False
 
             if not self._wait_until_active():
@@ -1125,6 +1247,11 @@ class DownloadWorker(QThread):
                         final_path = self._finalize_ximalaya_download_path(file_path, result)
                         if final_path and final_path != file_path:
                             self._dbg(f"🏷️ 按实际音质保存为: {os.path.basename(final_path)}")
+                        # ---- 渠道契约：把「静默降级」变成显式记录 ----
+                        # 参考实现 XimalayaApp 的做法是硬性「只走选定渠道」，
+                        # 但本项目是无人值守的订阅下载器，硬性失败会让订阅整夜空转。
+                        # 这里保留兜底能力，只**记录并暴露**降级事实（移植分析 P0-4）。
+                        self._note_channel_downgrade(chapter, result or {})
                     if not success and audio_url:
                         if self._ximalaya_skip_url_fallback(self.quality):
                             # Web V3 handles its public-free fallback internally;

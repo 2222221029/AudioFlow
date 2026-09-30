@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
+from core import chunked_download, download_adapter
+
 
 class LizhiManager:
     """荔枝FM API 管理器。"""
@@ -260,6 +262,20 @@ class LizhiManager:
         return ""
 
     def download_audio(self, url: str, save_path: str, quality: Optional[str] = None, progress_callback=None) -> bool:
+        """下载音频到 `save_path`。
+
+        ## 改造说明（2026-09，移植分段并行下载）
+
+        原实现单连接 `iter_content`。新路径走 `core.download_adapter`：
+        ≥2MB 自动分段并行，CDN 不支持 Range 时透明回退单流。
+
+        ## 对外契约**逐条保留**
+
+        * 空 URL 直接返回 False（不建目录、不发请求）；
+        * 成功判定仍是 `> 1024` 字节；
+        * 失败仍打印 `[荔枝FM] 下载失败: {exc}` 并返回 False；
+        * 请求头原样透传；失败后不留下任何半截文件。
+        """
         if not url:
             return False
         headers = {
@@ -268,20 +284,24 @@ class LizhiManager:
         }
         try:
             Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
-            with self.session.get(url, headers=headers, stream=True, timeout=(10, 180)) as response:
-                response.raise_for_status()
-                total = int(response.headers.get("content-length") or 0)
-                done = 0
-                with open(save_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if not chunk:
-                            continue
-                        f.write(chunk)
-                        done += len(chunk)
-                        if progress_callback:
-                            progress_callback(done, total)
-            return os.path.exists(save_path) and os.path.getsize(save_path) > 1024
+            final_path = download_adapter.session_to_file(
+                session=self.session,
+                url=url,
+                save_path=save_path,
+                headers=headers,
+                progress_callback=progress_callback,
+                allow_segmented=True,
+                timeout=(10, 180),
+                min_valid_bytes=0,
+                # 这两个平台的接口不报 file_size，需要 1 字节 Range 探测
+                # 才知道要不要分段 → 用默认值 0（保持探测）。
+                # ⚠ 不要为了省一次往返把它关掉：这些平台的播客里
+                #   大单集（>2MB）占比不低，关掉等于放弃分段收益。
+                probe_threshold=0,
+            )
+            return os.path.exists(final_path) and os.path.getsize(final_path) > 1024
         except Exception as exc:
+            chunked_download.clean_part_files(str(save_path))
             print(f"[荔枝FM] 下载失败: {exc}")
             try:
                 if os.path.exists(save_path):

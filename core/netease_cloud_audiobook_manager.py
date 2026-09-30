@@ -21,6 +21,8 @@ import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
+from core import chunked_download, download_adapter
+
 
 class NeteaseCloudAudiobookManager:
     """网易云播客/听书 API 管理器。"""
@@ -394,28 +396,53 @@ class NeteaseCloudAudiobookManager:
         return str(main_song.get("id") or "")
 
     def download_audio(self, url: str, save_path: str, progress_callback=None) -> bool:
+        """下载音频到 `save_path`。
+
+        ## 改造说明（2026-09，移植分段并行下载）
+
+        原实现单连接 `iter_content`。新路径走 `core.download_adapter`：
+        ≥2MB 自动分段并行，CDN 不支持 Range 时透明回退单流，
+        失败清理 `.part` / `.part.s{i}`。
+
+        ## 对外契约**逐条保留**
+
+        * 成功判定仍是 `> 1024` 字节；
+        * 失败仍打印 `❌ 网易云听书下载失败: {exc}` 并返回 False；
+        * `_require_cookie()` 仍在最前面（未登录时抛，行为不变）；
+        * 请求头（`User-Agent` + `Referer: music.163.com`）原样透传。
+        """
         self._require_cookie()
         try:
             Path(os.path.dirname(save_path)).mkdir(parents=True, exist_ok=True)
-            response = self.session.get(url, stream=True, timeout=(10, 90), headers={
+            headers = {
                 "User-Agent": self.session.headers.get("User-Agent", ""),
                 "Referer": "https://music.163.com/",
-            })
-            response.raise_for_status()
-            total = int(response.headers.get("Content-Length") or 0)
-            done = 0
-            with open(save_path, "wb") as fh:
-                for chunk in response.iter_content(chunk_size=262144):
-                    if chunk:
-                        fh.write(chunk)
-                        done += len(chunk)
-                        if progress_callback:
-                            progress_callback(done, total)
-            ok = os.path.getsize(save_path) > 1024
+            }
+            final_path = download_adapter.session_to_file(
+                session=self.session,
+                url=url,
+                save_path=save_path,
+                headers=headers,
+                progress_callback=progress_callback,
+                allow_segmented=True,
+                timeout=(10, 90),
+                # 与下面既有的 > 1024 判定保持一致 —— 让「过小」这句由本方法来说
+                min_valid_bytes=0,
+                # 这两个平台的接口不报 file_size，需要 1 字节 Range 探测
+                # 才知道要不要分段 → 用默认值 0（保持探测）。
+                # ⚠ 不要为了省一次往返把它关掉：这些平台的播客里
+                #   大单集（>2MB）占比不低，关掉等于放弃分段收益。
+                probe_threshold=0,
+            )
+            ok = os.path.getsize(final_path) > 1024
             if not ok:
-                os.remove(save_path)
+                try:
+                    os.remove(final_path)
+                except OSError:
+                    pass
             return ok
         except Exception as exc:
+            chunked_download.clean_part_files(str(save_path))
             print(f"❌ 网易云听书下载失败: {exc}")
             return False
 

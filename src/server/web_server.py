@@ -1882,7 +1882,15 @@ def download_task_counts(task):
 
 
 def update_download_chapter_status(task_id, chapter, status):
-    """Persist one lightweight chapter state and refresh live counters."""
+    """Persist one lightweight chapter state and refresh live counters.
+
+    改造点（渠道契约 / 移植分析 P0-4）：成功章节若发生了**档位降级**
+    （worker 在 `chapter['_quality_note']` 里记下），一并存进章节状态 ——
+    这样前端能在成功标记旁边显示「实际拿到了什么档位的什么」。
+
+    ⚠ 这是**纯增量**字段：不改变 `status` 语义、不影响计数、
+    更不影响任何既有读取方（它们只认 `status` / `error`）。
+    """
     if status not in {"downloading", "success", "failed"} or not isinstance(chapter, dict):
         return {}
     key = chapter_key(chapter)
@@ -1896,6 +1904,11 @@ def update_download_chapter_status(task_id, chapter, status):
         state = {"status": status, "updated_at": time.time()}
         if status == "failed" and chapter.get("_error"):
             state["error"] = str(chapter.get("_error"))[:500]
+        # 档位降级说明（只在真的降级时存在，正常下载不会多出字段）
+        quality_note = str(chapter.get("_quality_note") or "").strip()
+        if quality_note:
+            state["quality_note"] = quality_note[:500]
+            state["quality_source"] = str(chapter.get("_quality_source") or "")[:100]
         states[key] = state
         task["chapter_states"] = states
         counts = download_task_counts(task)
@@ -2038,7 +2051,12 @@ def album_chapter_download_states(album):
             elif not status and is_active:
                 status = "pending"
             if status and (is_active or key not in merged):
-                merged[key] = {"status": status, "error": error}
+                row = {"status": status, "error": error}
+                # 档位降级说明（渠道契约）：只在存在时附带，正常下载不会多出字段
+                if state.get("quality_note"):
+                    row["quality_note"] = state["quality_note"]
+                    row["quality_source"] = state.get("quality_source") or ""
+                merged[key] = row
     return merged
 
 
@@ -3850,6 +3868,74 @@ def stop_worker(worker):
     setattr(worker, "_is_paused", False)
 
 
+def _retry_chapters_from_report(album, options, chapters):
+    """用专辑目录里的 `_report.json` 侧车把重试范围**收窄到真正失败的那几集**。
+
+    移植自 XimalayaApp `Core/DownloadEngine.cs:478-491` + `AlbumTaskRow.RetryVisible`。
+    没有侧车（旧任务 / 手工删除）时返回 None，调用方走原来的「重跑全集」路径。
+
+    ## 收益
+
+    改造前只能「重跑全集 + 跳过已存在」：每次重试都要重新枚举整个专辑的章节
+    （几百到几千集的接口往返），并在已知缺失的集上再失败一遍。
+    有了侧车，重试直接定位到那几集。
+
+    ## 安全约束
+
+    * 只在**收窄后仍能覆盖全部失败集**时才采用 —— 侧车可能过期（用户手工补过集、
+      或之前的重试已成功一部分），匹配不上的失败集必须回退全集。
+    * 任何异常都返回 None（回退旧行为），绝不让「读侧车」成为重试的新故障点。
+    """
+    try:
+        from core import download_report
+
+        folder = _album_download_folder(album, options)
+        if not folder:
+            return None
+        report = download_report.read_report(str(folder))
+        selection = download_report.retry_selection(report)
+        if not selection:
+            return None
+
+        wanted_ids = {str(v) for v in selection.get("chapter_ids") or []}
+        wanted_orders = {int(v) for v in selection.get("orders") or []}
+        if not wanted_ids and not wanted_orders:
+            return None
+
+        picked = []
+        for chapter in chapters or []:
+            if not isinstance(chapter, dict):
+                continue
+            cid = str(
+                chapter.get("id") or chapter.get("track_id") or chapter.get("chapter_id") or ""
+            ).replace("chapter-", "")
+            order = chapter.get("order_num") or chapter.get("order") or chapter.get("index")
+            try:
+                order_int = int(order)
+            except (TypeError, ValueError):
+                order_int = 0
+            if (cid and cid in wanted_ids) or (order_int and order_int in wanted_orders):
+                picked.append(chapter)
+
+        # ⚠ 收窄后必须覆盖**全部**来自侧车的失败集，否则说明侧车与当前章节表
+        #   对不上（版本不一致 / 用户手工改过文件名），此时宁可重跑全集。
+        covered_ids = {
+            str(c.get("id") or c.get("track_id") or c.get("chapter_id") or "").replace("chapter-", "")
+            for c in picked
+        }
+        if wanted_ids and not wanted_ids.issubset(covered_ids):
+            return None
+        if not picked:
+            return None
+        # 收窄没有意义（等于全集）时也不改行为
+        if len(picked) >= len([c for c in (chapters or []) if isinstance(c, dict)]):
+            return None
+        return picked
+    except Exception:
+        logging.exception("narrow retry by report failed")
+        return None
+
+
 def retry_existing_download_task(task_id, task, source):
     if not task_id:
         return None, "任务 ID 缺失"
@@ -3865,6 +3951,13 @@ def retry_existing_download_task(task_id, task, source):
         options = {"download_dir": info.get("download_dir"), "quality": info.get("quality"), "voice": info.get("voice_config")}
     if options.get("voice"):
         options["voice"] = resolve_voice_for_album(album, options.get("voice"))
+
+    # 优先用失败清单侧车把范围收窄；收窄不成立时**原样**回退全集（旧行为）。
+    narrowed = _retry_chapters_from_report(album, options, chapters)
+    if narrowed:
+        print(f"📄 按失败清单重试：{len(narrowed)}/{len(chapters)} 集（跳过章节枚举）")
+        chapters = narrowed
+
     retried_task = start_download_task(
         task_id,
         album,

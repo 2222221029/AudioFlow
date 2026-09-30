@@ -19,6 +19,8 @@ from typing import List, Dict, Optional
 from urllib.parse import quote
 from requests.cookies import create_cookie
 
+from core import chunked_download, download_adapter
+
 
 class KuwoManager:
     """酷我听书管理器"""
@@ -726,50 +728,46 @@ class KuwoManager:
             return ""
 
     def download_audio(self, url: str, save_path: str, progress_callback=None, chapter_id: str = "") -> bool:
-        """下载音频（使用当前线程的 session，支持并发）"""
+        """下载音频（使用当前线程的 session，支持并发）。
+
+        ## 改造说明（2026-09，移植分段并行下载）
+
+        原实现单连接 `iter_content` 写盘。参考实现 XimalayaApp 实测酷我听书在
+        限速态下单连接只有 1.7MB/s，分段后可到 20MB/s 量级 —— 酷我是收益最大的
+        平台。新路径走 `core.download_adapter`：≥2MB 自动分段并行，不支持 Range
+        的 CDN 透明回退单流。
+
+        ## 对外契约逐项保留（一行未改）
+
+        * 成功判定仍是 `> 10KB`，成功后 `print(f"下载成功: {size}KB")`；
+        * `text/html` / `application/json` 响应 → `_record_error`（内容失效）；
+        * HTTP 403 → `_get_play_restriction_message` + `restricted` 错误类型；
+        * 其它非 200 → `_record_error(f"酷我媒体下载 HTTP {code}")`；
+        * 任何异常 → `_record_error(f"酷我媒体下载异常: {e}")` 并返回 False；
+        * 失败不留 `.part`（新增：分段残留 `.part.s{i}` 也一并清掉）。
+
+        上层 `download_worker._download_single_chapter` 读的是
+        `last_error` / `last_error_type`，这些字段的写入**时机与文案完全不变**。
+        """
         temp_path = f"{save_path}.part"
         try:
             self._clear_error()
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-            
-            response = self.session.get(url, headers=headers, stream=True, timeout=60)
-            
-            if response.status_code == 200:
-                content_type = str(response.headers.get('Content-Type') or '').lower()
-                if 'text/html' in content_type or 'application/json' in content_type:
-                    self._record_error(f"酷我媒体地址已失效或返回非音频内容: {content_type}")
-                    return False
-                file_size = 0
-                total_size = int(response.headers.get('Content-Length') or 0)
-                os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-                with open(temp_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=262144):
-                        if chunk:
-                            f.write(chunk)
-                            file_size += len(chunk)
-                            if progress_callback:
-                                progress_callback(file_size, total_size)
-                
-                if file_size > 1024 * 10:  # 大于10KB认为下载成功
-                    os.replace(temp_path, save_path)
-                    self._clear_error()
-                    print(f"下载成功: {file_size // 1024}KB")
-                    return True
-                else:
-                    try:
-                        os.remove(temp_path)
-                    except OSError:
-                        pass
-                    self._record_error(f"酷我媒体文件过小: {file_size} 字节")
-                    return False
 
-            if response.status_code == 403:
+            # 先用一次流式 GET 拿到状态码与 content-type —— 这两项决定后续走
+            # 哪条错误分支，必须在**下载之前**判定，与改造前的顺序一致。
+            probe = self.session.get(url, headers=headers, stream=True, timeout=60)
+            status = probe.status_code
+            content_type = str(probe.headers.get('Content-Type') or '').lower()
+            declared_size = int(probe.headers.get('Content-Length') or 0)
+            try:
+                probe.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+            if status == 403:
                 restriction = self._get_play_restriction_message(chapter_id)
                 if restriction:
                     self._record_error(f"酷我章节受限：{restriction}", "restricted")
@@ -778,11 +776,51 @@ class KuwoManager:
                         "酷我媒体下载被 CDN 拒绝（HTTP 403），章节可能为付费、下架或版权受限",
                         "restricted",
                     )
-            else:
-                self._record_error(f"酷我媒体下载 HTTP {response.status_code}")
+                chunked_download.clean_part_files(save_path)
+                return False
+
+            if status != 200:
+                self._record_error(f"酷我媒体下载 HTTP {status}")
+                chunked_download.clean_part_files(save_path)
+                return False
+
+            if 'text/html' in content_type or 'application/json' in content_type:
+                self._record_error(f"酷我媒体地址已失效或返回非音频内容: {content_type}")
+                chunked_download.clean_part_files(save_path)
+                return False
+
+            downloaded_path = download_adapter.session_to_file(
+                session=self.session,
+                url=url,
+                save_path=save_path,
+                headers=headers,
+                expected_size=declared_size or None,
+                progress_callback=progress_callback,
+                allow_segmented=True,
+                timeout=(10, 60),
+                # ⚠ 传 0 = 关掉 chunked_download 内部的 1KB 粗筛，让**下面那句**
+                #   `酷我媒体文件过小: N 字节` 成为唯一判据 —— 与改造前的错误
+                #   文案一字不差。若这里用内部默认的 1KB，一个 512 字节的响应
+                #   会在下层就被拦成「内容不完整」，上层永远等不到自己那句话。
+                min_valid_bytes=0,
+            )
+            file_size = os.path.getsize(downloaded_path) if downloaded_path else 0
+
+            if file_size > 1024 * 10:  # 大于10KB认为下载成功
+                self._clear_error()
+                print(f"下载成功: {file_size // 1024}KB")
+                return True
+
+            try:
+                if downloaded_path and os.path.exists(downloaded_path):
+                    os.remove(downloaded_path)
+            except OSError:
+                pass
+            self._record_error(f"酷我媒体文件过小: {file_size} 字节")
             return False
-            
+
         except Exception as e:
+            chunked_download.clean_part_files(save_path)
             try:
                 os.remove(temp_path)
             except OSError:

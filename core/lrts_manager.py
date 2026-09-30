@@ -31,6 +31,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+from core import chunked_download, download_adapter
+
 try:
     from Crypto.Cipher import PKCS1_v1_5
     from Crypto.PublicKey import RSA
@@ -1229,27 +1231,50 @@ class LRTSManager:
         return url or ""
 
     def download_audio(self, url, save_path, progress_callback=None):
+        """下载音频到 `save_path`。
+
+        ## 改造说明（2026-09，移植分段并行下载）
+
+        原实现是「开 GET → `iter_content` 循环写盘」，单连接受 CDN 限速。
+        参考实现 XimalayaApp 实测：懒人听书 4.8MB 单流 6.9MB/s、分段 23.2MB/s
+        （3.4×）—— 懒人是收益最明显的平台之一。
+
+        新路径走 `core.download_adapter`：≥2MB 自动分段并行，不支持 Range 的
+        CDN 透明回退单流，失败清理 `.part`/`.part.s{i}`。
+
+        ## 对外契约**一行未改**
+
+        * 成功返回 `True`，失败返回 `False`（且打印 `[lrts] download failed:`）；
+        * 阈值仍是 `> 10240` 字节；
+        * 失败路径仍然不留下半截成品文件（新增：`.part` 残段也一并清理）。
+
+        任何异常都被兜成 `False`，与改造前完全一致 —— 上层
+        （`download_worker._download_single_chapter` 的懒人分支）不需要任何改动。
+        """
         try:
-            response = self.session.get(url, stream=True, timeout=120)
-            response.raise_for_status()
-            total = int(response.headers.get("Content-Length") or 0)
-            done = 0
             Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(str(save_path), "wb") as file:
-                for chunk in response.iter_content(chunk_size=262144):
-                    if not chunk:
-                        continue
-                    file.write(chunk)
-                    done += len(chunk)
-                    if progress_callback:
-                        progress_callback(done, total)
-            size = os.path.getsize(str(save_path))
+            final_path = download_adapter.session_to_file(
+                session=self.session,
+                url=url,
+                save_path=str(save_path),
+                progress_callback=progress_callback,
+                # 懒人 URL 解析已有全局节流；CDN 侧支持 Range（参考实现实测），
+                # 让分段生效。
+                allow_segmented=True,
+                timeout=(10, 120),
+            )
+            size = os.path.getsize(str(final_path))
             if size > 10240:
                 return True
-            os.remove(str(save_path))
+            try:
+                os.remove(str(final_path))
+            except OSError:
+                pass
             return False
         except Exception as exc:
             print(f"[lrts] download failed: {exc}")
+            # 失败必须清干净，否则半截文件会被「已下载」判定误当成成品
+            chunked_download.clean_part_files(str(save_path))
             return False
 
     def generate_sign(self, api_path, base_params):
