@@ -88,6 +88,44 @@ class KuwoManager:
             for key in [key for key in cls._download_info_cache if key[0] == rid]:
                 cls._download_info_cache.pop(key, None)
 
+    def peek_best_available_format(self, chapter_id: str) -> Dict:
+        """探测某章节当前远端最高可用格式，用于订阅音质升级判定。
+
+        场景：酷我专辑追更时，先发布的只有 128K MP3，程序下载后服务端才补上
+        无损（FLAC）。订阅检测需要知道「现在远端是否已有无损」，才能把该章节
+        标记为需要重新下载。无损探测带独立短 TTL 缓存（默认 10 分钟），避免
+        每轮检测都为几千集反复打取流地址接口。
+
+        返回 dict：
+            {'flac': bool, 'bitrate': 0, 'format': ''}  —— 最高可用档位信息
+            仅作探测用途；是否真的重下由订阅层判断。
+        """
+        rid = str(chapter_id)
+        probe_key = ("probe", rid)
+        now = time.time()
+        with self._download_info_cache_lock:
+            cached = self._download_info_cache.get(probe_key)
+            if cached and now - cached.get("time", 0) < self._download_info_cache_ttl:
+                return dict(cached.get("data") or {"flac": False, "bitrate": 0, "format": ""})
+
+        result = {"flac": False, "bitrate": 0, "format": ""}
+        flac_info = self._get_download_url_internal(rid, "flac")
+        if flac_info and flac_info.get("format") == "flac":
+            result = {
+                "flac": True,
+                "bitrate": int(flac_info.get("bitrate") or 0),
+                "format": "flac",
+            }
+        else:
+            # 没有无损时，读取当前 MP3 最高档，供上层比较"是否已比本地高"
+            mp3_info = self._get_download_url_internal(rid, "mp3", 320)
+            if mp3_info and mp3_info.get("format") == "mp3":
+                result["bitrate"] = int(mp3_info.get("bitrate") or 0)
+                result["format"] = "mp3"
+        with self._download_info_cache_lock:
+            self._download_info_cache[probe_key] = {"time": now, "data": dict(result)}
+        return result
+
     def normalize_download_quality(self, quality: str = "", voice_config: Optional[Dict] = None) -> str:
         """将 UI 的通用音质映射到酷我支持的音质档位。"""
         if isinstance(voice_config, dict) and voice_config.get("kuwo_quality"):

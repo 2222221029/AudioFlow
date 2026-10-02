@@ -42,6 +42,49 @@ class KuwoManagerTest(unittest.TestCase):
         self.assertEqual(get.call_count, 2)
         self.assertEqual(info["url"], "http://audio.example/track.mp3")
 
+    def test_peek_best_available_format_detects_flac(self):
+        """追更升级探测：远端已有 FLAC 时应报告 flac=True。"""
+        manager = KuwoManager()
+        flac = FakeResponse(payload={
+            "code": 200,
+            "data": {"url": "http://audio.example/t.flac", "format": "flac", "bitrate": 1000},
+        })
+        with mock.patch.object(manager.session, "get", return_value=flac) as get:
+            probe = manager.peek_best_available_format("rid-flac")
+
+        self.assertTrue(probe["flac"])
+        self.assertEqual(probe["format"], "flac")
+        self.assertTrue(probe["bitrate"] > 0)
+        self.assertIn(("probe", "rid-flac"), KuwoManager._download_info_cache)
+
+    def test_peek_best_available_format_reports_mp3_when_no_flac(self):
+        """远端只有 MP3 时（FLAC 请求拿不到 flac），探测结果应如实报告低档。"""
+        manager = KuwoManager()
+        no_flac = FakeResponse(payload={
+            "code": 200,
+            "data": {"url": "http://audio.example/f.mp3", "format": "mp3", "bitrate": 320},
+        })
+        with mock.patch.object(manager.session, "get", return_value=no_flac):
+            probe = manager.peek_best_available_format("rid-mp3")
+
+        self.assertFalse(probe["flac"])
+        self.assertEqual(probe["format"], "mp3")
+
+    def test_peek_best_available_format_respects_ttl_cache(self):
+        """探测结果应被短 TTL 缓存复用，避免每轮检测反复打接口。"""
+        manager = KuwoManager()
+        flac = FakeResponse(payload={
+            "code": 200,
+            "data": {"url": "http://audio.example/t.flac", "format": "flac", "bitrate": 1000},
+        })
+        with mock.patch.object(manager.session, "get", return_value=flac) as get:
+            first = manager.peek_best_available_format("rid-cache")
+            second = manager.peek_best_available_format("rid-cache")
+
+        self.assertTrue(first["flac"])
+        self.assertTrue(second["flac"])
+        self.assertEqual(get.call_count, 1, "第二次探测应命中缓存")
+
     def test_media_http_error_is_exposed_and_partial_file_is_removed(self):
         manager = KuwoManager()
         response = FakeResponse(status_code=403)

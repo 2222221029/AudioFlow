@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import core.subscription_manager as subscription_module
+import core.kuwo_manager as kuwo_module
 from core.subscription_manager import SubscriptionManager
 
 
@@ -617,6 +618,124 @@ class SubscriptionManagerTest(unittest.TestCase):
             # 下次失败应重新从 30 分钟起算
             manager.mark_check_error(sid, "又失败")
             self.assertEqual(manager.get(sid)["next_retry_in_seconds"], 1800)
+
+
+class KuwoQualityUpgradeTest(unittest.TestCase):
+    """酷我听书追更：先出低码率 MP3、后补无损时的自动升级检测。"""
+
+    def _kuwo_subscription(self, manager, download_tmp, subscription_quality="kuwo:lossless"):
+        album = {"id": "kw-upgrade", "title": "升级测试", "platform": "酷我听书"}
+        chapters = [
+            {"id": "rid-1", "title": "第001集 开端", "order_num": 1},
+            {"id": "rid-2", "title": "第002集 发展", "order_num": 2},
+        ]
+        subscription = manager.add_or_update(
+            album, chapters, download_tmp, subscription_quality=subscription_quality
+        )
+        return subscription, chapters
+
+    def test_upgrade_detected_when_local_is_low_bitrate_mp3_and_remote_now_flac(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            subscription, chapters = self._kuwo_subscription(manager, download_tmp)
+            sid = subscription["id"]
+
+            # 第一轮：以 128K MP3 交付并落盘 → 订阅记录保存 delivered_quality=mp3/128
+            manager.mark_download_results(
+                {"id": "kw-upgrade", "title": "升级测试", "platform": "酷我听书"},
+                success_chapters=[
+                    dict(chapters[0], _delivered_format="mp3", _delivered_bitrate=128),
+                    dict(chapters[1], _delivered_format="mp3", _delivered_bitrate=128),
+                ],
+            )
+            album_dir = Path(download_tmp) / "酷我听书" / "升级测试"
+            album_dir.mkdir(parents=True, exist_ok=True)
+            (album_dir / "0001-第001集 开端.mp3").write_bytes(b"a" * 2048)
+            (album_dir / "0002-第002集 发展.mp3").write_bytes(b"b" * 2048)
+
+            # 远端探测：第001集现在已有 FLAC，第002集仍只有 MP3
+            with mock.patch.object(
+                kuwo_module.get_kuwo_manager(),
+                "peek_best_available_format",
+                side_effect=lambda rid: (
+                    {"flac": True, "bitrate": 1000, "format": "flac"} if rid == "rid-1"
+                    else {"flac": False, "bitrate": 320, "format": "mp3"}
+                ),
+            ):
+                diff = manager.diff_chapters(subscription, chapters, download_tmp)
+
+            self.assertEqual(len(diff["missing"]), 1)
+            upgraded = diff["missing"][0]
+            self.assertEqual(upgraded["id"], "rid-1")
+            self.assertEqual(upgraded["_missing_reason"], "quality_upgrade")
+            self.assertTrue(upgraded.get("_upgrade_quality"))
+            self.assertEqual(upgraded["_upgrade_preview_format"], "flac")
+
+    def test_no_upgrade_when_delivered_quality_already_lossless(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            subscription, chapters = self._kuwo_subscription(manager, download_tmp)
+            album_dir = Path(download_tmp) / "酷我听书" / "升级测试"
+            album_dir.mkdir(parents=True, exist_ok=True)
+            (album_dir / "0001-第001集 开端.flac").write_bytes(b"a" * 2048)
+            (album_dir / "0002-第002集 发展.flac").write_bytes(b"b" * 2048)
+            manager.mark_download_results(
+                {"id": "kw-upgrade", "title": "升级测试", "platform": "酷我听书"},
+                success_chapters=[
+                    dict(chapters[0], _delivered_format="flac", _delivered_bitrate=1000),
+                    dict(chapters[1], _delivered_format="flac", _delivered_bitrate=1000),
+                ],
+            )
+            with mock.patch.object(
+                kuwo_module.get_kuwo_manager(),
+                "peek_best_available_format",
+                return_value={"flac": True, "bitrate": 1000, "format": "flac"},
+            ) as probe:
+                diff = manager.diff_chapters(subscription, chapters, download_tmp)
+            probe.assert_not_called(), "已无损的章节不应触发无损探测"
+            self.assertEqual(diff["missing"], [])
+
+    def test_no_upgrade_when_subscription_does_not_want_lossless(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp, tempfile.TemporaryDirectory() as download_tmp:
+            manager = SubscriptionManager(config_tmp)
+            subscription, chapters = self._kuwo_subscription(
+                manager, download_tmp, subscription_quality="kuwo:standard"
+            )
+            album_dir = Path(download_tmp) / "酷我听书" / "升级测试"
+            album_dir.mkdir(parents=True, exist_ok=True)
+            (album_dir / "0001-第001集 开端.mp3").write_bytes(b"a" * 2048)
+            (album_dir / "0002-第002集 发展.mp3").write_bytes(b"b" * 2048)
+            manager.mark_download_results(
+                {"id": "kw-upgrade", "title": "升级测试", "platform": "酷我听书"},
+                success_chapters=[
+                    dict(chapters[0], _delivered_format="mp3", _delivered_bitrate=128),
+                ],
+            )
+            with mock.patch.object(
+                kuwo_module.get_kuwo_manager(),
+                "peek_best_available_format",
+                return_value={"flac": True, "bitrate": 1000, "format": "flac"},
+            ) as probe:
+                diff = manager.diff_chapters(subscription, chapters, download_tmp)
+            probe.assert_not_called(), "订阅不期望无损时不应探测"
+            self.assertEqual(diff["missing"], [])
+
+    def test_mark_download_results_persists_delivered_quality(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as config_tmp:
+            manager = SubscriptionManager(config_tmp)
+            subscription, chapters = self._kuwo_subscription(manager, config_tmp)
+            manager.mark_download_results(
+                {"id": "kw-upgrade", "title": "升级测试", "platform": "酷我听书"},
+                success_chapters=[
+                    dict(chapters[0], _delivered_format="mp3", _delivered_bitrate=128),
+                ],
+            )
+            saved = manager.get(subscription["id"])
+            state = saved["downloaded"]["rid-1"]
+            self.assertEqual(state["status"], "downloaded")
+            self.assertEqual(state["delivered_quality"]["format"], "mp3")
+            self.assertEqual(state["delivered_quality"]["bitrate"], 128)
+
 
 if __name__ == "__main__":
     unittest.main()

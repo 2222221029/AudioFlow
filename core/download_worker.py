@@ -1062,6 +1062,20 @@ class DownloadWorker(QThread):
                 existing_output = self._find_existing_fanqie_output(file_path)
                 if existing_output:
                     file_path = existing_output
+            # 音质升级（酷我听书追更：先出低码率 MP3、后补无损）必须绕过「文件已存在
+            # 就跳过」的分支：同一章节本地已有低码率文件，直接下载会跳过，永远升不了
+            # 无损。这里先删除旧的同序号文件（不同扩展名），再走正常下载路径。
+            upgrade_quality = bool(chapter.get('_upgrade_quality'))
+            if upgrade_quality and os.path.exists(file_path):
+                try:
+                    removed_size = os.path.getsize(file_path)
+                    os.remove(file_path)
+                    self._dbg(
+                        f"🔄 音质升级：删除旧文件 {os.path.basename(file_path)} "
+                        f"({removed_size / 1024 / 1024:.1f}MB) 以下载无损"
+                    )
+                except OSError as exc:
+                    self._dbg(f"⚠️ 音质升级删除旧文件失败: {exc}")
             if os.path.exists(file_path):
                 file_size = os.path.getsize(file_path)
                 if file_size > 1024:
@@ -1355,6 +1369,16 @@ class DownloadWorker(QThread):
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
                     )
+                    if success:
+                        # 记录实际交付音质（format+bitrate），随章节状态上报订阅，
+                        # 供追更音质升级判定使用（先出低码率 MP3、后补无损时重下）。
+                        try:
+                            chapter['_delivered_format'] = str(actual_format or '')
+                            chapter['_delivered_bitrate'] = int(actual_bitrate or 0) \
+                                if str(actual_bitrate or '').isdigit() else 0
+                            chapter['_delivered_extension'] = str(actual_extension or '')
+                        except Exception:
+                            pass
                     if not success:
                         first_error = str(getattr(download_manager, 'last_error', '') or '').strip()
                         print(f"♻️ 酷我直链下载失败，刷新签名地址后重试: {first_error or '未知原因'}")

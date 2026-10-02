@@ -10,6 +10,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Dict, Optional
 
 from core.naming import sanitize_segment
 
@@ -1352,6 +1353,24 @@ class SubscriptionManager:
                 if state_restricted:
                     downloaded.pop(key, None)
                     state = {}
+                # ── 酷我听书音质升级检测 ─────────────────────────────────
+                # 追更场景：专辑先发布低码率 MP3（程序已下载），随后服务端补上
+                # 无损。订阅期望无损时，只要本地记录的实际交付音质不是无损，就
+                # 探测一次远端「现在是否已有 FLAC」；有 → 该章节进入 missing 并
+                # 标记 _upgrade_quality，由下载任务覆盖旧文件。探测结果带短 TTL
+                # 缓存（kuwo_manager.peek_best_available_format），不会每轮为整
+                # 张专辑反复打取流地址接口。
+                if self._platform_is_kuwo(album) and self._subscription_wants_kuwo_lossless(subscription):
+                    upgrade = self._kuwo_quality_upgrade_candidate(album, chapter, state)
+                    if upgrade:
+                        missing_upgrade = dict(chapter)
+                        missing_upgrade["_subscription_key"] = key
+                        missing_upgrade["_missing_reason"] = "quality_upgrade"
+                        missing_upgrade["_upgrade_quality"] = True
+                        missing_upgrade["_upgrade_preview_format"] = upgrade.get("format", "")
+                        missing_upgrade["_upgrade_preview_bitrate"] = upgrade.get("bitrate", 0)
+                        missing.append(missing_upgrade)
+                        continue
             elif not skip_local and state.get("status") in ("downloaded", "skipped"):
                 # 标记为「已下载」但磁盘上实际没有该文件：多为旧版「按数量兜底」(local-count/
                 # local-count-full) 把整本书全部章节误标成已下载留下的脏状态。清除它，否则
@@ -1436,6 +1455,13 @@ class SubscriptionManager:
                 assumed_keys.add(key)
                 downloaded[key] = {"status": "downloaded", "updated_at": now, "source": "local-count"}
             if assumed_keys:
+                # 音质升级章节不能被按数量推断误标为已下载（本地有文件≠已达期望音质）
+                assumed_keys = {
+                    key for key in assumed_keys
+                    if not any(
+                        chapter_key(c) == key and c.get("_upgrade_quality") for c in missing
+                    )
+                }
                 missing = [chapter for chapter in missing if chapter_key(chapter) not in assumed_keys]
                 file_missing_count = max(0, current_source_total - len(assumed_keys))
         # 文件数兜底：本地音频文件总数已 >= 远端章节总数时，逐个验证缺失章节的本地文件
@@ -1470,6 +1496,11 @@ class SubscriptionManager:
                 k = chapter_key(chapter)
                 # 不覆盖「已确认受限」状态；其余仅在本地确有对应序号文件时标记为已下载
                 if (downloaded.get(k) or {}).get("status") == "restricted":
+                    still_missing.append(chapter)
+                    continue
+                # 音质升级章节虽然本地已有文件，但仍需要重下无损 —— 兜底不能用
+                # 「本地有该序号文件」把它剪掉，否则升级永远无法触发。
+                if chapter.get("_upgrade_quality"):
                     still_missing.append(chapter)
                     continue
                 if chapter_order(chapter, 0) in local_orders:
@@ -1534,6 +1565,62 @@ class SubscriptionManager:
         }
         self.save()
 
+    @staticmethod
+    def _platform_is_kuwo(album) -> bool:
+        """是否酷我听书订阅。"""
+        platform = str((album or {}).get("platform") or "").strip()
+        return platform in ("酷我听书", "kuwo")
+
+    @staticmethod
+    def _subscription_wants_kuwo_lossless(subscription) -> bool:
+        """订阅音质设置是否期望酷我无损（FLAC 优先，可降级到高码率 MP3）。"""
+        quality = str(
+            (subscription or {}).get("subscription_quality")
+            or ((subscription or {}).get("album") or {}).get("subscription_quality")
+            or ""
+        ).strip().lower()
+        if not quality:
+            return True  # 酷我默认就是「优先无损」
+        if "kuwo:" in quality:
+            quality = quality.split("kuwo:", 1)[1].strip()
+        return any(token in quality for token in ("lossless", "flac", "无损", "無損"))
+
+    def _kuwo_quality_upgrade_candidate(self, album, chapter, state) -> Optional[Dict]:
+        """判断一个已下载的酷我章节是否需要升级到无损。
+
+        条件（全部满足才返回探测结果）：
+        1. 本地交付记录缺失或明确不是无损（mp3/aac/ogg/…）；
+        2. 远端当前能取到 FLAC（一次探测，结果由 kuwo_manager 短 TTL 缓存）。
+
+        探测频控：已下载章节不带 delivered_quality 的旧记录（升级前产生）每个
+        章节每轮都会探测——对 2000 集专辑就是 2000 个请求。因此只有满足
+        「本地确实不是无损」的章节才探测；探测结果交给 kuwo_manager 的 TTL
+        缓存（默认 10 分钟）兜底，避免检测周期内的重复请求。
+
+        返回 dict 带探测到的 format/bitrate（供任务详情展示）；不满足返回 None。
+        """
+        try:
+            state = state or {}
+            delivered = state.get("delivered_quality") or {}
+            delivered_format = str(delivered.get("format") or "").lower().lstrip(".")
+            # 已确认无损：无需升级
+            if delivered_format in ("flac", "wav", "ape", "alac"):
+                return None
+            # 没有音质记录（升级功能上线前的旧订阅/大量历史章节）：跳过探测。
+            # 一次性对几百上千集跑无损探测会触发真实网络请求风暴（diff 每轮都会
+            # 经过这里），得不偿失；等这些章节下次实际重下时自然会带上记录。
+            if not delivered_format and not delivered.get("bitrate"):
+                return None
+            from core.kuwo_manager import get_kuwo_manager
+
+            kuwo = get_kuwo_manager()
+            probe = kuwo.peek_best_available_format(str(chapter.get("id") or ""))
+            if probe and probe.get("flac"):
+                return {"format": str(probe.get("format") or "flac"), "bitrate": int(probe.get("bitrate") or 0)}
+        except Exception as exc:
+            logging.warning("kuwo quality upgrade probe failed: %s", exc)
+        return None
+
     def mark_download_results(self, album, success_chapters=None, failed_chapters=None):
         sid = self.subscription_id(album)
         sid = self.subscription_id(album)
@@ -1543,7 +1630,23 @@ class SubscriptionManager:
         downloaded = item.setdefault("downloaded", {})
         now = utc_now_iso()
         for chapter in success_chapters or []:
-            downloaded[chapter_key(chapter)] = {"status": "downloaded", "updated_at": now}
+            entry = {"status": "downloaded", "updated_at": now}
+            # 记录实际交付音质（酷我听书等平台由下载 worker 写入 chapter）。
+            # 追更场景：某章节先以低码率 MP3 发布并被下载，之后服务端补上无损，
+            # diff_chapters 凭借该字段判断「本地音质低于期望」而触发升级重下。
+            try:
+                delivered_format = str(
+                    chapter.get("_delivered_format") or chapter.get("_delivered_extension") or ""
+                ).lower().lstrip(".")
+                bitrate = chapter.get("_delivered_bitrate")
+                if delivered_format or bitrate:
+                    entry["delivered_quality"] = {
+                        "format": delivered_format,
+                        "bitrate": int(bitrate) if str(bitrate or "").isdigit() else 0,
+                    }
+            except Exception:
+                pass
+            downloaded[chapter_key(chapter)] = entry
         for chapter in failed_chapters or []:
             restricted = is_permission_denied_failure(chapter)
             key = chapter_key(chapter)
