@@ -2420,6 +2420,15 @@ class XimalayaDownloadManager:
             if self.last_error_type != "restricted":
                 return False
 
+            # 旧版直连已确认章节受限（如付费集只回 _preview 试听）。此时若连
+            # 网页登录 Cookie 都没有，网页授权通道必然拿不到完整文件（v3/baseInfo
+            # 匿名只给试听），再试只会白等风控/限流，并把真实原因（未登录/无权限）
+            # 掩盖成「系统繁忙 ret=1001」之类的瞬时错误。直接保留受限结果。
+            if not self.cookie_string:
+                if self.last_error.startswith("付费集仅返回"):
+                    self.last_error += "；未配置网页登录 Cookie，无法获取付费集完整音频"
+                return False
+
             print("   INFO: 旧版 V3 接口确认章节受限，切换网页授权接口")
             return self._download_web_authorized(
                 track_id,
@@ -2613,8 +2622,16 @@ class XimalayaDownloadManager:
                 return True
             if self.last_error_type != 'restricted':
                 return False
+            # 该档位受限：记下原因后降档。整条链都失败时，最后保留一个
+            # 可读的总结错误，而不是静默返回 False（旧实现清空错误，
+            # 上层只能看到「下载失败」却不知道是未登录还是整链受限）。
+            last_restricted = self.last_error or self._pc_quality_label(level)
             self.last_error = ''
             self.last_error_type = ''
+        self._record_error(
+            f"PC 通道全部档位不可用：{last_restricted}",
+            error_type='restricted',
+        )
         return False
 
     def _download_m4a_direct_api(self, track_id: str, audio_quality: str, save_path: str,
@@ -2839,6 +2856,35 @@ class XimalayaDownloadManager:
 
         return False
     
+    def _mp3_fallback_to_legacy(self, track_id: str, audio_quality: str, save_path: str,
+                                chapter_title: str, progress_callback=None) -> bool:
+        """MP3 通道兜底：v3/baseInfo 被风控/无 URL 时改走旧版直连。
+
+        喜马拉雅实际几乎所有内容都是 AAC/M4A，MP3 档位只是网页端播放列表给出的
+        容器别名。旧版直连（mobile/redirect/free/play）匿名即可取免费集完整音频，
+        且自带 _preview 试听检测与 Cookie 指纹合并；付费集试听照常被拒绝并归类
+        restricted。保存时按真实容器纠正扩展名（MP3→m4a），避免「.mp3 里是 m4a」。
+        """
+        fallback_path = str(save_path)
+        if fallback_path.lower().endswith(".mp3"):
+            fallback_path = fallback_path[:-4] + ".m4a"
+        print("   ↪️ v3/baseInfo 不可用，兜底旧版直连（M4A）")
+        ok = self._download_m4a_direct_api(
+            track_id,
+            audio_quality,
+            fallback_path,
+            chapter_title,
+            progress_callback=progress_callback,
+            allow_public_fallback=False,
+        )
+        if not ok:
+            return False
+        # 保留"成功"并把来源标注为 MP3 通道兜底，供前端展示真实链路
+        self.last_download_source = "mp3_legacy_fallback"
+        if fallback_path != str(save_path):
+            self.last_download_path = fallback_path
+        return True
+
     def _download_mp3_from_web(self, track_id: str, audio_quality: str, save_path: str, chapter_title: str, progress_callback=None) -> bool:
         """
         尝试下载MP3格式音频
@@ -2859,7 +2905,16 @@ class XimalayaDownloadManager:
         """
         print(f"🎵 使用网页端API下载MP3 - 音质: {audio_quality}")
         print(f"📝 注意：移动端不支持MP3，必须使用网页端API")
-        
+
+        # 网页会话指纹（webtk/HWWAF）+ 登录 Cookie 合并：v3/baseInfo 匿名直连
+        # 会被风控（ret=1001）或只给试听，与 _request_web_track_info / 旧版直连
+        # 保持同一准备步骤，缺一不可。
+        try:
+            self._bootstrap_web_session(track_id)
+        except Exception:
+            pass
+        web_fingerprint_cookie = self._web_cookie_header()
+
         try:
             # 1. 调用网页端API获取音频信息
             timestamp = int(time.time() * 1000)
@@ -2882,23 +2937,10 @@ class XimalayaDownloadManager:
                 'Sec-Fetch-Site': 'same-origin',
             }
             
-            # 添加Cookie（如果有）
-            if self.cookie_string:
-                web_headers['Cookie'] = self.cookie_string
-                print(f"   🍪 已添加Cookie到网页端API请求")
-                print(f"   📋 Cookie长度: {len(self.cookie_string)} 字符")
-                
-                # 检查Cookie中是否包含关键字段
-                cookie_lower = self.cookie_string.lower()
-                if '_token' in cookie_lower:
-                    print(f"   ✅ Cookie包含_token字段")
-                else:
-                    print(f"   ⚠️ Cookie缺少_token字段")
-                    
-                if 'login_type' in cookie_lower:
-                    print(f"   ✅ Cookie包含login_type字段")
-                else:
-                    print(f"   ⚠️ Cookie缺少login_type字段")
+            # 添加Cookie（如果有），合并登录 Cookie 与网页会话指纹
+            if web_fingerprint_cookie:
+                web_headers['Cookie'] = web_fingerprint_cookie
+                print(f"   🍪 已合并登录 Cookie 与网页会话指纹（webtk/HWWAF）")
             
             print(f"   🔗 网页端API: {web_api_url}")
             response = self.session.get(web_api_url, headers=web_headers, timeout=15)
@@ -2914,7 +2956,17 @@ class XimalayaDownloadManager:
             
             if data.get('ret') != 0:
                 print(f"❌ API返回错误: ret={data.get('ret')}, msg={data.get('msg', 'Unknown')}")
-                self._record_error(f"API error ret={data.get('ret')}: {data.get('msg', 'unknown')}")
+                # v3/baseInfo 被风控（ret=1001 系统繁忙）或拒绝时，免费集仍可走
+                # 旧版直连兜底（mobile/redirect/free/play 匿名可用，且自带 _preview
+                # 试听检测与 Cookie 指纹合并），避免 MP3 通道一遇风控就整体失败。
+                fallback_ok = self._mp3_fallback_to_legacy(
+                    track_id, audio_quality, save_path, chapter_title, progress_callback
+                )
+                if fallback_ok:
+                    return True
+                self._record_error(
+                    f"API error ret={data.get('ret')}: {data.get('msg', 'unknown')}"
+                )
                 return False
             
             # 2. 提取playUrlList
@@ -2924,6 +2976,12 @@ class XimalayaDownloadManager:
             if not play_url_list:
                 print("❌ 未找到可用的音频URL列表")
                 print(f"   📊 trackInfo包含的字段: {list(track_info.keys())[:10] if track_info else 'None'}")
+                # 匿名/风控时 playUrlList 常为空 → 免费集兜底旧版直连
+                fallback_ok = self._mp3_fallback_to_legacy(
+                    track_id, audio_quality, save_path, chapter_title, progress_callback
+                )
+                if fallback_ok:
+                    return True
                 self._record_error("no playable audio URL returned")
                 return False
             
@@ -2971,7 +3029,22 @@ class XimalayaDownloadManager:
             
             if not decrypted_url or not decrypted_url.startswith('http'):
                 print(f"❌ URL解密失败或格式错误")
+                # 解密失败（加密格式变动/需要登录态）→ 免费集兜底旧版直连
+                fallback_ok = self._mp3_fallback_to_legacy(
+                    track_id, audio_quality, save_path, chapter_title, progress_callback
+                )
+                if fallback_ok:
+                    return True
                 self._record_error("unable to decrypt audio URL")
+                return False
+            
+            # 解密出的 MP3 URL 若指向 _preview（付费集试听），直接拒绝而不是
+            # 下载 90 秒片段；与网页授权/旧版直连的试听判定保持同一语义。
+            if self._is_legacy_preview_url(decrypted_url):
+                self._record_error(
+                    "付费集仅返回 90 秒试听片段（MP3 解密 URL 指向 _preview 文件）",
+                    error_type='restricted',
+                )
                 return False
             
             print(f"   🔓 解密URL: {decrypted_url[:100]}...")

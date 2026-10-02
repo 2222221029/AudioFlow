@@ -2147,6 +2147,94 @@ class LegacyRedirectPreviewTest(unittest.TestCase):
                     self.assertEqual(manager.last_error_type, "restricted")
         self.assertIn("没有该章节的完整播放权限", manager.last_error)
 
+    def test_pc_auto_chain_keeps_readable_error_when_all_levels_restricted(self):
+        """电脑版自动链四档全受限（未登录）时，必须留下可读错误而不是静默失败。"""
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()  # 无 Cookie → _pc_source() 返回 None
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "pc.m4a"
+                ok = manager._download_pc_best_available("666117720", str(save_path), "测试")
+
+        self.assertFalse(ok)
+        self.assertEqual(manager.last_error_type, "restricted")
+        self.assertIn("PC 通道", manager.last_error)
+        self.assertIn("网页登录态", manager.last_error)
+        self.assertFalse(save_path.exists())
+
+    def test_web_auto_paid_preview_without_login_keeps_restricted_reason(self):
+        """付费集试听被旧版直连识别后，匿名（无 Cookie）不应去撞无权通道、把
+        真实受限原因掩盖成风控错误。"""
+        preview = self._redirect_response(
+            "http://audiofreepay.ali.xmcdn.com/download/1.0.0/storages/bf06-audiopay/"
+            "1F/9C/GKwRIRwI2hHkAHl4FAJbEeJ9-aacv2-96K_preview_1124904.m4a?buy_key=x",
+            b"\x00\x00\x00\x18ftypM4A " + b"audio" * 500,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()  # 匿名
+            with mock.patch.object(manager, "_fetch_anonymous_public_track_info", return_value=None):
+                with mock.patch.object(manager.session, "get", return_value=preview) as get:
+                    with mock.patch.object(manager, "_download_web_authorized") as authorized:
+                        with tempfile.TemporaryDirectory() as tmp:
+                            save_path = Path(tmp) / "paid.m4a"
+                            ok = manager.download_audio_by_quality(
+                                "666117739", "喜马拉雅网页版接口", str(save_path)
+                            )
+
+        self.assertFalse(ok)
+        self.assertEqual(manager.last_error_type, "restricted")
+        self.assertIn("未配置网页登录 Cookie", manager.last_error)
+        authorized.assert_not_called(), "匿名不该去试网页授权通道"
+        self.assertFalse(save_path.exists())
+
+    def test_web_auto_paid_preview_with_login_still_calls_authorized_channel(self):
+        """有网页登录 Cookie 时，付费集受限仍应进入授权通道（可能买到/有会员）。"""
+        preview = self._redirect_response(
+            "http://audiofreepay.ali.xmcdn.com/download/1.0.0/storages/bf06-audiopay/"
+            "1F/9C/GKwRIRwI2hHkAHl4FAJbEeJ9-aacv2-96K_preview_1124904.m4a?buy_key=x",
+            b"\x00\x00\x00\x18ftypM4A " + b"audio" * 500,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with mock.patch.object(manager, "_fetch_anonymous_public_track_info", return_value=None):
+                with mock.patch.object(manager.session, "get", return_value=preview):
+                    with mock.patch.object(manager, "_download_web_authorized", return_value=False) as authorized:
+                        with tempfile.TemporaryDirectory() as tmp:
+                            save_path = Path(tmp) / "paid.m4a"
+                            ok = manager.download_audio_by_quality(
+                                "666117739", "喜马拉雅网页版接口", str(save_path)
+                            )
+
+        self.assertFalse(ok)
+        authorized.assert_called_once(), "有 Cookie 时必须真正尝试授权通道"
+
+    def test_mp3_web_channel_falls_back_to_legacy_when_v3_blocked(self):
+        """v3/baseInfo 被风控（ret=1001）时，MP3 通道应兜底旧版直连下载成功。"""
+        bootstrap = FakeResponse(status_code=200, body=b"1700000000")
+        blocked = FakeResponse(
+            status_code=200,
+            json_data={"ret": 1001, "msg": "系统繁忙，请稍后再试!"},
+        )
+        full_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 2048)
+        legacy = self._redirect_response(
+            "http://audiopay.cos.tx.xmcdn.com/download/1.0.0/storages/1206-audiopay/"
+            "8B/82/GKwRIW4I2hHcAHUW0wJbEd7f-aacv2-96K.m4a?buy_key=x",
+            full_body,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "out.mp3"
+                with mock.patch.object(
+                    manager.session, "get", side_effect=[bootstrap, blocked, legacy]
+                ) as get:
+                    ok = manager.download_audio_by_quality(
+                        "666117720", "MP3 64K", str(save_path)
+                    )
+                self.assertTrue(ok, f"err={manager.last_error!r}")
+                # 兜底真实容器是 m4a，落盘应以实际容器纠正扩展名
+                self.assertTrue(Path(str(save_path)[:-4] + ".m4a").exists())
+                self.assertEqual(manager.last_download_source, "mp3_legacy_fallback")
+
 
 if __name__ == "__main__":
     unittest.main()
