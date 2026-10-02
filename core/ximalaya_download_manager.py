@@ -2325,6 +2325,20 @@ class XimalayaDownloadManager:
             names = " → ".join(
                 self._MOBILE_QUALITY_PROFILES[level]["name"] for level in preferred_levels
             )
+            # 与「移动端自动最高音质」一致：没有 App 票据（x-tk）但有网页登录态时，
+            # 无损/杜比这类 V4 专属档位直接失败会让整套下载空转。PC 通道只需
+            # 网页 Cookie 即可取到 256K（实测付费集同样可用），先试 PC 再回退 V4，
+            # 保证选了「无损优先（自动降级）」的用户在只有网页 Cookie 时也能下到
+            # 最高可用音质，而不是眼睁睁看任务失败。
+            if not self._has_mobile_credentials() and self._has_pc_credentials():
+                print("🎼 未配置移动端凭证，无损优先档位先尝试电脑版通道（仅需网页登录态）")
+                if self._download_pc_best_available(
+                    track_id, save_path, chapter_title,
+                    progress_callback=progress_callback,
+                ):
+                    return True
+                self.last_error = ""
+                self.last_error_type = ""
             print(f"🎼 使用喜马拉雅移动端 V4 音质优先链：{names}")
             return self._download_mobile_quality_chain(
                 track_id,

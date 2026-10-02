@@ -2207,6 +2207,48 @@ class LegacyRedirectPreviewTest(unittest.TestCase):
         self.assertFalse(ok)
         authorized.assert_called_once(), "有 Cookie 时必须真正尝试授权通道"
 
+    def test_lossless_preferred_falls_back_to_pc_when_only_web_cookie(self):
+        """「无损优先（自动降级）」无 App 票据但有网页 Cookie 时，应走 PC 256K
+        而不是让整档失败（实测付费集 PC 通道同样可下完整文件）。"""
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with mock.patch.object(manager, "_has_mobile_credentials", return_value=False):
+                with mock.patch.object(manager, "_has_pc_credentials", return_value=True):
+                    with mock.patch.object(
+                        manager, "_download_pc_best_available", return_value=True
+                    ) as pc:
+                        with mock.patch.object(
+                            manager, "_download_mobile_quality_chain"
+                        ) as mobile:
+                            with tempfile.TemporaryDirectory() as tmp:
+                                save_path = Path(tmp) / "lossless.m4a"
+                                ok = manager.download_audio_by_quality(
+                                    "666117739", "无损优先（自动降级）", str(save_path)
+                                )
+
+        self.assertTrue(ok)
+        pc.assert_called_once()
+        mobile.assert_not_called(), "PC 成功时不应再打无票据的 V4 通道"
+
+    def test_lossless_preferred_still_uses_v4_when_pc_unavailable(self):
+        """无网页 Cookie（也没有 PC 登录态）时，无损优先应回到 V4 链并在无票据时报
+        受限，而不是静默通过。"""
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()  # 无 Cookie
+            with mock.patch.object(manager, "_has_mobile_credentials", return_value=False):
+                with mock.patch.object(manager, "_has_pc_credentials", return_value=False):
+                    with mock.patch.object(
+                        manager, "_download_mobile_quality_chain", return_value=False
+                    ) as mobile:
+                        with tempfile.TemporaryDirectory() as tmp:
+                            save_path = Path(tmp) / "lossless.m4a"
+                            ok = manager.download_audio_by_quality(
+                                "666117739", "无损优先（自动降级）", str(save_path)
+                            )
+
+        self.assertFalse(ok)
+        mobile.assert_called_once()
+
     def test_mp3_web_channel_falls_back_to_legacy_when_v3_blocked(self):
         """v3/baseInfo 被风控（ret=1001）时，MP3 通道应兜底旧版直连下载成功。"""
         bootstrap = FakeResponse(status_code=200, body=b"1700000000")
