@@ -1294,7 +1294,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         # 96K 档位首选 level 由 /2（实测 48K）修正为 /3（实测 96K）
         self.assertEqual(
             get.call_args_list[1].args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/265392006/3",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/265392006/3?device=android&isAsc=true",
         )
         api_query = parse_qs(urlparse(get.call_args_list[3].args[0]).query)
         self.assertEqual(api_query["device"], ["web"])
@@ -1601,7 +1601,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         # 96K 档位首选 level 由 /2（实测 48K）修正为 /3（实测 96K）
         self.assertEqual(
             get.call_args_list[2].args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/261300454/3",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/261300454/3?device=android&isAsc=true",
         )
 
     def test_web_auto_technical_failure_does_not_call_authorized_api(self):
@@ -1676,7 +1676,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         # 96K 档位首选 level 由 /2（实测 48K）修正为 /3（实测 96K）
         self.assertEqual(
             get.call_args.args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/3",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/3?device=android&isAsc=true",
         )
         self.assertEqual(get.call_args.kwargs["headers"]["Cookie"], "_token=member")
 
@@ -1711,7 +1711,7 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         # 96K 的降级链修正为 (3, 1, 0)：首选 /3 校验失败后依次降到 /1、/0
         self.assertEqual(
             get.call_args_list[1].args[0],
-            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/1",
+            "https://mobile.ximalaya.com/mobile/redirect/free/play/member-track/1?device=android&isAsc=true",
         )
         self.assertEqual(manager.last_download_source, "legacy_web_redirect")
 
@@ -1992,6 +1992,160 @@ Accept-Language: zh-CN,zh-Hans;q=0.9
         self.assertFalse(ok)
         self.assertEqual(manager.last_error_type, "restricted")
         self.assertEqual(get.call_count, 2)
+
+
+class LegacyRedirectPreviewTest(unittest.TestCase):
+    """旧版直连（mobile/redirect/free/play）对单集付费专辑的试听判定。
+
+    实测（2026-xx，专辑 78072071《山野诡闻笔记》）：前 45 集免费试听，第 46 集起
+    单集付费 0.2 喜点。匿名请求旧版直连时，付费集会被 302 到
+    ``<name>_preview_<bytes>.m4a``（90 秒试听，约 1.07MB），完整集约 5.5MB。
+    旧实现把试听当成功存盘；修复后必须按 URL 中的 ``_preview`` 标记拒绝存盘并
+    归类 restricted，同时请求要携带网页会话指纹（HWWAF/webtk）与官方取流参数。
+    """
+
+    def _redirect_response(self, url, body=b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 2000)):
+        response = FakeResponse(
+            headers={"content-type": "audio/mp4", "content-length": str(len(body))},
+            body=body,
+        )
+        response.url = url
+        return response
+
+    def test_paid_episode_preview_redirect_is_rejected_as_restricted(self):
+        preview_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 1024 * 1024)
+        preview = self._redirect_response(
+            "http://audiofreepay.ali.xmcdn.com/download/1.0.0/storages/bf06-audiopay/"
+            "1F/9C/GKwRIRwI2hHkAHl4FAJbEeJ9-aacv2-96K_preview_1124904.m4a?buy_key=x",
+            preview_body,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "paid.m4a"
+                with mock.patch.object(manager.session, "get", return_value=preview) as get:
+                    ok = manager.download_audio_by_quality(
+                        "666117739", "M4A_96K", str(save_path)
+                    )
+
+        self.assertFalse(ok)
+        self.assertFalse(save_path.exists(), "试听片段绝不能存成成品文件")
+        self.assertEqual(manager.last_error_type, "restricted")
+        self.assertIn("试听", manager.last_error)
+        self.assertEqual(get.call_count, 1)
+
+    def test_free_episode_full_redirect_is_saved_normally(self):
+        full_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 2048)
+        full = self._redirect_response(
+            "http://audiopay.cos.tx.xmcdn.com/download/1.0.0/storages/1206-audiopay/"
+            "8B/82/GKwRIW4I2hHcAHUW0wJbEd7f-aacv2-96K.m4a?buy_key=x",
+            full_body,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "free.m4a"
+                with mock.patch.object(manager.session, "get", return_value=full) as get:
+                    ok = manager.download_audio_by_quality(
+                        "666117720", "M4A_96K", str(save_path)
+                    )
+                self.assertTrue(ok, f"err={manager.last_error!r} type={manager.last_error_type!r}")
+                self.assertTrue(
+                    save_path.exists(),
+                    f"err={manager.last_error!r} type={manager.last_error_type!r} "
+                    f"source={manager.last_download_source!r}",
+                )
+                self.assertEqual(save_path.read_bytes(), full_body)
+                self.assertEqual(manager.last_error, "")
+
+    def test_legacy_redirect_sends_web_session_cookies_and_official_params(self):
+        full_body = b"\x00\x00\x00\x18ftypM4A " + (b"audio" * 2048)
+        full = self._redirect_response(
+            "http://audiopay.cos.tx.xmcdn.com/download/1.0.0/storages/1206-audiopay/"
+            "8B/82/GKwRIW4I2hHcAHUW0wJbEd7f-aacv2-96K.m4a?buy_key=x",
+            full_body,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            manager.session.cookies.set("HWWAFSESID", "waf-session-1")
+            with tempfile.TemporaryDirectory() as tmp:
+                save_path = Path(tmp) / "free.m4a"
+                with mock.patch.object(manager.session, "get", return_value=full) as get:
+                    ok = manager.download_audio_by_quality(
+                        "666117720", "M4A_96K", str(save_path)
+                    )
+
+        self.assertTrue(ok)
+        called_url = get.call_args.args[0]
+        self.assertIn("?device=android&isAsc=true", called_url)
+        cookie_header = get.call_args.kwargs["headers"].get("Cookie", "")
+        self.assertIn("_token=member", cookie_header)
+        self.assertIn("HWWAFSESID=waf-session-1", cookie_header)
+        self.assertEqual(
+            get.call_args.kwargs["headers"].get("Cookie2"), "$Version=1"
+        )
+
+    def test_web_authorized_preview_url_reports_restricted(self):
+        """网页授权通道（v3/baseInfo）解出 _preview 直链时也要拒绝而不是下载不完整文件。"""
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "extendInfo": {"currentUid": "0"},
+            "trackInfo": {
+                "isPaid": True,
+                "isFree": False,
+                "isAuthorized": False,
+                "playUrlList": [],
+            },
+        })
+        preview_cdn = (
+            "https://audiofreepay.ali.xmcdn.com/download/1.0.0/storages/"
+            "bf06-audiopay/1F/9C/GKwRIRwI2hHkAHl4FAJbEeJ9-aacv2-96K"
+            "_preview_1124904.m4a?sign=x"
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager()
+            with mock.patch.object(
+                manager, "_select_web_play_candidate", return_value=(preview_cdn, 1124904, "WEB")
+            ):
+                with tempfile.TemporaryDirectory() as tmp:
+                    save_path = Path(tmp) / "sp.m4a"
+                    with mock.patch.object(manager.session, "get", return_value=track_info):
+                        ok = manager._download_web_authorized("666117739", str(save_path), "测试")
+                    self.assertFalse(ok)
+                    self.assertFalse(save_path.exists())
+                    self.assertEqual(manager.last_error_type, "restricted")
+                    self.assertIn("试听", manager.last_error)
+
+    def test_web_authorized_preview_url_reports_restricted_when_logged_in(self):
+        """登录态但账号无权限时，_preview 也应归类 restricted 并给出明确提示。"""
+        track_info = FakeResponse(json_data={
+            "ret": 0,
+            "extendInfo": {"currentUid": "12345"},
+            "trackInfo": {
+                "isPaid": True,
+                "isFree": False,
+                "isAuthorized": False,
+                "playUrlList": [],
+            },
+        })
+        preview_cdn = (
+            "https://audiofreepay.ali.xmcdn.com/download/1.0.0/storages/"
+            "bf06-audiopay/1F/9C/GKwRIRwI2hHkAHl4FAJbEeJ9-aacv2-96K"
+            "_preview_1124904.m4a?sign=x"
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager = XimalayaDownloadManager(cookie_string="_token=member")
+            with mock.patch.object(
+                manager, "_select_web_play_candidate", return_value=(preview_cdn, 1124904, "WEB")
+            ):
+                with tempfile.TemporaryDirectory() as tmp:
+                    save_path = Path(tmp) / "sp.m4a"
+                    with mock.patch.object(manager.session, "get", return_value=track_info):
+                        ok = manager._download_web_authorized("666117739", str(save_path), "测试")
+                    self.assertFalse(ok)
+                    self.assertFalse(save_path.exists())
+                    self.assertEqual(manager.last_error_type, "restricted")
+        self.assertIn("没有该章节的完整播放权限", manager.last_error)
 
 
 if __name__ == "__main__":

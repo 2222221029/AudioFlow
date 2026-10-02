@@ -1611,6 +1611,33 @@ class XimalayaManager:
             print(f"⚠️ 旧API异常: {e}")
             return [], 0
     
+    def _warmup_web_fingerprint(self) -> None:
+        """Fetch the ximalaya homepage once so the Huawei-WAF session cookies
+        (HWWAFSESID/HWWAFSESTIME, the current substitute for the older ``webtk``)
+        land in ``self.session``. 2026-xx observed: without these cookies the web
+        API ``revision/album/v1/getTracksList`` returns ``ret=407 webtk缺失`` even
+        for public albums; after the warmup the same anonymous call is accepted
+        (either full data or a clean ``401 用户未登录`` that belongs to the album
+        being login-only). The warmup is best-effort and runs at most once.
+        """
+        if getattr(self, "_web_fingerprint_warmed", False):
+            return
+        try:
+            response = self.session.get(
+                "https://www.ximalaya.com/revision/time",
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                  'Chrome/140.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.ximalaya.com/',
+                },
+                timeout=10,
+            )
+            self._web_fingerprint_warmed = response.status_code == 200
+        except Exception as exc:
+            print(f"   WARN: 网页指纹会话初始化失败: {exc}")
+            self._web_fingerprint_warmed = False
+
     def _fetch_chapters_web_api(self, book_id: str, page: int = 1, page_size: int = 200) -> Tuple[List[Dict], int]:
         """Web API获取章节 (revision/album/v1/getTracksList)
 
@@ -1619,6 +1646,10 @@ class XimalayaManager:
         导致这类专辑的 web_api 恒失败。此处与 new_api/old_api 一致带上 Cookie。
         """
         try:
+            # 网页接口强制校验 webtk/HWWAF 指纹：匿名直连返回 ret=407「webtk缺失」。
+            # 先"打开一次网页"（revision/time 下发的 HWWAFSESID 等）把指纹 Cookie
+            # 装进 session，再与登录 Cookie 合并，等价于真实浏览器先开网页再取数据。
+            self._warmup_web_fingerprint()
             url = f"{self.api_url}/revision/album/v1/getTracksList"
             params = {
                 'albumId': book_id,
@@ -1631,8 +1662,23 @@ class XimalayaManager:
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                 'Referer': 'https://www.ximalaya.com/',
             }
-            if self.cookie_string:
-                headers['Cookie'] = self.cookie_string
+            # 网页接口强制校验 webtk/HWWAF 指纹：匿名直连返回 ret=407「webtk缺失」。
+            # 先"打开一次网页"（revision/time 下发的 HWWAFSESID 等）把指纹 Cookie
+            # 装进 session，再与登录 Cookie 合并，等价于真实浏览器先开网页再取数据。
+            cookie_parts = {}
+            for segment in str(self.cookie_string or "").replace("\r", "").replace("\n", ";").split(";"):
+                key, sep, val = segment.partition("=")
+                key = key.strip()
+                if sep and key and val.strip():
+                    cookie_parts[key] = val.strip()
+            try:
+                cookie_parts.update(self.session.cookies.get_dict())
+            except Exception:
+                pass
+            if cookie_parts:
+                headers['Cookie'] = "; ".join(
+                    f"{key}={val}" for key, val in cookie_parts.items()
+                )
             
             response = self.session.get(url, params=params, headers=headers, timeout=20)
             

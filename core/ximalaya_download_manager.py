@@ -794,6 +794,22 @@ class XimalayaDownloadManager:
                 return False
 
             audio_url, expected_size, quality_label = candidate
+            # 网页授权接口同样可能只回 _preview 试听（匿名/VIP 不足时 playUrlList
+            # 解密出的就是 _preview_*.m4a）。直接下载只会得到不完整文件并报出
+            # 「文件不完整」这种误导性错误；对付费但未授权的集，应明确归类 restricted。
+            if self._is_legacy_preview_url(audio_url):
+                if is_paid and not is_free and not is_authorized:
+                    if current_uid in ("", "0"):
+                        reason = "喜马拉雅网页登录 Cookie 未生效，请重新登录后再下载会员章节（仅返回试听片段）"
+                    else:
+                        reason = "当前喜马拉雅网页账号没有该章节的完整播放权限（仅返回试听片段）"
+                    self._record_error(reason, error_type="restricted")
+                else:
+                    self._record_error(
+                        "喜马拉雅网页接口仅返回试听片段（_preview），未取得完整音频"
+                    )
+                return False
+
             media_headers = {
                 "User-Agent": self._web_headers(track_id)["User-Agent"],
                 "Accept": "audio/mp4,audio/mpeg,audio/*;q=0.9,*/*;q=0.8",
@@ -1967,6 +1983,11 @@ class XimalayaDownloadManager:
         )
 
     @staticmethod
+    def _is_legacy_preview_url(url: str) -> bool:
+        """True when a CDN/file name carries the anonymous-preview marker."""
+        return bool(url and "_preview" in url.lower())
+
+    @staticmethod
     def _m4a_duration_seconds(path: Path) -> Optional[float]:
         """Read the MP4 movie-header duration without requiring ffprobe."""
         try:
@@ -2623,11 +2644,22 @@ class XimalayaDownloadManager:
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             'Referer': 'https://m.ximalaya.com/',
             'X-Requested-With': 'XMLHttpRequest',
+            # 与 mobile/v1/album/track 等其它移动端接口保持同一形态，
+            # 避免旧版直连因缺少该头被风控/指纹系统单独识别。
+            'Cookie2': '$Version=1',
         }
 
-        if self.cookie_string:
-            mobile_headers['Cookie'] = self.cookie_string
-            print("   🍪 已携带本地登录 Cookie")
+        # 旧版直连托管的 Cookie 与网页接口一致：除用户登录 Cookie 外，还要带上
+        # 本次会话从 www.ximalaya.com 换取的 WAF 指纹 Cookie（HWWAFSESID 等）。
+        # 喜马拉雅 2026 起网页接口强制校验 webtk/HWWAF 会话（匿名返回
+        # ret=407「webtk缺失」），移动端 redirect 端点同样会参考这些指纹——
+        # 缺少时付费集只能拿到 90s 试听（_preview_*.m4a），齐全时才可能授予
+        # 完整文件。这里合并 session Cookie，等价于真实浏览器"先开网页再取流"。
+        if self.cookie_string or self.session.cookies.get_dict():
+            merged_cookie = self._web_cookie_header()
+            if merged_cookie:
+                mobile_headers['Cookie'] = merged_cookie
+                print("   🍪 已携带登录 Cookie 与网页会话指纹（webtk/HWWAF）")
 
         final_path = Path(save_path)
         temp_path = final_path.with_name(final_path.name + '.part')
@@ -2637,6 +2669,9 @@ class XimalayaDownloadManager:
             direct_url = (
                 "https://mobile.ximalaya.com/mobile/redirect/free/play/"
                 f"{track_id}/{quality_level}"
+                # 与官方 App 相同的取流参数；匿名下不改变付费授权判断，但
+                # 保证请求形态与真机一致，避免被降级授信。
+                "?device=android&isAsc=true"
             )
             print(f"   🔗 请求旧直连 Level {quality_level}")
             try:
@@ -2675,6 +2710,20 @@ class XimalayaDownloadManager:
                     content_length = int(response.headers.get('content-length') or 0)
                 except (TypeError, ValueError):
                     content_length = 0
+
+                # 付费集试听判定（必须先于写盘）：redirect 终点 URL 带 `_preview`
+                # 标记（实测匿名付费集一律被导到 ``<name>_preview_<bytes>.m4a``
+                # 的 90 秒试听文件）。命中即拒绝存盘并归类 restricted，避免
+                # "成功"却只保存 1.07MB 试听（完整 96K 单集约 5.5MB）。
+                final_url = str(getattr(response, 'url', '') or '')
+                if self._is_legacy_preview_url(final_url):
+                    close = getattr(response, 'close', None)
+                    if close:
+                        close()
+                    reason = "付费集仅返回 90 秒试听片段（redirect 指向 _preview 文件）"
+                    self._record_error(reason, error_type='restricted')
+                    print(f"   ⚠️ {reason}")
+                    return False
 
                 iterator = response.iter_content(chunk_size=512 * 1024)
                 first_chunk = next(iterator, b'')
