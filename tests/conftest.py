@@ -44,6 +44,9 @@ os.environ.setdefault("LOG_DIR", str(_RUNTIME_ROOT / "logs"))
 os.environ.setdefault("DOWNLOAD_DIR", str(_RUNTIME_ROOT / "downloads"))
 # 测试期间不要因为后台线程/调度器产生真实副作用。
 os.environ.setdefault("AUDIOFLOW_DISABLE_SCHEDULER", "1")
+# 测试默认关闭喜马拉雅 PC 通道的线上签名（hdaa 上报），保持离线：
+# 单个用例需要验证线上行为时，显式设回 0 / 注入假 Provider。
+os.environ.setdefault("AUDIOFLOW_DISABLE_PC_LIVE_SIGN", "1")
 
 
 @pytest.fixture

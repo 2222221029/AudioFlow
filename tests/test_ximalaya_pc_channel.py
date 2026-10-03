@@ -18,6 +18,7 @@ import os
 import random
 import tempfile
 import unittest
+import zlib
 from unittest import mock
 
 from Crypto.Cipher import AES
@@ -289,6 +290,41 @@ class XimalayaPcSourceTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("解密失败", result.message)
 
+    def test_is_content_download_blocked_helper(self):
+        self.assertTrue(pcsrc.is_content_download_blocked("该内容暂不支持下载！"))
+        self.assertTrue(pcsrc.is_content_download_blocked("亲，暂不支持下载哦"))
+        self.assertFalse(pcsrc.is_content_download_blocked("签名校验失败"))
+        self.assertFalse(pcsrc.is_content_download_blocked("busy"))
+        self.assertFalse(pcsrc.is_content_download_blocked(""))
+        self.assertFalse(pcsrc.is_content_download_blocked(None))
+
+    def test_resolve_content_blocked_fails_fast_without_sign_retry(self):
+        # 大 IP 有声剧整专辑关闭下载：ret=-1 + 「该内容暂不支持下载！」。
+        # 这是内容限制不是签名失效，绝不能再换签名白跑一次。
+        session = _FakeSession([_Resp({"ret": -1, "msg": "该内容暂不支持下载！"})])
+        source = pcsrc.PcTrackSource(session=session, cookie=self._cookie())
+        result = source.resolve("516265274", 2)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.ret, -1)
+        self.assertEqual(result.server_msg, "该内容暂不支持下载！")
+        self.assertIn("不支持下载", result.message)
+        self.assertEqual(len(session.calls), 1, "内容受限必须 fail-fast，不做签名重试")
+
+    def test_resolve_sign_still_rejected_keeps_server_msg(self):
+        # 非内容限制的 ret=-1：保留一次换签名重试；终态文案透传服务端原文
+        session = _FakeSession([
+            _Resp({"ret": -1, "msg": "签名校验失败"}),
+            _Resp({"ret": -1, "msg": "签名校验失败"}),
+        ])
+        source = pcsrc.PcTrackSource(session=session, cookie=self._cookie())
+        result = source.resolve("516265274", 2)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(len(session.calls), 2)
+        self.assertIn("仍被服务端拒绝", result.message)
+        self.assertIn("签名校验失败", result.message)
+
     def test_probe_is_offline(self):
         source = pcsrc.PcTrackSource(session=_FakeSession([]), cookie=self._cookie())
         info = source.probe()
@@ -426,6 +462,24 @@ class XimalayaPcIntegrationTest(unittest.TestCase):
         result = manager._download_pc_track("516265274", 3, "/tmp/never-written.m4a")
         self.assertFalse(result)
         self.assertEqual(manager.last_error_type, "restricted")
+
+    def test_pc_download_content_block_classified_restricted(self):
+        # 版权方禁止下载（《大奉打更人》这类大 IP 有声剧）：
+        # 归类 restricted 而非 download_failed，自动链据此明确降级
+        manager = self._manager(f"1&_token={TEST_TOKEN}")
+        source = manager._pc_source()
+        blocked = pcsrc.PcTrackResult(
+            ok=False, ret=-1,
+            message="该内容版权方暂不支持电脑版下载（服务端：该内容暂不支持下载！）",
+            server_msg="该内容暂不支持下载！",
+        )
+        with mock.patch.object(source, "resolve", return_value=blocked):
+            ok = manager._download_pc_track("516265274", 3, "/tmp/never-written.m4a")
+
+        self.assertFalse(ok)
+        self.assertEqual(manager.last_error_type, "restricted")
+        self.assertIn("版权方", manager.last_error)
+        self.assertIn("不支持下载", manager.last_error)
 
     def test_legacy_pc_url_helper_no_longer_calls_dead_endpoint(self):
         manager = self._manager("")
@@ -777,6 +831,160 @@ class XimalayaWebLosslessThrottleTest(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertIs(captured.get("conservative"), True)
+
+
+class HdaaLiveSignTest(unittest.TestCase):
+    """线上签名（hdaa 上报）的离线回归。
+
+    覆盖：载荷组装、响应解析、缓存接入（成功 / 失败兜底 / 跨进程复用），
+    以及设备 UUID 的持久化。真实端点验证用 ``XMLY_LIVE_TEST=1`` 显式开启。
+    """
+
+    CADD = "D2t6yNNzRqtSbN4GtZw4eGLn8tfc0Y1EYzqzMOCd"
+    SID = "jKp5WiBDmJBhb4_1m48fDX7YzPai9YOJKdD66BCx4EI_1"
+
+    @staticmethod
+    def _encrypt_hdaa(obj):
+        """把 dict 按 hdaa 响应格式加密成 base64 文本（AES-ECB + PKCS7）。"""
+        body = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        cipher = AES.new(signs.HDAA_KEY.encode(), AES.MODE_ECB).encrypt(pad(body, AES.block_size))
+        return base64.b64encode(cipher).decode("ascii")
+
+    def _post_session(self, result=None, error=None):
+        return _PostSession(result, error)
+
+    def test_string_to_uint8_matches_utf8(self):
+        text = "aZ09-_.!~*'()/ 中文&符号=?:%20"
+        self.assertEqual(signs._string_to_uint8(text), text.encode("utf-8"))
+
+    def test_build_report_body_roundtrip(self):
+        payload = {"Zf5": 0, "GF9": signs.HDAA_SDK_VERSION, "ew1": {"yV2": "UA"}}
+        body = signs.build_report_body(payload, signs.HDAA_KEY)
+        self.assertEqual(len(body) % 16, 0)
+
+        from Crypto.Cipher import AES as _AES
+        from Crypto.Util.Padding import unpad
+        plain = unpad(_AES.new(signs.HDAA_KEY.encode(), _AES.MODE_ECB).decrypt(body), 16)
+        self.assertEqual(json.loads(zlib.decompress(plain).decode("utf-8")), payload)
+
+    def test_parse_report_response(self):
+        canned = self._encrypt_hdaa({"err": 0, "cadd": self.CADD, "sid": self.SID})
+        obj = signs.parse_report_response(canned, signs.HDAA_KEY)
+        self.assertEqual(obj["cadd"], self.CADD)
+        self.assertEqual(obj["sid"], self.SID)
+
+    def test_parse_report_response_rejects_missing_fields(self):
+        for missing in ({"cadd": self.CADD}, {"sid": self.SID}, {}):
+            canned = self._encrypt_hdaa(missing)
+            with self.assertRaises(signs.HdaaSignError):
+                signs.parse_report_response(canned, signs.HDAA_KEY)
+
+    def test_parse_report_response_rejects_garbage(self):
+        with self.assertRaises(signs.HdaaSignError):
+            signs.parse_report_response("!!!not-base64!!!")
+        with self.assertRaises(signs.HdaaSignError):
+            signs.parse_report_response("")
+
+    def test_provider_returns_server_issued_pair(self):
+        canned = self._encrypt_hdaa({"cadd": self.CADD, "sid": self.SID})
+        provider = signs.HdaaSignProvider(session=self._post_session(result=_PostResp(canned)))
+        cadd, sid = provider.fetch_pair()
+        self.assertEqual(cadd, self.CADD)
+        self.assertEqual(sid, self.SID)
+        self.assertEqual(provider.fetch_sign(), f"{self.CADD}&&{self.SID}")
+
+    def test_provider_wraps_transport_failure(self):
+        provider = signs.HdaaSignProvider(
+            session=self._post_session(error=RuntimeError("offline")))
+        with self.assertRaises(signs.HdaaSignError):
+            provider.fetch_pair()
+
+    def test_cache_live_uses_server_pair(self):
+        path = os.path.join(tempfile.mkdtemp(), "xm_live.json")
+        canned = self._encrypt_hdaa({"cadd": self.CADD, "sid": self.SID})
+        cache = signs.XmSignCache(
+            path=path, live=True, session=self._post_session(result=_PostResp(canned)))
+        self.assertEqual(cache.get(), f"{self.CADD}&&{self.SID}")
+        self.assertEqual(cache.status()["source"], "hdaa-live")
+        self.assertEqual(cache.status()["session_suffix"], "_1")
+        self.assertEqual(cache.status()["live_error"], "")
+
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        self.assertEqual(payload["source"], "hdaa-live")
+        self.assertEqual(payload["sessionId"], self.SID)
+        self.assertEqual(payload["browserId"], self.CADD)
+
+    def test_cache_live_falls_back_to_local_on_report_failure(self):
+        path = os.path.join(tempfile.mkdtemp(), "xm_offline.json")
+        cache = signs.XmSignCache(
+            path=path, live=True, ttl=3600,
+            session=self._post_session(error=RuntimeError("offline")))
+        token = cache.get()
+        self.assertTrue(token.endswith(signs.SESSION_SUFFIX_2))
+        self.assertEqual(cache.status()["source"], "pure-python")
+        self.assertTrue(cache.status()["live_error"])
+        # 兜底签名同样落盘，重新取用一致
+        self.assertEqual(token, signs.XmSignCache(path=path, live=False, ttl=3600).get())
+
+    def test_cache_live_survives_restart_without_network(self):
+        path = os.path.join(tempfile.mkdtemp(), "xm_restart.json")
+        canned = self._encrypt_hdaa({"cadd": self.CADD, "sid": self.SID})
+        first = signs.XmSignCache(
+            path=path, live=True, session=self._post_session(result=_PostResp(canned))).get()
+        # 第二个实例的 Provider 必然失败：应当从磁盘恢复同一对，不发上报
+        second = signs.XmSignCache(
+            path=path, live=True,
+            session=self._post_session(error=RuntimeError("offline"))).get()
+        self.assertEqual(first, second)
+        self.assertEqual(second, f"{self.CADD}&&{self.SID}")
+
+    def test_device_uuid_persisted_via_cache(self):
+        path = os.path.join(tempfile.mkdtemp(), "xm_uuid.json")
+        first = signs.XmSignCache(path=path, live=False, ttl=3600).device_uuid()
+        self.assertEqual(len(first.replace("-", "")), 32)
+        self.assertEqual(first,
+                         signs.XmSignCache(path=path, live=False, ttl=3600).device_uuid())
+
+    def test_pc_source_reuses_cache_device_uuid_in_cookie(self):
+        session = _FakeSession([])
+        # 不带 1&_device 的裸登录 Cookie：设备号应由取流器用缓存里的 UUID 补齐
+        source = pcsrc.PcTrackSource(
+            session=session, cookie=f"1&_token={TEST_TOKEN}")
+        self.assertIn(source.sign_cache.device_uuid(), source.cookie)
+        self.assertIn("1&_device=win32&", source.cookie)
+
+    @unittest.skipUnless(os.environ.get("XMLY_LIVE_TEST"),
+                         "XMLY_LIVE_TEST=1 时才验证真实上报端点")
+    def test_live_report_endpoint_returns_server_issued_pair(self):
+        provider = signs.HdaaSignProvider(timeout=20)
+        cadd, sid = provider.fetch_pair()
+        self.assertGreater(len(cadd), 20)
+        self.assertGreater(len(sid), 20)
+        self.assertTrue(provider.fetch_sign().startswith(cadd + "&&"))
+
+
+class _PostResp:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+class _PostSession:
+    """只实现 post 的假会话：返回预设响应或抛预设异常。"""
+
+    def __init__(self, result=None, error=None):
+        self.result = result
+        self.error = error
+        self.posted = []
+
+    def post(self, url, **kwargs):
+        self.posted.append((url, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 if __name__ == "__main__":

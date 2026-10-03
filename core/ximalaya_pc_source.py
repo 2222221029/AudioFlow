@@ -14,7 +14,8 @@
 
     GET https://mobile.ximalaya.com/mobile/download/v2/track/{trackId}/ts-{毫秒}
         ?trackId={trackId}&device={win32|darwin}&trackQualityLevel={0|1|2|3}
-    Header: xm-sign        ← 本项目的 core/ximalaya_pc_sign.py 纯 Python 生成
+    Header: xm-sign        ← 线上 hdaa 上报拿服务端下发的 cadd&&sid（默认）；
+                              上报不可用时退化本地算法（ximalaya_pc_sign）
     Cookie: 1&_token + 1&_device=win32&{UUID}&4.0.15
     → data.downloadAacUrl 为 base64url 密文
     → AES-128-ECB + PKCS7 解密（key 与网页版同一个）
@@ -27,6 +28,15 @@
 ``1&_device``  ``{platform}&{设备UUID}&{客户端版本}``。缺失 → ``ret=2004``
 ``xm-sign``    缺失或失效 → ``ret=-1``；被拒 → HTTP 400 错误页
 ============  ==================================================
+
+签名说明
+--------
+2026-10-03 起：本地纯算法合成的 ``browserId&&sessionId_2`` 已被服务端拒绝
+（``ret=-1``，换新签名重试仍失败）。主路径改为 hdaa 设备指纹上报 —— 向
+数字联盟服务发一次上报，取回服务端下发的真实 ``cadd``（browserId）与
+``sid``（sessionId，``_1`` 形态），拼成 ``xm-sign = cadd&&sid``；上报不可达
+时才退化为本地算法。签名由 :class:`XmSignCache` 缓存复用，``ret=-1`` 时
+自动换新。
 
 音质 ladder（客户端内部索引，非线性码率排序）
 ---------------------------------------------
@@ -54,6 +64,7 @@ from typing import Dict, Optional, Tuple
 from .ximalaya_pc_sign import (
     PC_APP_KEY,
     XmSignCache,
+    live_sign_env_enabled,
     make_pc_base_info_sign,
 )
 
@@ -92,7 +103,8 @@ PC_RET_MISSING_DEVICE = 2004
 PC_RET_RISK_CONTROL = 1001
 
 PC_RET_MESSAGES: Dict[int, str] = {
-    PC_RET_SIGN_STALE: "xm-sign 缺失或已失效（ret=-1），已自动换新签名重试",
+    #: 这是「换新签名重试后仍被拒」的最终态：本地算法产物已不被服务端接受
+    PC_RET_SIGN_STALE: "xm-sign 仍被服务端拒绝（ret=-1）：已换新签名重试仍未通过",
     PC_RET_NOT_LOGGED_IN: "未登录（ret=2002）：Cookie 缺少 1&_token",
     PC_RET_MISSING_DEVICE: "缺少设备号（ret=2004）：Cookie 需要 1&_device=win32&<UUID>&4.0.15",
     PC_RET_RISK_CONTROL: "风控（ret=1001）：签名或设备态未被接受",
@@ -100,6 +112,22 @@ PC_RET_MESSAGES: Dict[int, str] = {
 
 _CDN_MARKERS = ("xmcdn.com", "ximalaya.com")
 _CDN_PATH_MARKERS = (".mp3", ".m4a", ".aac", ".flac", ".wav", "/storages/", "aod.cos")
+
+#: 服务端 ret=-1 里明确表示「内容被版权方禁止下载」的关键词。
+#: 这类失败与签名无关：不需要换签名重试，也不要把锅甩给 xm-sign。
+_CONTENT_BLOCK_KEYWORDS = ("不支持下载", "暂不支持", "禁止下载", "不可下载",
+                           "不允许下载", "无法下载", "不支持该格式下载")
+
+
+def is_content_download_blocked(msg: str) -> bool:
+    """判断服务端 msg 是否表示「该内容版权方禁止下载」。
+
+    《大奉打更人》《庆余年》等大 IP 有声剧会整专辑关闭下载：电脑版
+    download/v2 返回 ``ret=-1 + {"msg": "该内容暂不支持下载！"}``——这是
+    内容限制，不是签名失效，不应触发换签名重试。
+    """
+    text = str(msg or "").strip()
+    return any(keyword in text for keyword in _CONTENT_BLOCK_KEYWORDS)
 
 
 class PcSourceError(RuntimeError):
@@ -119,6 +147,8 @@ class PcTrackResult:
     ext: str = ".m4a"
     ret: Optional[int] = None
     message: str = ""
+    #: 服务端原始 ``msg`` 字段（如「该内容暂不支持下载！」），透传供上层分类
+    server_msg: str = ""
     raw: Dict = field(default_factory=dict)
 
     @property
@@ -277,11 +307,14 @@ class PcTrackSource:
     :param cookie: 电脑版 Cookie（缺 ``1&_device`` 会自动补）
     :param device: ``win32`` 或 ``darwin``，决定签名密钥与请求参数
     :param sign_cache: 复用的 :class:`XmSignCache`；留空则自建
+    :param live_sign: 优先用线上 hdaa 上报签名（服务端下发的 cadd&&sid）；
+        只在环境变量 ``AUDIOFLOW_DISABLE_PC_LIVE_SIGN=1`` 时关闭（测试/离线）
+    :param device_uuid: 持久化的设备 UUID；留空则每次进程随机（见类文档）
     """
 
     def __init__(self, session=None, cookie: str = "", device: str = "win32",
                  sign_cache: Optional[XmSignCache] = None, timeout: int = 30,
-                 device_uuid: str = ""):
+                 device_uuid: str = "", live_sign: bool = True):
         if session is None:
             import requests
             session = requests.Session()
@@ -289,10 +322,18 @@ class PcTrackSource:
         self.device = device if device in ("win32", "darwin") else "win32"
         self.sign_platform = "win" if self.device == "win32" else "mac"
         self.timeout = int(timeout)
-        self.sign_cache = sign_cache or XmSignCache()
+        if sign_cache is None:
+            sign_cache = XmSignCache(
+                live=bool(live_sign) and live_sign_env_enabled(),
+                timeout=self.timeout,
+            )
+        self.sign_cache = sign_cache
         self._raw_cookie = str(cookie or "")
         self._ready_cookie = ""
-        self._device_uuid = str(device_uuid or "")
+        # 设备 UUID 优先用调用方传入的持久值，否则复用签名缓存里落盘的
+        # 同一台"虚拟设备"身份（避免每次进程重启都换新机器）
+        self._device_uuid = (str(device_uuid or "").strip()
+                             or self.sign_cache.device_uuid())
         self.last_error = ""
         self.last_ret: Optional[int] = None
 
@@ -416,14 +457,35 @@ class PcTrackSource:
 
             ret = payload.get("ret")
             self.last_ret = ret if isinstance(ret, int) else None
+            server_msg = str(payload.get("msg") or "").strip()
 
-            if ret == PC_RET_SIGN_STALE and attempt == 1:
-                self.invalidate_sign()
-                continue
-            if ret not in (0, None):
-                self.last_error = PC_RET_MESSAGES.get(ret, f"download/v2 返回 ret={ret}")
+            if ret == PC_RET_SIGN_STALE:
+                # 1) 内容被版权方禁止下载：与签名无关，直接失败，不换签名
+                if is_content_download_blocked(server_msg):
+                    self.last_error = (
+                        "该内容版权方暂不支持电脑版下载"
+                        f"（服务端：{server_msg or '暂不支持下载'}）"
+                    )
+                    return PcTrackResult(ok=False, ret=ret, message=self.last_error,
+                                         server_msg=server_msg, raw=payload)
+                # 2) 其余 ret=-1 视为签名类问题：首次换新签名重试一次
+                if attempt == 1:
+                    self.invalidate_sign()
+                    continue
+                # 3) 重试后仍失败：终态文案 + 透传服务端原文
+                base = PC_RET_MESSAGES.get(ret, f"download/v2 返回 ret={ret}")
+                self.last_error = (f"{base}（服务端：{server_msg}）"
+                                   if server_msg else base)
                 return PcTrackResult(ok=False, ret=ret, message=self.last_error,
-                                     raw=payload)
+                                     server_msg=server_msg, raw=payload)
+
+            if ret not in (0, None):
+                base = PC_RET_MESSAGES.get(ret, f"download/v2 返回 ret={ret}")
+                if server_msg:
+                    base = f"{base}（服务端：{server_msg}）"
+                self.last_error = base
+                return PcTrackResult(ok=False, ret=ret, message=self.last_error,
+                                     server_msg=server_msg, raw=payload)
 
             data = payload.get("data") or {}
             raw_url = data.get("downloadAacUrl") or data.get("downloadUrl") or ""
@@ -486,6 +548,8 @@ class PcTrackSource:
             ),
             "sign_ready": status.get("ready", False),
             "sign_suffix": status.get("session_suffix", ""),
+            "sign_source": status.get("source", ""),
+            "sign_live_error": status.get("live_error", ""),
             "last_error": self.last_error,
         }
 
@@ -503,6 +567,7 @@ __all__ = [
     "decrypt_pc_media_url",
     "ensure_pc_device_cookie",
     "extract_login_token",
+    "is_content_download_blocked",
     "looks_like_cdn_url",
     "pc_cookie_from_token",
     "pc_device_platform",
