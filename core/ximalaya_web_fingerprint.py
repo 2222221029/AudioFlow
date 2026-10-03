@@ -318,7 +318,7 @@ def ensure_wfp(player: Optional[Callable[[], str]] = None,
         result_live = result
     except Exception as exc:  # noqa: BLE001
         result_live = {"wfp_ready": False, "generated": False, "error": str(exc)}
-    # ② playwright 兜底
+    # ② playwright 兜底（未安装 playwright 时保留 node 链路失败原因，不覆盖）
     try:
         wfp = fetch_wfp(wait=wait)
         if wfp:
@@ -327,6 +327,10 @@ def ensure_wfp(player: Optional[Callable[[], str]] = None,
                     "generated": True}
         result_live = {"wfp_ready": False, "generated": False,
                        "error": "取号超时，未拿到 openId"}
+    except WfpUnavailable as exc:
+        base = str(result_live.get("error") or "取号失败")
+        result_live = {"wfp_ready": False, "generated": False,
+                       "error": f"{base}；（网页兜底不可用：{exc}）"}
     except Exception as exc:  # noqa: BLE001
         result_live = {"wfp_ready": False, "generated": False, "error": str(exc)}
     record_wfp_error(str(result_live.get("error") or "取号失败"))

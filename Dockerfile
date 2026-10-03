@@ -66,12 +66,14 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
 
 # 喜马拉雅 wfp 纯代码取号运行时：node + jsdom（scripts/ximalaya_wfp_node.js）
 # Python 侧 _node_env 会探测 /opt/audioflow-wfp/node_modules。
+# ⚠ jsdom 固定 21.x：Debian bookworm 的 apt nodejs 是 18.19，最新 jsdom 的
+#   engines 可能要求 node>=20；21.x 明确支持 node>=16，取号脚本在 node18 下最稳。
 ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY} \
     NODE_PATH=/opt/audioflow-wfp/node_modules
 ARG NPM_REGISTRY=https://registry.npmjs.org
 RUN mkdir -p /opt/audioflow-wfp && cd /opt/audioflow-wfp \
     && npm init -y >/dev/null 2>&1 \
-    && npm install --no-audit --no-fund --loglevel=error jsdom \
+    && npm install --no-audit --no-fund --loglevel=error jsdom@21.1.2 \
     && rm -rf /root/.npm /opt/audioflow-wfp/package.json /opt/audioflow-wfp/package-lock.json
 
 RUN groupadd -g ${AUDIOFLOW_GID} audioflow \

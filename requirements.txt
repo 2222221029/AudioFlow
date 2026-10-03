@@ -1,4 +1,4 @@
-# AudioFlow v1.0.41 依赖
+# AudioFlow v1.0.42 依赖
 # Python 3.12+ (必须)
 # 安装: pip install -r requirements.txt
 

@@ -124,3 +124,32 @@ class WfpStatusTest(unittest.TestCase):
             data = json.loads(p.read_text(encoding="utf-8"))
             self.assertEqual(data["wfp"], "")
             self.assertIn("取号超时", data["error"])
+
+
+class WfpErrorMergeTest(unittest.TestCase):
+    def test_playwright_unavailable_keeps_node_failure_cause(self):
+        """node 链路失败且 playwright 未安装时，错误应保留 node 原因而非被覆盖。"""
+        node_error = "取号失败: 需要 jsdom（npm i jsdom）"
+        with mock.patch.object(wfp, "load_wfp", return_value=""), \
+             mock.patch.object(wfp, "ensure_wfp_node",
+                               return_value={"wfp_ready": False,
+                                             "generated": False,
+                                             "error": node_error}), \
+             mock.patch.object(wfp, "fetch_wfp",
+                               side_effect=wfp.WfpUnavailable(
+                                   "需要 playwright：pip install playwright && playwright install chromium")):
+            result = wfp.ensure_wfp(wait=1)
+        self.assertFalse(result["wfp_ready"])
+        self.assertIn("jsdom", result["error"], "必须保留 node 链路真实原因")
+        self.assertIn("playwright", result["error"], "附带 playwright 兜底不可用说明")
+
+    def test_playwright_success_still_wins(self):
+        """playwright 可用且取号成功时，优先采用 playwright 结果。"""
+        with mock.patch.object(wfp, "ensure_wfp_node",
+                               return_value={"wfp_ready": False,
+                                             "generated": False,
+                                             "error": "node 失败"}), \
+             mock.patch.object(wfp, "fetch_wfp", return_value="ACM0PLAYWRIGHTWFPVALUE0123456789"):
+            result = wfp.ensure_wfp(wait=1)
+        self.assertTrue(result["wfp_ready"])
+        self.assertEqual(result["source"], "headless-chromium")
