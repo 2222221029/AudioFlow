@@ -50,15 +50,15 @@ class KuwoManager:
             self._page_request_interval = max(0.0, float(os.environ.get("KUWO_PAGE_INTERVAL", "0.15")))
         except (TypeError, ValueError):
             self._page_request_interval = 0.15
-        # albumInfo 的 rn 上限实测为 100：传 500/1000 只返回 100 条，传 6127 直接 504。
-        # 旧值 24 会让"整本目录"抓取（enhanced_search_manager 以 page_size=10000 调用）
-        # 膨胀到约 417 个 API 页，参考实现同场景只需约 100 页。rn 变大也会放大单次
-        # 响应错位的影响面，但页数减少同时降低了错位发生的次数，且下面的页校验与
-        # 重抓兜底仍然生效。
+        # albumInfo 的 rn 实测（2026-10-03）：rn=100/60/50 会频繁命中酷我网关
+        # 504（"Error occured while trying to proxy"），rn<=40 稳定返回 200；
+        # 旧注释里"rn 上限 100"已失效，因此默认压到 40（2653 集约 67 个 API 页，
+        # 由 _fetch_single_page 的内部重试与下面的页校验/重抓兜底覆盖瞬时失败）。
+        # rn 变大也会放大单次响应错位的影响面，页数减少同时降低了错位发生次数。
         try:
-            self._page_size = max(1, min(100, int(os.environ.get("KUWO_PAGE_SIZE", "100"))))
+            self._page_size = max(1, min(40, int(os.environ.get("KUWO_PAGE_SIZE", "40"))))
         except (TypeError, ValueError):
-            self._page_size = 100
+            self._page_size = 40
         
         # 写死的 Secret 和 Cookie（无需算法和登录）
         self._fixed_secret = "7363e89561110e6cb657c2fb7cedc85451a49cad02a8ce4d6bc236dce7ed52ce0144c917"
@@ -309,35 +309,46 @@ class KuwoManager:
             return None
     
     def _fetch_single_page(self, album_id: str, page_num: int, session=None) -> Dict:
-        """获取单页章节数据（用于并发请求；session 可传入独立会话用于重抓）"""
-        try:
-            req_id = str(uuid.uuid4()).replace('-', '')
-            timestamp = int(time.time() * 1000)
-            url = f"https://www.kuwo.cn/api/www/album/albumInfo?albumId={album_id}&pn={page_num}&rn={self._page_size}&reqId={req_id}&httpsStatus=1&plat=web_www&from=&_={timestamp}"
+        """获取单页章节数据（用于并发请求；session 可传入独立会话用于重抓）
 
-            headers = self._kuwo_api_headers("https://www.kuwo.cn")
-            http = session if session is not None else self.session
-            response = http.get(url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                code = data.get('code')
-                success = data.get('success')
-                
-                if code == 200 or success is True:
-                    data_obj = data.get('data', {})
-                    return {
-                        'page': page_num,
-                        'total': data_obj.get('total', 0),
-                        'music_list': data_obj.get('musicList', []),
-                        'album_info': data_obj,
-                        'success': True
-                    }
-            
-            return {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
-        except Exception as e:
-            print(f"❌ 获取第 {page_num} 页失败: {e}")
-            return {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
+        酷我网关对 albumInfo 偶发返回 504（"Error occured while trying to proxy"），
+        rn 越大越常见、rn<=40 实测稳定；一次命中即可让整本目录抓取失败，因此对
+        瞬时失败（504 / 非 200 / JSON 解析失败 / 异常）在页内重试最多 3 次。
+        """
+        last_error = ""
+        for attempt in range(3):
+            try:
+                req_id = str(uuid.uuid4()).replace('-', '')
+                timestamp = int(time.time() * 1000)
+                url = f"https://www.kuwo.cn/api/www/album/albumInfo?albumId={album_id}&pn={page_num}&rn={self._page_size}&reqId={req_id}&httpsStatus=1&plat=web_www&from=&_={timestamp}"
+
+                headers = self._kuwo_api_headers("https://www.kuwo.cn")
+                http = session if session is not None else self.session
+                response = http.get(url, headers=headers, timeout=15)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    code = data.get('code')
+                    success = data.get('success')
+
+                    if code == 200 or success is True:
+                        data_obj = data.get('data', {})
+                        return {
+                            'page': page_num,
+                            'total': data_obj.get('total', 0),
+                            'music_list': data_obj.get('musicList', []),
+                            'album_info': data_obj,
+                            'success': True
+                        }
+                    last_error = f"业务失败 code={code} success={success}"
+                else:
+                    last_error = f"HTTP {response.status_code}"
+            except Exception as e:
+                last_error = str(e)
+            if attempt < 2:
+                time.sleep(0.6 * (attempt + 1))
+        print(f"❌ 获取第 {page_num} 页失败（重试 3 次）: {last_error}")
+        return {'page': page_num, 'total': 0, 'music_list': [], 'success': False}
     
     # ------------------------------------------------------------------
     # 分页完整性与「响应错配」防护
@@ -518,8 +529,17 @@ class KuwoManager:
             page_size = max(1, int(page_size or 50))
             first_page_result = self._fetch_single_page(album_id, 1)
             if not first_page_result['success']:
-                print(f"❌ 获取第一页失败")
-                return []
+                # 页内重试后第一页仍失败：换独立会话串行重抓一轮（504 等瞬时网关
+                # 错误可能连续命中，独立会话可避开连接层复用的问题）
+                retry_session = self._new_kuwo_session()
+                try:
+                    first_page_result = self._fetch_single_page(
+                        album_id, 1, session=retry_session)
+                finally:
+                    retry_session.close()
+                if not first_page_result['success']:
+                    print(f"❌ 获取第一页失败")
+                    return []
 
             api_page_size = self._page_size
             total_chapters = int(first_page_result.get('total') or len(first_page_result.get('music_list') or []))

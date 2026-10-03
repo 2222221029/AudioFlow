@@ -5,9 +5,10 @@
 `接口/酷我听书/work/re/API_INVENTORY.md` 与 `kuwo_dl/config.py` 给出的实测结论：
 
 1. **分页 `rn` 上限是 100**：传 500/1000 也只返回 100 条，传 6127 直接 504。
-   修复前 `KuwoManager._page_size = 24`，而 `enhanced_search_manager` 会用
-   `page_size=10000` 拉整本目录 → `10000 / 24 ≈ 417` 个 API 页，
-   参考实现同场景只需约 100 页。
+   （2026-10-03 复测：rn=100/60/50 会频繁命中酷我网关 504——
+   "Error occured while trying to proxy to www.kuwo.cn"；rn≤40 稳定返回 200，
+   因此默认 `_page_size` 已从 100 压到 40。10000 集目录约 250 个 API 页，
+   由 `_fetch_single_page` 页内重试 + 分页校验/串行重抓兜底。）
 
 2. **`format` 参数决定容器**：
    ```
@@ -62,13 +63,17 @@ class KuwoRequestShapeTest(unittest.TestCase):
         )
 
     def test_page_size_is_large_enough_to_avoid_request_explosion(self):
-        """整本抓取的页数不应因 rn 过小而爆炸。"""
+        """整本抓取的页数不应因 rn 过小而爆炸。
+
+        2026-10-03 起 rn≤40 才是酷我网关的稳定区间（rn=100 频繁 504），
+        因此页数约束同步放宽到 300 页以内（rn≥34 即可满足）。
+        """
         manager = KuwoManager()
         # enhanced_search_manager 会以 page_size=10000 请求整本目录
         self.assertLessEqual(
             -(-10000 // manager._page_size),  # 向上取整
-            200,
-            "10000 集目录的 API 页数应控制在 200 页以内",
+            300,
+            "10000 集目录的 API 页数应控制在 300 页以内",
         )
 
     # --- 容器参数 -----------------------------------------------------------
