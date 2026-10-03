@@ -18,6 +18,7 @@ openId 落盘 ``config_dir()/ximalaya_wfp.json``，下载器（_web_wfp_cookie�
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -142,32 +143,152 @@ def save_wfp(wfp: str, source: str = "headless-chromium",
     return target
 
 
+def find_node() -> str:
+    """找到可用的 node 可执行（环境变量 NODE_BINARY 优先，其次 PATH）。"""
+    candidates = []
+    env_bin = os.environ.get("NODE_BINARY", "").strip()
+    if env_bin:
+        candidates.append(env_bin)
+    candidates += ["node", "nodejs"]
+    for cand in candidates:
+        try:
+            import shutil
+            path = cand if os.path.sep in cand else shutil.which(cand)
+        except Exception:
+            path = None
+        if path:
+            return path
+    return ""
+
+
+def _node_env() -> dict:
+    """为 node 子进程准备环境：带上可能的 jsdom 依赖路径。"""
+    import os as _os
+    env = dict(_os.environ)
+    node_path = env.get("NODE_PATH", "")
+    extra = []
+    # AudioFlow 自身目录下的 node_modules（本地开发 / Docker 预装）
+    try:
+        from core.app_paths import project_root
+        for candidate in (
+            project_root() / "node_modules",
+            project_root() / "wfp_node" / "node_modules",
+        ):
+            if candidate.is_dir():
+                extra.append(str(candidate))
+    except Exception:
+        pass
+    # Docker 镜像预装位置
+    for fixed in ("/opt/audioflow-wfp/node_modules",):
+        if os.path.isdir(fixed):
+            extra.append(fixed)
+    if extra:
+        env["NODE_PATH"] = os.pathsep.join(extra + ([node_path] if node_path else []))
+    return env
+
+
+def ensure_wfp_node(wait: int = 45, out_path: Optional[Path] = None) -> dict:
+    """纯代码取号：Node + jsdom + 数美 ATS SDK → fireeyes → openId。
+
+    不依赖 playwright/chromium（浏览器只需在首次领号时执行一次 SDK JS）。
+    :return: ``{"wfp_ready": bool, "source": ..., "error": ..., "generated": ...}``
+    """
+    import subprocess
+    try:
+        from core.app_paths import project_root
+        script = project_root() / "scripts" / "ximalaya_wfp_node.js"
+    except Exception:
+        script = Path(__file__).resolve().parents[1] / "scripts" / "ximalaya_wfp_node.js"
+    if not script.exists():
+        return {"wfp_ready": False, "generated": False,
+                "error": f"取号脚本缺失: {script}"}
+    node = find_node()
+    if not node:
+        return {"wfp_ready": False, "generated": False,
+                "error": "未找到 node（npm 环境），可改用 playwright 或安装 node"}
+
+    target = out_path or wfp_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    tmp_out = target.with_suffix(".json.tmp" + str(os.getpid()))
+    try:
+        proc = subprocess.run(
+            [node, str(script), "--out", str(tmp_out), "--timeout", str(wait * 1000)],
+            capture_output=True, text=True, timeout=wait + 20,
+            env=_node_env(),
+        )
+        stdout = proc.stdout or ""
+    except subprocess.TimeoutExpired:
+        return {"wfp_ready": False, "generated": False, "error": "取号超时"}
+    except Exception as exc:  # noqa: BLE001
+        return {"wfp_ready": False, "generated": False, "error": str(exc)}
+
+    wfp = ""
+    for line in stdout.splitlines():
+        if line.startswith("OPENID="):
+            wfp = line.split("=", 1)[1].strip()
+            break
+    if not wfp and tmp_out.exists():
+        wfp = tmp_out.read_text(encoding="utf-8").strip()
+    if not wfp:
+        return {"wfp_ready": False, "generated": False,
+                "error": f"取号失败: {(stdout or proc.stderr or '').strip()[:200]}"}
+
+    try:
+        if tmp_out.exists():
+            tmp_out.unlink()
+    except OSError:
+        pass
+    if save_wfp(wfp, source="node-sdk", path=target):
+        return {"wfp_ready": True, "source": "node-sdk", "generated": True}
+    return {"wfp_ready": False, "generated": False, "error": "落盘失败"}
+
+
 def ensure_wfp(player: Optional[Callable[[], str]] = None,
               wait: int = 45) -> dict:
     """确保 wfp 就绪（已落盘则直接返回；否则尝试本地生成）。
 
-    :param player: 自定义取号回调（主要供测试注入）；缺省用 :func:`fetch_wfp`
+    生成顺序：① Node + jsdom + 数美 SDK（纯代码，无浏览器）→ ② headless
+    Chromium（playwright 兜底，需浏览器）。
+
+    :param player: 自定义取号回调（主要供测试注入）；缺省自动链
     :return: 诊断摘要（可安全回显）：
         ``{"wfp_ready": bool, "source": ..., "error": ..., "generated": bool}``
     """
     existing = load_wfp()
     if existing:
         return {"wfp_ready": True, "source": "cached", "generated": False}
+    if player is not None:
+        try:
+            wfp = player(wait=wait) if isinstance(player, Callable) else None
+            if wfp:
+                save_wfp(wfp)
+                return {"wfp_ready": True, "source": "custom", "generated": True}
+        except Exception:  # noqa: BLE001
+            pass
+        return {"wfp_ready": False, "generated": False,
+                "error": "自定义取号失败"}
+    # ① 纯代码链路（首选）
     try:
-        fetcher = player or fetch_wfp
-        if not isinstance(fetcher, Callable):
-            raise TypeError("player 必须是可调用对象")
-        wfp = fetcher(wait=wait) if player else fetch_wfp(wait=wait)
-        if not wfp:
-            return {"wfp_ready": False, "generated": False,
-                    "error": "取号超时，未拿到 openId"}
-        save_wfp(wfp)
-        return {"wfp_ready": True, "source": "headless-chromium",
-                "generated": True}
-    except WfpUnavailable as exc:
-        return {"wfp_ready": False, "generated": False, "error": str(exc)}
+        result = ensure_wfp_node(wait=wait)
+        if result.get("wfp_ready"):
+            return result
+    except Exception as exc:  # noqa: BLE001
+        result_live = {"wfp_ready": False, "generated": False, "error": str(exc)}
+    # ② playwright 兜底
+    try:
+        wfp = fetch_wfp(wait=wait)
+        if wfp:
+            save_wfp(wfp, source="headless-chromium")
+            return {"wfp_ready": True, "source": "headless-chromium",
+                    "generated": True}
+        result_live = {"wfp_ready": False, "generated": False,
+                       "error": "取号超时，未拿到 openId"}
     except Exception as exc:  # noqa: BLE001
         return {"wfp_ready": False, "generated": False, "error": str(exc)}
+    return result_live
 
 
 def ensure_wfp_async(on_done: Optional[Callable[[dict], None]] = None,

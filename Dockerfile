@@ -58,9 +58,21 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
         ca-certificates \
         tzdata \
         curl \
+        nodejs \
+        npm \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
+
+# 喜马拉雅 wfp 纯代码取号运行时：node + jsdom（scripts/ximalaya_wfp_node.js）
+# Python 侧 _node_env 会探测 /opt/audioflow-wfp/node_modules。
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY} \
+    NODE_PATH=/opt/audioflow-wfp/node_modules
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN mkdir -p /opt/audioflow-wfp && cd /opt/audioflow-wfp \
+    && npm init -y >/dev/null 2>&1 \
+    && npm install --no-audit --no-fund --loglevel=error jsdom \
+    && rm -rf /root/.npm /opt/audioflow-wfp/package.json /opt/audioflow-wfp/package-lock.json
 
 RUN groupadd -g ${AUDIOFLOW_GID} audioflow \
     && useradd -u ${AUDIOFLOW_UID} -g audioflow -d /app -s /usr/sbin/nologin audioflow
