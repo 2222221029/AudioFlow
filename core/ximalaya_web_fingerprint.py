@@ -61,6 +61,25 @@ def load_wfp() -> str:
     return ""
 
 
+def get_wfp_status() -> dict:
+    """读取 wfp 状态（可安全回显）：``{"ready": bool, "error": str, "source": str}``。"""
+    wfp = load_wfp()
+    if wfp:
+        return {"ready": True, "error": "", "source": "cached"}
+    try:
+        path = wfp_path()
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            err = str(data.get("error") or "").strip()
+            if err:
+                return {"ready": False, "error": err, "source": "failed"}
+    except Exception:
+        pass
+    return {"ready": False,
+            "error": "未生成（点「生成网页指纹」或重新保存网页 Cookie 后自动生成）",
+            "source": ""}
+
+
 def fetch_wfp(ua: str = _DEFAULT_UA, wait: int = 45,
               page: str = _DEFAULT_PAGE) -> str:
     """无头 Chromium 访问喜马拉雅页面，取 ``wfp`` openId。
@@ -140,6 +159,26 @@ def save_wfp(wfp: str, source: str = "headless-chromium",
     }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                       encoding="utf-8")
+    return target
+
+
+def record_wfp_error(error: str, path: Optional[Path] = None) -> Path:
+    """记录一次取号失败原因（供 UI 回显；不影响已有 wfp）。"""
+    target = path or wfp_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    payload = {
+        "wfp": "",
+        "error": str(error)[:300],
+        "created_at": int(time.time()),
+    }
+    try:
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+    except OSError:
+        pass
     return target
 
 
@@ -268,6 +307,7 @@ def ensure_wfp(player: Optional[Callable[[], str]] = None,
                 return {"wfp_ready": True, "source": "custom", "generated": True}
         except Exception:  # noqa: BLE001
             pass
+        record_wfp_error("自定义取号失败")
         return {"wfp_ready": False, "generated": False,
                 "error": "自定义取号失败"}
     # ① 纯代码链路（首选）
@@ -275,6 +315,7 @@ def ensure_wfp(player: Optional[Callable[[], str]] = None,
         result = ensure_wfp_node(wait=wait)
         if result.get("wfp_ready"):
             return result
+        result_live = result
     except Exception as exc:  # noqa: BLE001
         result_live = {"wfp_ready": False, "generated": False, "error": str(exc)}
     # ② playwright 兜底
@@ -287,7 +328,8 @@ def ensure_wfp(player: Optional[Callable[[], str]] = None,
         result_live = {"wfp_ready": False, "generated": False,
                        "error": "取号超时，未拿到 openId"}
     except Exception as exc:  # noqa: BLE001
-        return {"wfp_ready": False, "generated": False, "error": str(exc)}
+        result_live = {"wfp_ready": False, "generated": False, "error": str(exc)}
+    record_wfp_error(str(result_live.get("error") or "取号失败"))
     return result_live
 
 

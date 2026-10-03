@@ -1429,13 +1429,18 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
                 : (info.has_mobile_ticket ? '已就绪' : (mobileCredential.has_mobile_cookie || mobileCredential.has_ticket ? '凭证不完整' : '未设置'))}</span>
               <span
                 className={`xmly-credential-pill ${info.has_wfp ? 'ready' : ''}`}
-                title="网页通道两级风控：xm-sign（本地 hdaa 上报已自动预热）+ wfp 指纹（需 headless 浏览器生成，扫码/保存网页 Cookie 后自动后台生成；未安装 playwright 时手动运行 scripts/ximalaya_web_fingerprint.py）。"
+                title={info.has_wfp ? '网页通道两级风控：xm-sign + wfp 均已就绪' : (info.wfp_error || '网页指纹未就绪')}
               >网页指纹：{info.has_wfp ? '已就绪' : '未生成'}</span>
             </div>
           )}
           <div className="cookie-actions">
             {platform.qr && <button className="btn btn-primary btn-tiny" onClick={() => setModal({content: <QrLoginModal platform={platform} onDone={actions.loadCookies} onClose={closeModal} />})}><Icon id="i-qr" className="icon icon-sm" />{scanText}</button>}
             {platform.key !== 'lrts' && <button className="btn btn-ghost btn-tiny" onClick={() => setModal({content: <CookieScriptModal platform={platform} onSave={(cookie) => actions.saveCookie(platform.key, cookie)} onClose={closeModal} />})}><Icon id="i-globe" className="icon icon-sm" />浏览器获取</button>}
+            {platform.key === 'xmly' && !info.has_wfp && (
+              <button className="btn btn-ghost btn-tiny" disabled={busy.xmlyWfp} onClick={actions.generateXimalayaWfp}>
+                <BusyIcon busy={busy.xmlyWfp} icon="i-key" />生成网页指纹
+              </button>
+            )}
             {ok && <button className="btn btn-danger btn-tiny" disabled={busy[`cookieDelete:${platform.key}`]} onClick={() => actions.deleteCookie(platform.key)}><BusyIcon busy={busy[`cookieDelete:${platform.key}`]} icon="i-trash" />删除</button>}
           </div>
           {platform.key === 'xmly' && <div className="xmly-ticket-label">网页登录 Cookie</div>}

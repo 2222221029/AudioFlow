@@ -949,6 +949,21 @@ export function useAudioFlowApp() {
     });
   }, [loadCookies, runBusy, showToast]);
 
+  const generateXimalayaWfp = useCallback(async () => {
+    try {
+      const data = await runBusy('xmlyWfp', async () => {
+        const r = await api('/api/cookies/xmly/wfp', {method: 'POST', body: {}});
+        await loadCookies();
+        return r;
+      });
+      showToast(data?.ready ? '网页指纹已就绪' : '网页指纹生成完成', data?.ready ? 'ok' : 'ok');
+      return data;
+    } catch (error) {
+      showToast('网页指纹生成失败：' + error.message, 'err');
+      return null;
+    }
+  }, [loadCookies, runBusy, showToast]);
+
   const sendXimalayaMobileCode = useCallback(async (phone) => {
     return api('/api/cookies/xmly/mobile-login/send-code', {
       method: 'POST', body: {phone},
@@ -1338,6 +1353,7 @@ export function useAudioFlowApp() {
       exportCookies,
       importCookies,
       saveCookie,
+      generateXimalayaWfp,
       sendXimalayaMobileCode,
       loginXimalayaMobile,
       deleteCookie,

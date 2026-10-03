@@ -108,3 +108,19 @@ class WfpNodeFetchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class WfpStatusTest(unittest.TestCase):
+    def test_get_wfp_status_reports_ready_and_error(self):
+        status = wfp.get_wfp_status()
+        self.assertIn("ready", status)
+        self.assertIn("error", status)
+
+    def test_record_wfp_error_then_status_shows_error(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "ximalaya_wfp.json"
+            wfp.record_wfp_error("取号超时（实验环境无 node）", path=p)
+            self.assertTrue(p.exists())
+            data = json.loads(p.read_text(encoding="utf-8"))
+            self.assertEqual(data["wfp"], "")
+            self.assertIn("取号超时", data["error"])

@@ -4726,12 +4726,15 @@ def api_get_cookies():
                 has_mobile_ticket=mobile_status["complete"],
                 mobile_credential=mobile_status,
             )
-            # 网页通道二级指纹状态（wfp 需 headless 浏览器生成；xm-sign 自动预热）
+            # 网页通道二级指纹状态（wfp 纯代码生成，node+jsdom；xm-sign 自动预热）
             try:
-                from core.ximalaya_web_fingerprint import load_wfp
-                result[p]["has_wfp"] = bool(load_wfp())
+                from core.ximalaya_web_fingerprint import get_wfp_status
+                wfp_status = get_wfp_status()
+                result[p]["has_wfp"] = wfp_status.get("ready", False)
+                result[p]["wfp_error"] = wfp_status.get("error", "")
             except Exception:
                 result[p]["has_wfp"] = False
+                result[p]["wfp_error"] = "" 
     return json_ok(cookies=result, config_file=str(cookie_manager.config_file))
 
 
@@ -4922,6 +4925,20 @@ def _ximalaya_bridge_request(path, payload):
     if response.status_code >= 400 or not body.get("ok", response.status_code < 400):
         raise ValueError(str(body.get("error") or f"Bridge HTTP {response.status_code}"))
     return body
+
+
+@app.post("/api/cookies/xmly/wfp")
+def api_generate_ximalaya_wfp():
+    """手动生成/重新生成喜马拉雅网页指纹（wfp）。同步等待一小段时间。"""
+    try:
+        from core.ximalaya_web_fingerprint import ensure_wfp
+        result = ensure_wfp(wait=45)
+    except Exception as exc:  # noqa: BLE001
+        return json_error(f"网页指纹生成失败: {exc}")
+    if result.get("wfp_ready"):
+        return json_ok(ready=True, source=result.get("source", ""),
+                       generated=bool(result.get("generated")))
+    return json_error(result.get("error") or "网页指纹生成失败")
 
 
 @app.post("/api/cookies/xmly/mobile-login/send-code")
