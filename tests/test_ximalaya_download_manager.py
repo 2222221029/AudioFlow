@@ -2280,3 +2280,56 @@ class LegacyRedirectPreviewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacyRet76EscalationTest(unittest.TestCase):
+    """旧版直连 ret=76「数据不存在」（版权受限专辑停供）→ restricted 文案 + M4A 兜底升级。"""
+
+    def test_legacy_ret76_is_restricted_with_guidance(self):
+        from core import ximalaya_download_manager as m
+        manager = m.XimalayaDownloadManager(cookie_string="")
+        with contextlib.redirect_stdout(io.StringIO()):
+            # 模拟 _download_m4a_direct_api 的真实副作用：遇 ret=76 时记录
+            # restricted 错误后返回 False（download_audio_by_quality 会先清空
+            # last_error，因此必须由 mock 副作用重新写入）
+            def legacy_fail(*a, **k):
+                manager._record_error(
+                    "旧版直连接口对本章节返回「数据不存在」(ret=76)：该专辑在"
+                    "喜马拉雅旧接口已停供（多因版权方限制）。请改用「网页无损"
+                    "优先」档位（需先运行 scripts/ximalaya_web_fingerprint.py "
+                    "生成 wfp 指纹），或酷我听书同内容专辑（60135077）",
+                    error_type="restricted",
+                )
+                return False
+            with mock.patch.object(
+                manager, "_download_m4a_direct_api",
+                side_effect=legacy_fail,
+            ), mock.patch.object(
+                manager, "_download_web_authorized", return_value=True,
+            ) as web:
+                ok = manager.download_audio_by_quality(
+                    "265392006", "M4A 96K", "/tmp/out.m4a", )
+                # 无登录 Cookie：M4A 分支不得再升级网页通道，保留 restricted
+                self.assertFalse(ok)
+                web.assert_not_called()
+                self.assertEqual(manager.last_error_type, "restricted")
+
+    def test_m4a_escalates_to_web_authorized_when_legacy_stopped(self):
+        from core import ximalaya_download_manager as m
+        manager = m.XimalayaDownloadManager(cookie_string="_token=member; 1&_token=1&abc")
+        with contextlib.redirect_stdout(io.StringIO()):
+            def legacy_fail(*a, **k):
+                manager._record_error("…「数据不存在」(ret=76)…停供",
+                                           error_type="restricted")
+                return False
+            with mock.patch.object(
+                manager, "_download_m4a_direct_api",
+                side_effect=legacy_fail,
+            ), mock.patch.object(
+                manager, "_download_web_authorized", return_value=True,
+            ) as web:
+                ok = manager.download_audio_by_quality(
+                    "265392006", "M4A 96K", "/tmp/out.m4a", )
+                self.assertTrue(ok)
+                web.assert_called_once()
+                self.assertEqual(manager.last_error_type, "")

@@ -85,6 +85,10 @@ XIMALAYA_TRANSIENT_STATUS = frozenset({429, 500, 502, 503, 504, 522, 524})
 # 「立即购买畅听」：付费集无权限的权威信号，比按文案关键词猜测可靠。
 XIMALAYA_RET_PURCHASE_REQUIRED = 726
 
+#: 旧版直连接口（mobile/redirect/free/play）「数据不存在」ret 值：被版权方限制
+#: 的专辑（如《大奉打更人》TME 版）在旧接口直接判无数据，换档位无效。
+XIMALAYA_RET_DATA_NOT_FOUND = 76
+
 #: Web V3 的 trackQualityLevel。服务端在 ``>= 2`` 时才把 M4A_128 / FHQ
 #: （24bit WAV 无损）加进 playUrlList；取 3 与源项目实测一致。
 WEB_V3_QUALITY_LEVEL = 3
@@ -2575,7 +2579,26 @@ class XimalayaDownloadManager:
         
         # M4A使用移动端直接下载API（根据映射规则md）
         if audio_format == 'M4A':
-            return self._download_m4a_direct_api(track_id, audio_quality, save_path, chapter_title, progress_callback=progress_callback)
+            if self._download_m4a_direct_api(
+                track_id, audio_quality, save_path, chapter_title,
+                progress_callback=progress_callback,
+            ):
+                return True
+            # 旧版直连对版权受限专辑返回 ret=76「数据不存在」（已归类 restricted）：
+            # 该类内容在旧接口已停供，换普通档位无效。若已配置网页登录态，自动
+            # 升级到网页授权通道（v3/baseInfo，需 wfp 指纹已生成）再试一次。
+            if self.last_error_type == 'restricted' and '数据不存在' in self.last_error:
+                if not (self.cookie_string or '').strip():
+                    # 无登录 Cookie：保留 restricted 及随附的指引文案
+                    return False
+                print("   ↪️ 旧版直连对本章节已停供(ret=76)，自动升级网页授权通道")
+                self.last_error = ""
+                self.last_error_type = ""
+                return self._download_web_authorized(
+                    track_id, save_path, chapter_title,
+                    progress_callback=progress_callback,
+                )
+            return False
         
         # MP3使用网页端API（需要解密URL）
         elif audio_format == 'MP3':
@@ -2884,6 +2907,19 @@ class XimalayaDownloadManager:
                         # 落到通用错误分支，靠错误文案里的"购买"二字偶然命中。
                         self._record_error(
                             f"权限不足: {error_data.get('msg') or '立即购买畅听'}",
+                            error_type='restricted',
+                        )
+                        return False
+                    if error_data.get('ret') == XIMALAYA_RET_DATA_NOT_FOUND:
+                        # ret=76「数据不存在」：旧版 redirect/free/play 接口对
+                        # 被版权方限制的专辑（如《大奉打更人》TME 版）直接判无数据
+                        # （2026-10-03 实测，匿名/登录态一致）。换档位无效——这表示
+                        # 「旧接口对该内容已停供」，不是任务参数问题。
+                        self._record_error(
+                            "旧版直连接口对本章节返回「数据不存在」(ret=76)：该专辑在"
+                            "喜马拉雅旧接口已停供（多因版权方限制）。请改用「网页无损"
+                            "优先」档位（需先运行 scripts/ximalaya_web_fingerprint.py "
+                            "生成 wfp 指纹），或酷我听书同内容专辑（60135077）",
                             error_type='restricted',
                         )
                         return False
