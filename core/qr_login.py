@@ -205,24 +205,15 @@ def _persist_universal_ximalaya_credentials(cookies) -> dict:
     token = str((cookies or {}).get("1&_token") or "").strip()
     if not token:
         return {}
+    from core.ximalaya_universal_login import persist_universal_credentials
+    manager = _active_cookie_manager()
+    if manager is None:
+        return persist_universal_credentials(token, store=None)
     try:
         from core.ximalaya_credentials import MOBILE_CREDENTIAL_PLATFORM
-        from core.ximalaya_universal_login import (
-            bundle_summary, derive_universal_credentials)
-
-        bundle = derive_universal_credentials(token)
-        credential = bundle.get("mobile_credentials") or {}
-        summary = bundle_summary(bundle)
-        if not credential.get("x_tk") or not credential.get("cookie"):
-            summary["ok"] = False
-            summary["error"] = bundle.get("ticket_error") or "移动端票据签发失败"
-            return summary
-
-        manager = _active_cookie_manager()
-        if manager is not None:
-            manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, credential)
-        summary["ok"] = True
-        summary["saved"] = manager is not None
+        summary = persist_universal_credentials(
+            token, store=lambda cred: manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, cred))
+        summary["saved"] = summary.get("saved", False) and True
         return summary
     except Exception as exc:      # 派生失败不应影响扫码登录本身
         return {"ok": False, "error": str(exc)}
@@ -249,13 +240,20 @@ def _drive_ximalaya(session: QRSession) -> None:
     def emit_ok(cookies):
         payload = dict(cookies or {})
         session.update(status="success", message="登录成功", cookies=payload)
-        # 扫码一次 → 三端通用：把网页 1&_token 派生成 App 凭证就地保存。
-        # 电脑版不需要额外保存 —— core/ximalaya_pc_source.py 会自行从网页
-        # Cookie 里提取 token，并本地生成设备号与 xm-sign。
-        universal = _persist_universal_ximalaya_credentials(payload)
-        if universal:
+        # 扫码一次 → 三端通用 + 网页指纹：网页 1&_token 派生成 App 凭证就地保存；
+        # 电脑版不需要额外保存（pc_source 会自行从网页 Cookie 提取 token 并本地
+        # 生成设备号与 xm-sign）；xm-sign 同步预热、wfp 由 headless 浏览器后台生成。
+        token = str((payload or {}).get("1&_token") or "").strip()
+        if token:
+            from core.ximalaya_universal_login import bootstrap_ximalaya_credentials
+            manager = _active_cookie_manager()
+            store = None
+            if manager is not None:
+                from core.ximalaya_credentials import MOBILE_CREDENTIAL_PLATFORM
+                store = lambda cred: manager.set_cookie(  # noqa: E731
+                    MOBILE_CREDENTIAL_PLATFORM, cred)
             extra = dict(session.extra)
-            extra["universal"] = universal
+            extra["bootstrap"] = bootstrap_ximalaya_credentials(token, store=store)
             session.update(extra=extra)
 
     def emit_fail(msg):

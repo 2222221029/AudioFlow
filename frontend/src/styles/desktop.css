@@ -983,12 +983,6 @@ html[data-theme-mode="light"] .nav-item:hover{color:var(--text)!important}
 .xmly-credential-pill{padding:3px 8px;border-radius:999px;background:var(--panel-hi);color:var(--text-faint);font-size:10.5px;font-weight:700;border:1px solid var(--border)}
 .xmly-credential-pill.ready{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.28);color:var(--success)}
 .xmly-credential-pill.warning{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.28);color:var(--warning)}
-.xmly-ticket-editor{display:grid;gap:8px;padding:10px;margin:8px 0;border:1px solid var(--border);border-radius:12px;background:var(--panel-hi)}
-.xmly-ticket-editor textarea{width:100%;min-width:0;min-height:112px;resize:vertical;background:var(--pre-bg);border:1px solid var(--border);border-radius:9px;padding:8px 10px;color:var(--text);font-size:11.5px;font-family:Consolas,monospace;margin:0}
-.xmly-ticket-editor textarea:focus{outline:none;border-color:var(--border-hi)}
-.xmly-ticket-actions{display:flex;gap:7px;flex-wrap:wrap}
-.xmly-ticket-editor .cookie-desc{margin:0}
-.xmly-ticket-editor .cookie-note.warn{color:var(--warning)}
 .cookie-card textarea{min-height:72px;max-height:140px}
 .cookie-card textarea:focus{min-height:96px}
 

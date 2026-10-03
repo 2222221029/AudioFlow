@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
@@ -318,6 +319,98 @@ def bundle_summary(bundle: Dict[str, object]) -> Dict[str, object]:
         "ticket_error": bundle.get("ticket_error", ""),
         "mobile_ua": bundle.get("mobile_ua", ""),
     }
+
+
+# ---------------------------------------------------------------------------
+# 三端补全：网页 token → 派生并保存移动端凭证（扫码/手动输入共用）
+# ---------------------------------------------------------------------------
+
+def persist_universal_credentials(token: str, store=None) -> Dict[str, object]:
+    """把一个网页 ``1&_token`` 派生成三端凭证，并可选把移动端凭证就地带入。
+
+    :param token: 登录令牌（``{uid}&{hex}``）
+    :param store: ``callable(credential: dict)`` 负责落盘移动端凭证（例如
+        ``cookie_manager.set_cookie("xmly_mobile", …)``）；None 表示只派生不保存
+    :return: 诊断摘要（不含票据本体）；失败时含 ``error``
+    """
+    try:
+        bundle = derive_universal_credentials(token)
+        credential = bundle.get("mobile_credentials") or {}
+        summary = bundle_summary(bundle)
+        summary["ok"] = False
+        if not credential.get("x_tk") or not credential.get("cookie"):
+            summary["error"] = bundle.get("ticket_error") or "移动端票据签发失败"
+            return summary
+        if store is not None:
+            try:
+                store(credential)
+            except Exception as exc:  # noqa: BLE001 - 派生失败不应殃及网页端登录
+                summary["error"] = f"移动端凭证保存失败: {exc}"
+                return summary
+        summary["ok"] = True
+        summary["saved"] = store is not None
+        return summary
+    except Exception as exc:  # noqa: BLE001 - 同 qr_login 语义：失败不影响网页登录
+        return {"ok": False, "error": str(exc)}
+
+
+def bootstrap_ximalaya_credentials(token: str, cookie_header: str = "",
+                                   store=None, warm_wfp: bool = True) -> Dict[str, object]:
+    """网页登录后一站式补全：三端凭证 + 网页通道两级指纹（xm-sign / wfp）。
+
+    :param token: ``1&_token`` 令牌（``{uid}&{hex}``）
+    :param cookie_header: 完整网页 Cookie（见 :func:`web_token_from_cookie`）
+    :param store: 移动端凭证落盘回调（``callable(credential)``），None 则只派生
+    :param warm_wfp: 是否后台生成 wfp（需要 playwright；失败不影响其他凭证）
+    :return: 诊断摘要（不含票据本体）：
+        ``{"derived": {...}, "xm_sign": {...}, "wfp": {...}}``
+    """
+    token = str(token or "").strip()
+    derived = persist_universal_credentials(token, store=store) if token else {
+        "ok": False, "error": "未提供网页 1&_token"}
+
+    # xm-sign：纯 Python 同步预热（hdaa 上报一次，落盘缓存跨进程复用）。
+    xm_sign = {"ready": False}
+    try:
+        from .ximalaya_pc_sign import XmSignCache, live_sign_env_enabled
+        cache = XmSignCache(live=live_sign_env_enabled())
+        sign = cache.get()
+        if sign:
+            xm_sign = {"ready": True, "source": cache._default_source()
+                       if hasattr(cache, "_default_source") else "hdaa-live",
+                       "age_seconds": round(getattr(cache, "_created_at", 0)
+                                            and (time.time() - cache._created_at), 1)}
+    except Exception as exc:  # noqa: BLE001 - 预热失败不致命
+        xm_sign["error"] = str(exc)
+
+    # wfp：headless 浏览器异步生成（不阻塞保存响应）。
+    wfp = {"ready": False}
+    if warm_wfp:
+        try:
+            from .ximalaya_web_fingerprint import ensure_wfp_async, load_wfp
+            existing = load_wfp()
+            if existing:
+                wfp = {"ready": True, "source": "cached"}
+            else:
+                state = ensure_wfp_async()
+                wfp = {"ready": False, "state": state,
+                       "message": ("正在后台生成网页指纹（需要 playwright/chromium）"
+                                   if state == "started" else "已在生成中/不可用")}
+        except Exception as exc:  # noqa: BLE001
+            wfp["error"] = str(exc)
+    else:
+        wfp["skipped"] = True
+
+    return {"derived": derived, "xm_sign": xm_sign, "wfp": wfp}
+
+
+def web_token_from_cookie(cookie_header: str) -> str:
+    """从一份网页 Cookie 字符串里提取 ``1&_token`` 令牌（无则空串）。"""
+    for segment in str(cookie_header or "").replace("\r", "").replace("\n", ";").split(";"):
+        key, sep, val = segment.strip().partition("=")
+        if sep and key.strip() in _TOKEN_NAMES and val.strip():
+            return val.strip()
+    return ""
 
 
 __all__ = [

@@ -232,3 +232,44 @@ def test_x_tk_alone_and_web_cookie_are_not_mobile_credentials():
     assert has_ximalaya_mobile_credentials("x-tk: signed-mobile-ticket") is False
     assert has_ximalaya_mobile_credentials("_token=browser-user") is False
     assert ximalaya_mobile_credential_status("x-tk: signed-mobile-ticket")["state"] == "missing_cookie"
+
+
+class TestUniversalBootstrap:
+    """扫码/手动 Cookie → 三端补全（移动端派生 + xm-sign 预热 + wfp 降级）。"""
+
+    def _fake_token(self, uid="1234567"):
+        return f"{uid}&FAKEHEXABCDEF1234"
+
+    def test_web_token_extraction_from_cookie_header(self):
+        from core.ximalaya_universal_login import web_token_from_cookie
+        cookie = ("1&_token=987654321&abcd1234; 1&remember_me=y; "
+                  "HWWAFSESID=xyz; _token=other")
+        assert web_token_from_cookie(cookie) == "987654321&abcd1234"
+        assert web_token_from_cookie("没啥令牌") == ""
+
+    def test_bootstrap_derives_three_ends_and_saves_mobile_credentials(self):
+        from core.ximalaya_universal_login import bootstrap_ximalaya_credentials
+        saved = []
+        result = bootstrap_ximalaya_credentials(
+            self._fake_token(),
+            warm_wfp=False,  # 测试环境不启浏览器线程
+            store=lambda cred: saved.append(cred),
+        )
+        derived = result["derived"]
+        assert derived["ok"] is True
+        assert derived["saved"] is True
+        assert derived["web_cookie_ready"] is True
+        assert derived["pc_cookie_ready"] is True
+        assert derived["pc_device_present"] is True
+        assert derived["mobile_cookie_ready"] is True
+        assert derived["ticket_ready"] is True
+        assert saved, "移动端凭证必须经 store 落盘"
+        assert saved[0].get("x_tk"), "必须本地签发 x-tk"
+        assert "1&_device=android" in saved[0].get("cookie", "")
+        assert result["wfp"].get("skipped") is True
+
+    def test_bootstrap_never_raises_without_credentials(self):
+        from core.ximalaya_universal_login import bootstrap_ximalaya_credentials
+        result = bootstrap_ximalaya_credentials("", warm_wfp=False)
+        assert result["derived"]["ok"] is False
+        assert "未提供" in result["derived"]["error"]

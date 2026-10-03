@@ -4726,6 +4726,12 @@ def api_get_cookies():
                 has_mobile_ticket=mobile_status["complete"],
                 mobile_credential=mobile_status,
             )
+            # 网页通道二级指纹状态（wfp 需 headless 浏览器生成；xm-sign 自动预热）
+            try:
+                from core.ximalaya_web_fingerprint import load_wfp
+                result[p]["has_wfp"] = bool(load_wfp())
+            except Exception:
+                result[p]["has_wfp"] = False
     return json_ok(cookies=result, config_file=str(cookie_manager.config_file))
 
 
@@ -4867,7 +4873,7 @@ def api_set_cookie():
         # The browser field must never overwrite or carry App credentials.
         cookie = remove_ximalaya_mobile_ticket(cookie)
         if not cookie:
-            return json_error("请输入喜马拉雅网页登录 Cookie；移动端请求头请保存到下方独立凭证")
+            return json_error("请输入喜马拉雅网页登录 Cookie；移动端凭证会由网页登录自动派生")
     elif platform in ("qidian", "起点", "起点听书"):
         from src.features.qidian.audio_system import qidian_cookie_header
         cookie = qidian_cookie_header(cookie)
@@ -4875,28 +4881,26 @@ def api_set_cookie():
             return json_error("未能从输入中提取起点 Cookie，请粘贴 Cookie 字符串或包含 Cookie: 的完整请求头")
     cookie_manager.set_cookie(platform, cookie)
     search_manager.set_cookie(platform, cookie)
-    return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file))
-
-
-@app.post("/api/cookies/xmly/mobile-ticket")
-def api_set_ximalaya_mobile_ticket():
-    """Save an App Cookie or complete captured request independently."""
-    payload = request.get_json(silent=True) or {}
-    incoming = payload.get("credentials", payload.get("ticket", ""))
-    credential = normalize_ximalaya_mobile_credentials(incoming)
-    status = ximalaya_mobile_credential_status(credential)
-    if not status["complete"]:
-        return json_error(status["message"])
-    cookie_manager.set_cookie(MOBILE_CREDENTIAL_PLATFORM, credential)
-    search_manager.set_ximalaya_mobile_credentials(credential)
-    return json_ok(
-        saved=True,
-        platform="xmly",
-        has_web_cookie=has_ximalaya_web_cookie(cookie_manager.get_cookie("xmly")),
-        has_mobile_ticket=True,
-        mobile_credential=status,
-        config_file=str(cookie_manager.config_file),
-    )
+    # 喜马拉雅：网页 Cookie → 三端补全（移动端派生 + xm-sign 预热 + wfp 后台生成）
+    derived = {}
+    if platform in ("xmly", "ximalaya", "喜马拉雅"):
+        try:
+            from core.ximalaya_credentials import MOBILE_CREDENTIAL_PLATFORM
+            from core.ximalaya_universal_login import (
+                bootstrap_ximalaya_credentials,
+                web_token_from_cookie,
+            )
+            token = web_token_from_cookie(cookie)
+            derived = bootstrap_ximalaya_credentials(
+                token,
+                cookie_header=cookie,
+                store=lambda cred: cookie_manager.set_cookie(
+                    MOBILE_CREDENTIAL_PLATFORM, cred),
+            )
+        except Exception as exc:  # noqa: BLE001 - 补全失败不应阻塞网页端保存
+            derived = {"error": str(exc)}
+    return json_ok(saved=True, platform=platform, config_file=str(cookie_manager.config_file),
+                   derived=derived)
 
 
 def _ximalaya_bridge_request(path, payload):
@@ -4972,21 +4976,6 @@ def api_ximalaya_mobile_login_verify():
         )
     except (requests.RequestException, ValueError) as exc:
         return json_error(f"验证码登录失败：{exc}")
-
-
-@app.delete("/api/cookies/xmly/mobile-ticket")
-def api_delete_ximalaya_mobile_ticket():
-    """Delete only the App credential bundle and retain browser login."""
-    cookie_manager.delete_cookie(MOBILE_CREDENTIAL_PLATFORM)
-    search_manager.set_ximalaya_mobile_credentials({})
-    cookie = cookie_manager.get_cookie("xmly")
-    return json_ok(
-        deleted=True,
-        platform="xmly",
-        has_web_cookie=has_ximalaya_web_cookie(cookie),
-        has_mobile_ticket=False,
-        config_file=str(cookie_manager.config_file),
-    )
 
 
 @app.delete("/api/cookies/<platform>")

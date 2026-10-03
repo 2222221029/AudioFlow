@@ -1379,7 +1379,6 @@ function CookieImportModal({actions, onClose}) {
 
 function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
   const [value, setValue] = useState('');
-  const [mobileCookie, setMobileCookie] = useState('');
   const noCookie = NO_COOKIE_KEYS.includes(platform.key);
   const ok = info.has_cookie || info.has_server;
   const scanText = platform.qr === 'lrts' ? '验证码登录' : '扫码';
@@ -1428,6 +1427,10 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
               >移动版 V4：{mobileCredential.local_ticket_ready
                 ? '本地出票就绪'
                 : (info.has_mobile_ticket ? '已就绪' : (mobileCredential.has_mobile_cookie || mobileCredential.has_ticket ? '凭证不完整' : '未设置'))}</span>
+              <span
+                className={`xmly-credential-pill ${info.has_wfp ? 'ready' : ''}`}
+                title="网页通道两级风控：xm-sign（本地 hdaa 上报已自动预热）+ wfp 指纹（需 headless 浏览器生成，扫码/保存网页 Cookie 后自动后台生成；未安装 playwright 时手动运行 scripts/ximalaya_web_fingerprint.py）。"
+              >网页指纹：{info.has_wfp ? '已就绪' : '未生成'}</span>
             </div>
           )}
           <div className="cookie-actions">
@@ -1444,40 +1447,6 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           <button className="btn btn-primary btn-tiny" disabled={busy[`cookie:${platform.key}`]} onClick={() => { actions.saveCookie(platform.key, value); setValue(''); }}>
             <BusyIcon busy={busy[`cookie:${platform.key}`]} icon="i-check" />{saveText}
           </button>
-          {platform.key === 'xmly' && (
-            <div className="xmly-ticket-editor">
-              <label className="field-label" htmlFor="xmlyMobileV4Cookie">移动版 V4 App Cookie</label>
-              <div className="cookie-desc">扫码登录后，App 端凭证会由网页 token 自动派生（设备号与 <code>x-tk</code> 本地生成），通常无需在这里操作。需要指定一台实体 Android 设备、或想覆盖自动派生的结果时，再粘贴完整 Cookie —— 也支持粘贴同一次 <code>baseInfo</code> 请求头或导出的 cURL。该凭证独立保存且不会回显，不会修改网页登录 Cookie。</div>
-              <textarea
-                id="xmlyMobileV4Cookie"
-                value={mobileCookie}
-                onChange={(event) => setMobileCookie(event.target.value)}
-                placeholder={'Cookie: channel=android; 1&_device=android&稳定设备ID&App版本; 1&*token=账号UID&登录令牌; ...\n\n也可以直接粘贴完整 baseInfo 请求头或 cURL'}
-                autoComplete="off"
-                spellCheck="false"
-              />
-              <div className="xmly-ticket-actions">
-                <button
-                  className="btn btn-primary btn-tiny"
-                  disabled={busy.xmlyMobileTicket || !mobileCookie.trim()}
-                  onClick={async () => {
-                    if (await actions.saveXimalayaMobileTicket(mobileCookie)) setMobileCookie('');
-                  }}
-                >
-                  <BusyIcon busy={busy.xmlyMobileTicket} icon="i-key" />保存 V4 App Cookie
-                </button>
-                {(info.has_mobile_ticket || mobileCredential.has_ticket || mobileCredential.has_mobile_cookie) && (
-                  <button className="btn btn-danger btn-tiny" disabled={busy.xmlyMobileTicketDelete} onClick={actions.deleteXimalayaMobileTicket}>
-                    <BusyIcon busy={busy.xmlyMobileTicketDelete} icon="i-trash" />删除 V4 App Cookie
-                  </button>
-                )}
-              </div>
-              {mobileCredential.message && mobileCredential.state !== 'missing_ticket' && (
-                <div className={`cookie-note ${info.has_mobile_ticket ? 'ok' : 'warn'}`}>{mobileCredential.message}</div>
-              )}
-              <div className="cookie-desc">Cookie 必须包含已登录账号 token，以及稳定的 <code>1&amp;_device=android&amp;设备ID</code>。保存成功后应显示“本地出票就绪”；AudioFlow 会为每次 V4 请求本地生成 <code>x-tk</code>，无需 Bridge/ReDroid。请勿随机更换设备 ID。<br />同一个 <code>1&amp;_token</code> 在网页端、电脑版与 App 端通用，所以扫码一次即可覆盖三端；这里手工保存的凭证会覆盖自动派生结果，删除后不会自动重建。</div>
-            </div>
-          )}
         </>
       )}
     </div>

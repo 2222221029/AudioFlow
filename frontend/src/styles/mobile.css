@@ -724,12 +724,6 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .xmly-credential-pill{padding:3px 8px;border-radius:var(--radius-pill);background:var(--panel-hi);color:var(--text-faint);font-size:10.5px;font-weight:700;border:1px solid var(--border)}
 .xmly-credential-pill.ready{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.28);color:var(--success)}
 .xmly-credential-pill.warning{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.28);color:var(--warning)}
-.xmly-ticket-editor{display:grid;gap:8px;padding:10px;margin:8px 0;border:1px solid var(--border);border-radius:12px;background:var(--panel-hi)}
-.xmly-ticket-editor textarea{width:100%;min-width:0;min-height:124px;resize:vertical;background:var(--pre-bg);border:1px solid var(--border);border-radius:9px;padding:10px 12px;color:var(--text);font-size:12px;font-family:Consolas,monospace;margin:0}
-.xmly-ticket-editor textarea:focus{outline:none;border-color:var(--border-hi)}
-.xmly-ticket-actions{display:flex;gap:7px;flex-wrap:wrap}
-.xmly-ticket-editor .cookie-desc{margin:0}
-.xmly-ticket-editor .cookie-note.warn{color:var(--warning)}
 .cookie-role-tabs{margin-bottom:8px}
 .cookie-card textarea{max-height:150px}
 
@@ -765,7 +759,6 @@ html[data-theme-mode="light"] .feature-list{background:rgba(255,255,255,.88)!imp
 .cookie-detail-card .cookie-head{padding-bottom:10px;margin-bottom:0;border-bottom:1px solid var(--border)}
 .cookie-detail-card>textarea{min-height:104px;max-height:190px;margin:0}
 .cookie-detail-card>.btn{width:100%}
-.cookie-detail-card .xmly-ticket-editor{margin:2px 0}
 
 .settings-card,.theme-picker-wrap,.diagnostics-card,.settings-log-card,.notification-card{margin-top:10px}
 .settings-card{margin-top:0}
