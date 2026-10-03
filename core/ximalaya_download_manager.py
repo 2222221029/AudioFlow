@@ -35,7 +35,12 @@ from .ximalaya_pc_source import (
     PcSourceError,
     PcTrackSource,
     extract_login_token,
+    is_content_download_blocked,
 )
+
+#: 网页/播放接口共用的 xm-sign（cadd&&sid）缓存：与 PC 通道同一数美 hdaa 上报
+#: 链路，落盘跨进程复用。惰性创建（见 XimalayaDownloadManager._web_sign_cache）。
+_WEB_SIGN_CACHE = None
 
 
 def _positive_env_float(name: str, default: float, minimum: float = 0.0) -> float:
@@ -356,6 +361,57 @@ class XimalayaDownloadManager:
                 result[key] = val
         return result
 
+    def _web_wfp_cookie(self) -> str:
+        """返回配置的网页设备指纹 openId（wfp），没有则空串。
+
+        2026-10-03 实测：登录态网页接口需通过两级风控——
+        ① ``xm-sign`` 请求头（数美 hdaa 上报的 ``cadd&&sid``，见
+           :meth:`_web_xm_sign`，此时 407「WFP 校验失败/webtk 缺失」消失）；
+        ② ``wfp`` cookie＝数美 ATS openId（浏览器/无头浏览器跑 ``$ats``
+           SDK 生成，见 ``scripts/ximalaya_web_fingerprint.py``）。
+        两者与请求环境绑定（IP/UA 自洽），配置位置
+        ``config_dir()/ximalaya_wfp.json``（pytest 环境自动跳过）。
+        """
+        try:
+            from .platform_config import config_dir
+            path = config_dir() / "ximalaya_wfp.json"
+            if not path.exists():
+                return ""
+            import json as _json
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            wfp = str(data.get("wfp") or "").strip()
+            return wfp if wfp else ""
+        except Exception:
+            return ""
+
+    def _web_xm_sign(self) -> str:
+        """取一个可用的网页请求签名（``cadd&&sid``），复用落盘缓存。
+
+        与电脑版通道共用数美 hdaa 上报链路（XmSignCache）；网页端 API 请求不
+        带该头时，2026 年起返回 ``407 webtk缺失/WFP存在但校验失败``。
+        """
+        try:
+            from .ximalaya_pc_sign import XmSignCache
+            cache = self._web_sign_cache()
+            if cache is None:
+                return ""
+            sign = cache.get()
+            return sign if sign else ""
+        except Exception:
+            return ""
+
+    def _web_sign_cache(self):
+        """惰性创建并复用全局 xm-sign 缓存（线上 hdaa 上报，落盘跨进程复用）。"""
+        global _WEB_SIGN_CACHE
+        if _WEB_SIGN_CACHE is None:
+            try:
+                from .ximalaya_pc_sign import XmSignCache, live_sign_env_enabled
+                # 尊重 AUDIOFLOW_DISABLE_PC_LIVE_SIGN：测试环境自动降级本地算法
+                _WEB_SIGN_CACHE = XmSignCache(live=live_sign_env_enabled())
+            except Exception:
+                _WEB_SIGN_CACHE = None
+        return _WEB_SIGN_CACHE
+
     def _web_cookie_header(self, excluded=()) -> str:
         """Merge the saved login Cookie with WAF cookies issued to this session."""
         excluded_names = {str(name).strip().lower() for name in excluded}
@@ -364,6 +420,11 @@ class XimalayaDownloadManager:
             merged.update(self.session.cookies.get_dict())
         except Exception:
             pass
+        # 配置的设备指纹 openId 优先于登录 Cookie 里携带的旧 wfp（旧 wfp 与
+        # 当前请求环境绑定，跨环境复用必 407）。
+        wfp = self._web_wfp_cookie()
+        if wfp:
+            merged["wfp"] = wfp
         return "; ".join(
             f"{key}={val}"
             for key, val in merged.items()
@@ -383,6 +444,11 @@ class XimalayaDownloadManager:
             "Origin": "https://www.ximalaya.com",
             "Connection": "keep-alive",
         }
+        # 网页端 API 必带的设备签名（缺失/无效 → 407）。只在签名可取时附加；
+        # 失败静默跳过，避免签名链路故障影响原有通道。
+        xm_sign = self._web_xm_sign()
+        if xm_sign:
+            headers["xm-sign"] = xm_sign
         cookie = self._web_cookie_header(excluded_cookies)
         if cookie:
             headers["Cookie"] = cookie
@@ -702,7 +768,18 @@ class XimalayaDownloadManager:
                     self._bootstrap_web_session(track_id, force=True)
                     excluded_cookies = ("wfp",)
                     continue
-                break
+                # 终态：wfp 指纹与当前请求环境强绑定（页面 JS 按浏览器环境生成），
+                # 纯 Python 环境无法重新生成匹配指纹 → 登录态请求被网页 WFP 校验
+                # 永久拒绝（ret=407/1001）。实测 2026-10-03：带任意真实登录 Cookie
+                # 在本环境请求全部 407/1001，匿名反而 ret=0（匿名不校验指纹但防盗链
+                # 内容不放地址）。明确告知而不是误导为「系统繁忙」。
+                self._record_error(
+                    "喜马拉雅网页接口登录态请求被 WFP 指纹风控拦截（ret=407/1001）："
+                    "网页指纹由浏览器 JS 按环境生成并强绑定，纯 Python 下载端无法"
+                    "通过校验；请在浏览器内登录试听，或改用其他通道（App/电脑版）",
+                    error_type="restricted",
+                )
+                return None, data
 
             restricted = any(
                 marker in message
@@ -780,10 +857,35 @@ class XimalayaDownloadManager:
             is_paid = self._flag_enabled(track_info.get("isPaid"))
             is_free = self._flag_enabled(track_info.get("isFree"))
             is_authorized = self._flag_enabled(track_info.get("isAuthorized"))
+            is_anti_leech = self._flag_enabled(track_info.get("isAntiLeech"))
             candidate = self._select_web_play_candidate(track_info)
 
             if not candidate:
-                if is_paid and not is_free and not is_authorized:
+                url_items = track_info.get("playUrlList") or []
+                encrypted_only = bool(url_items) and all(
+                    not str(item.get("url") or "").startswith(("http://", "https://"))
+                    for item in url_items
+                )
+                has_no_cookie = not bool((self.cookie_string or "").strip())
+                if is_anti_leech and has_no_cookie:
+                    # 防盗链内容匿名请求：服务端 ret=0 但 playUrlList 恒为空
+                    # （2026-10-03 实测 isAntiLeech=true 的付费集匿名无任何 URL）。
+                    # 必须先配置喜马拉雅网页登录 Cookie，网页接口才会返回地址。
+                    self._record_error(
+                        "该章节为网页防盗链（isAntiLeech）内容，未配置网页登录 "
+                        "Cookie 时接口不返回播放地址；请在「账号管理」保存喜马拉雅 "
+                        "网页登录 Cookie 后重试",
+                        error_type="restricted",
+                    )
+                elif encrypted_only:
+                    # 有地址但全部解不开：V0/V1/V2 密钥均失败，多为 TME 系分发
+                    # （isTme=true 的 378 字符 base64url 密文）。项目不实现 DRM 绕过。
+                    self._record_error(
+                        "网页接口仅返回受保护地址（疑似 TME/DRM 加密，内置密钥解不开），"
+                        "无法在本端取得明文音频（项目不实现 DRM 绕过）",
+                        error_type="restricted",
+                    )
+                elif is_paid and not is_free and not is_authorized:
                     if current_uid in ("", "0"):
                         reason = "喜马拉雅网页登录 Cookie 未生效，请重新登录后再下载会员章节"
                     else:
@@ -2539,6 +2641,15 @@ class XimalayaDownloadManager:
             if result.ret in (PC_RET_NOT_LOGGED_IN, PC_RET_MISSING_DEVICE,
                               XIMALAYA_RET_PURCHASE_REQUIRED):
                 error_type = 'restricted'
+            elif is_content_download_blocked(result.server_msg):
+                # 版权方整专辑关闭下载（如大 IP 有声剧）：不是签名/网络问题，
+                # 归类 restricted 让自动链明确降级，并给出可读原因
+                error_type = 'restricted'
+                self._record_error(
+                    f"PC 通道被版权方限制（服务端：{result.server_msg}）",
+                    result.ret, error_type,
+                )
+                return False
             else:
                 error_type = 'download_failed'
             self._record_error(f"PC 通道取址失败: {result.message}", result.ret, error_type)
