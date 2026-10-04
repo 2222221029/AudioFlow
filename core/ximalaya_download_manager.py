@@ -182,12 +182,29 @@ class XimalayaDownloadManager:
     _WEB_V3_RECOVERY_SUCCESSES = _bounded_env_int(
         "XIMALAYA_WEB_V3_RECOVERY_SUCCESSES", 24, 4, 500
     )
+    # ret=1001「系统繁忙」熔断：同一时间窗口内连续触发达到阈值后进入全局冷却
+    # （所有 Web V3 取址统一暂停），避免整张专辑并发硬打风控窗口导致单集
+    # 「连续 5 连败」。冷却时长按触发轮数指数递增（60s→90s→135s…）。
+    _WEB_V3_BUSY_FUSE_TRIGGER = _bounded_env_int(
+        "XIMALAYA_WEB_V3_BUSY_FUSE_TRIGGER", 4, 2, 20
+    )
+    _WEB_V3_BUSY_FUSE_COOLDOWN = _positive_env_float(
+        "XIMALAYA_WEB_V3_BUSY_FUSE_COOLDOWN", 60.0, 5.0
+    )
+    _WEB_V3_BUSY_FUSE_MAX = _positive_env_float(
+        "XIMALAYA_WEB_V3_BUSY_FUSE_MAX", 300.0, 30.0
+    )
+    _WEB_V3_BUSY_EPISODE_WINDOW_SECONDS = _positive_env_float(
+        "XIMALAYA_WEB_V3_BUSY_EPISODE_WINDOW", 30.0, 5.0
+    )
     _WEB_V3_STATE_LOCK = threading.Lock()
     _WEB_V3_LAST_REQUEST_AT = 0.0
     _WEB_V3_RATE_LIMITED_UNTIL = 0.0
     _WEB_V3_COOLDOWN_LOGGED_UNTIL = 0.0
     _WEB_V3_CONSECUTIVE_RATE_LIMITS = 0
     _WEB_V3_SUCCESS_STREAK = 0
+    _WEB_V3_BUSY_EPISODES = 0
+    _WEB_V3_BUSY_EPISODE_STARTED_AT = 0.0
     # Pace only the tiny ticket + baseInfo control request. Media responses are
     # downloaded outside these controls, so CDN throughput and normal chapter
     # concurrency remain independent.
@@ -530,7 +547,12 @@ class XimalayaDownloadManager:
 
     @classmethod
     def _mark_web_v3_busy(cls):
-        """Ease Web V3 metadata traffic without pausing unrelated downloads."""
+        """Ease Web V3 metadata traffic without pausing unrelated downloads.
+
+        连续 ret=1001 达到触发阈值后进入全局熔断冷却：``_WEB_V3_RATE_LIMITED_UNTIL``
+        被拉长，所有 Web V3 取址请求经 :meth:`_wait_for_web_v3_slot` 统一暂停，
+        让服务端风控窗口自然过去，而不是每集各自硬打 5 次全部落败。
+        """
         with cls._WEB_V3_STATE_LOCK:
             previous = cls._WEB_V3_MIN_INTERVAL
             # A soft busy response usually clears when metadata requests are
@@ -549,6 +571,22 @@ class XimalayaDownloadManager:
                 ),
             )
             cls._WEB_V3_SUCCESS_STREAK = 0
+            # —— 熔断：同一窗口期内连续 1001 → 全局冷却 ——
+            now = time.monotonic()
+            if now - cls._WEB_V3_BUSY_EPISODE_STARTED_AT > cls._WEB_V3_BUSY_EPISODE_WINDOW_SECONDS:
+                cls._WEB_V3_BUSY_EPISODES = 0
+            cls._WEB_V3_BUSY_EPISODES += 1
+            cls._WEB_V3_BUSY_EPISODE_STARTED_AT = now
+            if cls._WEB_V3_BUSY_EPISODES >= cls._WEB_V3_BUSY_FUSE_TRIGGER:
+                step = cls._WEB_V3_BUSY_EPISODES // cls._WEB_V3_BUSY_FUSE_TRIGGER
+                fuse = min(
+                    cls._WEB_V3_BUSY_FUSE_MAX,
+                    cls._WEB_V3_BUSY_FUSE_COOLDOWN * (1.5 ** min(4, step - 1)),
+                )
+                cls._WEB_V3_RATE_LIMITED_UNTIL = max(
+                    cls._WEB_V3_RATE_LIMITED_UNTIL, now + fuse
+                )
+                cls._WEB_V3_COOLDOWN_LOGGED_UNTIL = 0.0  # 强制打印一次等待提示
             return cls._WEB_V3_MIN_INTERVAL, cls._WEB_V3_MIN_INTERVAL > previous
 
     @classmethod
