@@ -1778,11 +1778,15 @@ class XimalayaDownloadManager:
 
     @staticmethod
     def _looks_like_cdn_url(url: str) -> bool:
-        """宽松的 CDN 直链判定：http(s) + 喜马拉雅域名/媒体路径关键字。"""
+        """宽松的 CDN 直链判定：http(s) + 喜马拉雅/TME 域名/媒体路径关键字。"""
         if not url or not url.startswith(("http://", "https://")):
             return False
         lower = url.lower()
-        if "xmcdn.com" not in lower and "ximalaya.com" not in lower:
+        # TME 出品（isTme=true，如《大奉打更人》边江工作室新版）走腾讯音乐 CDN：
+        # music-xmcdn.tencentmusic.com，域名后缀是 tencentmusic.com。
+        if not any(dom in lower for dom in (
+            "xmcdn.com", "ximalaya.com", "tencentmusic.com",
+        )):
             return False
         return any(marker in lower for marker in (
             ".mp3", ".m4a", ".aac", ".flac", ".wav", "/storages/", "aod.cos",
@@ -1849,7 +1853,12 @@ class XimalayaDownloadManager:
             # MP4/M4A container, so accept every recognized playable format.
             return True, ""
 
-        if media_format != "m4a":
+        if media_format != "m4a" and not (
+            # 标准音质（128KMP3 / 64K 等）在 TME 系（isTme=true）专辑里是
+            # ID3-MP3 容器（《大奉打更人》实测 51/51 集 128KMP3）；非 m4a 一律
+            # 拒绝会误杀这些可播放的 MP3 直链。
+            media_format == "mp3" and level in (0, 2)
+        ):
             return False, "全景声音轨不是受支持的 MP4/M4A 容器"
         if level == 12:
             # Dolby Atmos streaming normally uses E-AC-3 JOC (`ec-3`/`dec3`)
