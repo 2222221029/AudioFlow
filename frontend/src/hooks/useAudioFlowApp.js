@@ -2,6 +2,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, login, logout, setAuthRequiredHandler} from '../services/api.js';
 import {chapterId, chapterTitle, coverOf} from '../utils/format.js';
 import {AGGREGATE_SEARCH_PLATFORMS, NO_COOKIE_KEYS, PLATFORM_COOKIE_KEY} from '../utils/platforms.js';
+import {DEFAULT_QUALITY, XMLY_MOBILE_INTERFACE, XMLY_PC_INTERFACE, XMLY_PC_QUALITIES, XMLY_WEB_INTERFACE, XMLY_WEB_LOSSLESS} from '../utils/ximalaya.js';
 
 // ── 搜索历史
 const SEARCH_HISTORY_KEY = 'audioflow_search_history';
@@ -85,14 +86,6 @@ function sendBrowserNotification(title, body) {
   try { new Notification(title, {body, icon: '/favicon.ico'}); } catch {}
 }
 
-const DEFAULT_QUALITY = 'M4A 96K';
-const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
-const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
-const XMLY_PC_INTERFACE = '喜马拉雅电脑版接口（自动最高音质）';
-const XMLY_WEB_LOSSLESS = '网页无损优先（FHQ WAV）';
-// 电脑版档位：只需要网页登录态即可取址（设备号与 xm-sign 都在本地生成，
-// 不需要 App 票据或 Frida）。缺失会导致用户选中的档位被静默回落到移动端。
-const XMLY_PC_QUALITIES = ['PC 256K', 'PC 128K', 'PC 64K', 'PC 24K'];
 const XMLY_SUBSCRIPTION_QUALITIES = new Set([
   XMLY_WEB_INTERFACE,
   XMLY_PC_INTERFACE,
@@ -134,7 +127,6 @@ function initialMobileView() {
       downloads: 'downloads',
       subscriptions: 'subscriptions',
       cookies: 'cookies',
-      accounts: 'cookies',
       personal: 'personal',
       notifications: 'notifications',
       themes: 'themes',
@@ -964,21 +956,6 @@ export function useAudioFlowApp() {
     }
   }, [loadCookies, runBusy, showToast]);
 
-  const sendXimalayaMobileCode = useCallback(async (phone) => {
-    return api('/api/cookies/xmly/mobile-login/send-code', {
-      method: 'POST', body: {phone},
-    });
-  }, []);
-
-  const loginXimalayaMobile = useCallback(async (phone, code) => {
-    const data = await api('/api/cookies/xmly/mobile-login/verify', {
-      method: 'POST', body: {phone, code},
-    });
-    showToast(data.message || '喜马拉雅移动端登录成功', 'ok');
-    await loadCookies();
-    return data;
-  }, [loadCookies, showToast]);
-
   const deleteCookie = useCallback(async (platformKey) => {
     await runBusy('cookieDelete:' + platformKey, async () => {
       await api('/api/cookies/' + encodeURIComponent(platformKey), {method: 'DELETE'});
@@ -997,7 +974,6 @@ export function useAudioFlowApp() {
     splitChaptersEnabled,
     chaptersPerFolder,
     filenamePrefixFormat,
-    manualOrganizeMode,
     taskHistoryMaxKeep,
     taskHistoryMaxAgeDays,
     taskDetailRetentionDays,
@@ -1016,7 +992,6 @@ export function useAudioFlowApp() {
           split_chapters_enabled: splitChaptersEnabled,
           chapters_per_folder: chaptersPerFolder,
           filename_prefix_format: filenamePrefixFormat,
-          manual_organize_mode: manualOrganizeMode,
           task_history_max_keep: taskHistoryMaxKeep,
           task_history_max_age_days: taskHistoryMaxAgeDays,
           task_detail_retention_days: taskDetailRetentionDays,
@@ -1354,8 +1329,6 @@ export function useAudioFlowApp() {
       importCookies,
       saveCookie,
       generateXimalayaWfp,
-      sendXimalayaMobileCode,
-      loginXimalayaMobile,
       deleteCookie,
       loadConfig,
       saveSettings,

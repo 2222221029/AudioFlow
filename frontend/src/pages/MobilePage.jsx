@@ -233,7 +233,7 @@ export default function MobilePage() {
   }, [mobileView]);
 
   const switchView = (id) => {
-    const next = id === 'accounts' ? 'cookies' : id;
+    const next = id;
     setMobileView(next);
     requestAnimationFrame(() => window.scrollTo({top: 0, left: 0, behavior: 'auto'}));
     if (next === 'downloads') actions.loadDownloads().catch(() => {});

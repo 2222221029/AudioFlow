@@ -332,7 +332,7 @@ class XimalayaDownloadManager:
         self.cookie_string = cookie_string
         self.mobile_credentials = normalize_ximalaya_mobile_credentials(mobile_credentials)
         if cookie_string:
-            print(f"🍪 XimalayaDownloadManager已设置Cookie")
+            print("🍪 XimalayaDownloadManager已设置Cookie")
     
         # 旧版直连的档位语义与降级链（实测依据见 LEGACY_REDIRECT_LEVELS）。
         self.legacy_redirect_levels = LEGACY_REDIRECT_LEVELS
@@ -412,7 +412,6 @@ class XimalayaDownloadManager:
         带该头时，2026 年起返回 ``407 webtk缺失/WFP存在但校验失败``。
         """
         try:
-            from .ximalaya_pc_sign import XmSignCache
             cache = self._web_sign_cache()
             if cache is None:
                 return ""
@@ -1854,10 +1853,10 @@ class XimalayaDownloadManager:
             return True, ""
 
         if media_format != "m4a" and not (
-            # 标准音质（128KMP3 / 64K 等）在 TME 系（isTme=true）专辑里是
-            # ID3-MP3 容器（《大奉打更人》实测 51/51 集 128KMP3）；非 m4a 一律
-            # 拒绝会误杀这些可播放的 MP3 直链。
-            media_format == "mp3" and level in (0, 2)
+            # 标准/高清/超清（level 0/1/2）在 TME 系（isTme=true）专辑里是
+            # ID3-MP3 容器（《大奉打更人》实测 51/51 集 128KMP3；高清 M4A_64
+            # 同专辑也是 MP3 直链）；非 m4a 一律拒绝会误杀这些可播放的直链。
+            media_format == "mp3" and level in (0, 1, 2)
         ):
             return False, "全景声音轨不是受支持的 MP4/M4A 容器"
         if level == 12:
@@ -2042,9 +2041,17 @@ class XimalayaDownloadManager:
                     "文件地址返回了错误页面",
                     "文件格式无法识别",
                 }
+                # 标准/高清/超清（0/1/2）下载内容容器本端不认 → 视同该档在本端
+                # 不可保存，允许 best-available 链继续尝试更低档（TME 系高清
+                # 误标场景，避免整集直接失败）。
+                ordinary_container_rejected = level in (0, 1, 2)
                 self._record_error(
                     f"移动端返回的{profile['name']}{validation_error}，已拒绝保存",
-                    error_type="quality_unavailable" if spatial_quality_unavailable else None,
+                    error_type=(
+                        "quality_unavailable"
+                        if spatial_quality_unavailable or ordinary_container_rejected
+                        else None
+                    ),
                 )
                 return False
 
@@ -2396,7 +2403,7 @@ class XimalayaDownloadManager:
                 self.last_download_path = str(final_path)
                 duration_text = f", {media_duration:.0f}秒" if media_duration else ''
                 print(
-                    f"✅ 免费接口下载成功 "
+                    "✅ 免费接口下载成功 "
                     f"({self.last_download_quality_label}, {total_size / 1024 / 1024:.2f}MB{duration_text})"
                 )
                 return True
@@ -2649,7 +2656,7 @@ class XimalayaDownloadManager:
         
         # MP3使用网页端API（需要解密URL）
         elif audio_format == 'MP3':
-            print(f"💻 使用网页端API下载MP3...")
+            print("💻 使用网页端API下载MP3...")
             return self._download_mp3_from_web(track_id, audio_quality, save_path, chapter_title, progress_callback=progress_callback)
         
         # 其他格式使用默认方法
@@ -3112,7 +3119,7 @@ class XimalayaDownloadManager:
         :return: 下载是否成功
         """
         print(f"🎵 使用网页端API下载MP3 - 音质: {audio_quality}")
-        print(f"📝 注意：移动端不支持MP3，必须使用网页端API")
+        print("📝 注意：移动端不支持MP3，必须使用网页端API")
 
         # 网页会话指纹（webtk/HWWAF）+ 登录 Cookie 合并：v3/baseInfo 匿名直连
         # 会被风控（ret=1001）或只给试听，与 _request_web_track_info / 旧版直连
@@ -3148,7 +3155,7 @@ class XimalayaDownloadManager:
             # 添加Cookie（如果有），合并登录 Cookie 与网页会话指纹
             if web_fingerprint_cookie:
                 web_headers['Cookie'] = web_fingerprint_cookie
-                print(f"   🍪 已合并登录 Cookie 与网页会话指纹（webtk/HWWAF）")
+                print("   🍪 已合并登录 Cookie 与网页会话指纹（webtk/HWWAF）")
             
             print(f"   🔗 网页端API: {web_api_url}")
             response = self.session.get(web_api_url, headers=web_headers, timeout=15)
@@ -3236,7 +3243,7 @@ class XimalayaDownloadManager:
             decrypted_url = self._decrypt_audio_url_clean(encrypted_url)
             
             if not decrypted_url or not decrypted_url.startswith('http'):
-                print(f"❌ URL解密失败或格式错误")
+                print("❌ URL解密失败或格式错误")
                 # 解密失败（加密格式变动/需要登录态）→ 免费集兜底旧版直连
                 fallback_ok = self._mp3_fallback_to_legacy(
                     track_id, audio_quality, save_path, chapter_title, progress_callback
@@ -3258,7 +3265,7 @@ class XimalayaDownloadManager:
             print(f"   🔓 解密URL: {decrypted_url[:100]}...")
             
             # 5. 下载MP3文件
-            print(f"   📥 开始下载MP3文件...")
+            print("   📥 开始下载MP3文件...")
             
             # 下载时也添加Cookie
             if self.cookie_string:
@@ -3295,7 +3302,7 @@ class XimalayaDownloadManager:
                     
                     return False
                 except Exception:
-                    print(f"   ❌ 无法解析错误响应")
+                    print("   ❌ 无法解析错误响应")
                     self._record_error("invalid JSON error response")
                     return False
             
@@ -3329,7 +3336,7 @@ class XimalayaDownloadManager:
                 return False
             
             # Content-Type已经验证是audio/mpeg，文件大小合理，直接返回成功
-            print(f"   ✅ MP3文件下载成功 (已通过Content-Type和大小验证)")
+            print("   ✅ MP3文件下载成功 (已通过Content-Type和大小验证)")
             return True
             
         except Exception as e:
@@ -3442,7 +3449,7 @@ class XimalayaDownloadManager:
     
     def _get_all_audio_urls(self, track_id: str) -> Dict:
         """获取所有可用的音频URL"""
-        print(f"🔴🔴🔴 警告:调用了旧的_get_all_audio_urls方法! 🔴🔴🔴")
+        print("🔴🔴🔴 警告:调用了旧的_get_all_audio_urls方法! 🔴🔴🔴")
         print(f"📡 获取章节 {track_id} 的所有音频URL...")
         
         # 1. 移动端API
@@ -3532,7 +3539,7 @@ class XimalayaDownloadManager:
                     print(f"   📥 获取到HQ音频URL: {hq_url[:80]}...")
                     
                     # 调试信息
-                    print(f"   📊 API返回的音频字段:")
+                    print("   📊 API返回的音频字段:")
                     if play_url_32:
                         print(f"      playUrl32: {play_url_32[:80]}...")
                     if play_url_64:
@@ -3667,7 +3674,7 @@ class XimalayaDownloadManager:
         
         # 查找匹配的URL - 标准化quality格式（处理空格和下划线）
         normalized_quality = quality.replace(' ', '_').upper()
-        print(f"   🔧 调试信息:")
+        print("   🔧 调试信息:")
         print(f"     原始quality: '{quality}'")
         print(f"     标准化quality: '{normalized_quality}'")
         print(f"     映射表键: {list(quality_mapping.keys())}")
@@ -3688,18 +3695,18 @@ class XimalayaDownloadManager:
                 
                 # 检查URL是否包含真实的比特率信息
                 if '48K' in url:
-                    print(f"   ⚠️ URL包含48K标识 - 这可能是低质量音频")
+                    print("   ⚠️ URL包含48K标识 - 这可能是低质量音频")
                 elif '64K' in url:
-                    print(f"   ✅ URL包含64K标识 - 中等质量音频")
+                    print("   ✅ URL包含64K标识 - 中等质量音频")
                 elif '96K' in url or '128K' in url or '192K' in url:
-                    print(f"   ✅ URL包含高质量比特率标识")
+                    print("   ✅ URL包含高质量比特率标识")
                 else:
-                    print(f"   ⚠️ URL可能不包含真实比特率信息")
+                    print("   ⚠️ URL可能不包含真实比特率信息")
                 
                 # 特别检查：如果用户选择96K但URL是48K，给出警告
                 if 'M4A_96K' in quality.upper() and '48K' in url:
-                    print(f"   🚨 警告：用户选择96K但下载的是48K音频！")
-                    print(f"   💡 建议：喜马拉雅可能没有提供真正的96K音频")
+                    print("   🚨 警告：用户选择96K但下载的是48K音频！")
+                    print("   💡 建议：喜马拉雅可能没有提供真正的96K音频")
                 
                 if self._download_single_url(url, save_path):
                     try:
@@ -3711,13 +3718,13 @@ class XimalayaDownloadManager:
                         if file_size < 1024 * 1024:  # 小于1MB可能是低质量
                             print(f"   ⚠️ 警告: 文件大小 {size_mb:.2f}MB 可能不是高质量音频")
                         else:
-                            print(f"   ✅ 文件大小正常，应该是高质量音频")
+                            print("   ✅ 文件大小正常，应该是高质量音频")
                     except Exception:
                         print(f"✅ M4A下载成功 ({quality})")
                     return True
         
         # 如果没有找到别名匹配，尝试模糊匹配
-        print(f"   ⚠️ 未找到别名匹配，尝试模糊匹配...")
+        print("   ⚠️ 未找到别名匹配，尝试模糊匹配...")
         
         # 首先尝试精确匹配，按quality_level降序排列以优先选择高质量音频
         sorted_audio_urls = sorted(audio_urls.items(), 
@@ -3769,7 +3776,7 @@ class XimalayaDownloadManager:
                         print(f"✅ M4A下载成功 ({pattern_name})")
                         return True
                     else:
-                        print(f"❌ 下载失败，尝试下一个URL...")
+                        print("❌ 下载失败，尝试下一个URL...")
             
             print(f"   {pattern_name} 无可用URL")
         
@@ -3827,7 +3834,7 @@ class XimalayaDownloadManager:
                         return True
         
         # 如果没有找到别名匹配，尝试模糊匹配
-        print(f"   ⚠️ 未找到别名匹配，尝试模糊匹配...")
+        print("   ⚠️ 未找到别名匹配，尝试模糊匹配...")
         
         # 首先尝试精确匹配，按quality_level降序排列以优先选择高质量音频
         sorted_audio_urls = sorted(audio_urls.items(), 
@@ -3879,7 +3886,7 @@ class XimalayaDownloadManager:
                 if 'audio/mpeg' in content_type or 'audio/mp3' in content_type:
                     print(f"   ✅ 确认是真正的MP3文件: {content_type}")
                     if self._download_single_url(url, save_path):
-                        print(f"✅ MP3下载成功")
+                        print("✅ MP3下载成功")
                         return True
                 else:
                     print(f"   ⚠️ 不是真正的MP3文件: {content_type}")
@@ -3901,7 +3908,7 @@ class XimalayaDownloadManager:
                 if 'audio/mpeg' in content_type or 'audio/mp3' in content_type:
                     print(f"   ✅ 确认是真正的MP3文件: {content_type}")
                     if self._download_single_url(url, save_path):
-                        print(f"✅ MP3下载成功")
+                        print("✅ MP3下载成功")
                         return True
                 else:
                     print(f"   ⚠️ 不是真正的MP3文件: {content_type}")
@@ -3927,14 +3934,14 @@ class XimalayaDownloadManager:
                     if os.path.exists(save_path):
                         os.remove(save_path)
                     os.rename(temp_save_path, save_path)
-                    print(f"✅ MP3下载成功并验证格式正确")
+                    print("✅ MP3下载成功并验证格式正确")
                     return True
                 else:
-                    print(f"   ⚠️ 下载的文件不是真正的MP3格式，删除临时文件")
+                    print("   ⚠️ 下载的文件不是真正的MP3格式，删除临时文件")
                     if os.path.exists(temp_save_path):
                         os.remove(temp_save_path)
             else:
-                print(f"   ❌ 下载失败")
+                print("   ❌ 下载失败")
         
         print("❌ 无法获取真正的MP3文件")
         return False
@@ -4003,7 +4010,7 @@ class XimalayaDownloadManager:
                 print(f"✅ 默认下载成功 ({port}端口)")
                 return True
             else:
-                print(f"❌ 下载失败，尝试下一个URL...")
+                print("❌ 下载失败，尝试下一个URL...")
         
         print("❌ 默认下载方式也失败")
         return False

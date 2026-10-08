@@ -8,8 +8,6 @@
 import requests
 import json
 import time
-import random
-import math
 import os
 import re
 import uuid
@@ -70,7 +68,7 @@ class KuwoManager:
             value=self._fixed_cookie_value,
             domain=".kuwo.cn"
         )
-        print(f"[酷我听书] 使用固定的 Cookie 和 Secret（无需登录）")
+        print("[酷我听书] 使用固定的 Cookie 和 Secret（无需登录）")
 
     def _record_error(self, message: str, error_type: str = "download_failed"):
         self.last_error = str(message or "酷我下载失败")[:300]
@@ -538,7 +536,7 @@ class KuwoManager:
                 finally:
                     retry_session.close()
                 if not first_page_result['success']:
-                    print(f"❌ 获取第一页失败")
+                    print("❌ 获取第一页失败")
                     return []
 
             api_page_size = self._page_size
@@ -618,7 +616,7 @@ class KuwoManager:
             
             if quality == 'lossless':
                 # 无损音频：优先尝试 FLAC，如果没有则尝试多个 MP3 比特率
-                print(f"[酷我] 无损音频模式：优先尝试 FLAC")
+                print("[酷我] 无损音频模式：优先尝试 FLAC")
                 download_info = self._get_download_url_internal(chapter_id, 'flac')
                 if not download_info or download_info.get('format') != 'flac':
                     returned_format = download_info.get('format') if download_info else '无返回'
@@ -635,7 +633,7 @@ class KuwoManager:
                             
             elif quality == 'high':
                 # 高质量音频：优先使用 MP3 (320kbps -> 192kbps -> 128kbps)
-                print(f"[酷我] 高质量音频模式：尝试 MP3 格式")
+                print("[酷我] 高质量音频模式：尝试 MP3 格式")
                 mp3_bitrates = [320, 192, 128]
                 for bitrate in mp3_bitrates:
                     print(f"[酷我] 尝试 MP3 {bitrate}kbps")
@@ -648,7 +646,7 @@ class KuwoManager:
                             
             else:  # standard
                 # 标准音频：优先使用 MP3 128kbps
-                print(f"[酷我] 标准音频模式：尝试 MP3 格式")
+                print("[酷我] 标准音频模式：尝试 MP3 格式")
                 mp3_bitrates = [128, 192, 320]
                 for bitrate in mp3_bitrates:
                     print(f"[酷我] 尝试 MP3 {bitrate}kbps")
@@ -909,10 +907,10 @@ class KuwoManager:
             
             if quality == 'lossless':
                 # 无损音频：优先尝试 FLAC
-                print(f"[酷我] 无损音频模式：优先尝试 FLAC")
+                print("[酷我] 无损音频模式：优先尝试 FLAC")
                 download_info = self._get_download_url_internal(chapter_id, 'flac')
                 if not download_info or download_info.get('format') != 'flac':
-                    print(f"[酷我] FLAC 不可用，尝试 MP3")
+                    print("[酷我] FLAC 不可用，尝试 MP3")
                     mp3_bitrates = [320, 192, 128]
                     for bitrate in mp3_bitrates:
                         mp3_info = self._get_download_url_internal(chapter_id, 'mp3', bitrate)

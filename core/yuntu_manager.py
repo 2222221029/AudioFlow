@@ -226,7 +226,7 @@ class YunTuManager:
                         print(f"📎 从链接提取专辑ID: {album_id}")
                         return album_id
                 
-                print(f"❌ 无法从链接提取专辑ID")
+                print("❌ 无法从链接提取专辑ID")
                 return None
                 
             except Exception as e:
@@ -318,7 +318,7 @@ class YunTuManager:
                         'total': album_data.get('total', 0)
                     }
                 else:
-                    print(f"⚠️ 专辑详情API返回空数据，尝试其他方法获取封面")
+                    print("⚠️ 专辑详情API返回空数据，尝试其他方法获取封面")
                     # 尝试使用发现的图片API
                     return self._try_get_cover_from_image_api(album_id)
             else:
@@ -335,7 +335,7 @@ class YunTuManager:
         尝试使用发现的图片API获取封面
         """
         try:
-            print(f"🔍 尝试使用图片API获取封面...")
+            print("🔍 尝试使用图片API获取封面...")
             
             # 尝试第一个图片API
             url1 = f"https://ytmsout.radio.cn/web/appAlbum/detail/{album_id}?id={album_id}"
@@ -363,7 +363,7 @@ class YunTuManager:
                 print(f"   API1失败: {e}")
             
             # 尝试第二个图片API（需要从章节数据中提取ID）
-            print(f"   尝试API2...")
+            print("   尝试API2...")
             try:
                 # 从章节数据中获取可能的图片ID
                 _, singles = self.get_album_singles(album_id, page_no=0, page_size=1)
@@ -397,7 +397,7 @@ class YunTuManager:
             except Exception as e:
                 print(f"   API2失败: {e}")
             
-            print(f"⚠️ 所有图片API都失败，返回默认信息")
+            print("⚠️ 所有图片API都失败，返回默认信息")
             return None
             
         except Exception as e:
@@ -458,7 +458,7 @@ class YunTuManager:
                         total_pages = data_wrapper.get('totalPage', 1)
                         total_num = data_wrapper.get('totalNum', len(singles_list))
                         
-                        print(f"☁️ 云听FM专辑信息:")
+                        print("☁️ 云听FM专辑信息:")
                         print(f"   总集数: {total_num}")
                         print(f"   总页数: {total_pages}")
                         print(f"   每页: {page_size}")
@@ -586,7 +586,7 @@ class YunTuManager:
             album_info, singles = self.get_album_singles(album_id, page_no=api_page_no, page_size=page_size)
             
             if not singles:
-                print(f"⚠️ 未获取到章节")
+                print("⚠️ 未获取到章节")
                 return []
             
             chapters = []
@@ -610,7 +610,7 @@ class YunTuManager:
                 
                 # 添加调试信息
                 if idx == 1:
-                    print(f"🔍 音频URL字段检查:")
+                    print("🔍 音频URL字段检查:")
                     print(f"   name: {single.get('name', 'None')}")
                     print(f"   playUrlHigh: {single.get('playUrlHigh', 'None')}")
                     print(f"   downloadUrl: {single.get('downloadUrl', 'None')}")
@@ -668,7 +668,7 @@ class YunTuManager:
             # 但为了性能，建议在获取章节列表时就缓存URL
             
             # 这里返回一个占位符，实际使用时应该从章节数据中获取mediaUrl
-            print(f"⚠️ 云听FM音频URL应从章节数据中的mediaUrl字段获取")
+            print("⚠️ 云听FM音频URL应从章节数据中的mediaUrl字段获取")
             return None
             
         except Exception as e:

@@ -9,7 +9,7 @@
 | `core/download_worker.py` | 200 | `未知` |
 | `core/subscription_manager.py` | 200 | `unknown` |
 | `core/ximalaya_download_manager.py` | 150 | `未知音频` |
-| `core/download_manager.py` | 150 | `未命名音频` |
+| `core/download_manager.py`（已删除） | 150 | `未命名音频` |
 
 四者字符表相同但上限与兜底串各不相同，属于"同一条规则、四种行为"——
 调用方无法预期自己会拿到哪一种。本模块把它们收敛为带默认值的纯函数：

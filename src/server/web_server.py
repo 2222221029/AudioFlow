@@ -48,9 +48,7 @@ from core.platform_config import (
     data_dir,
     download_dir,
     ensure_runtime_dirs,
-    host,
     log_dir,
-    port,
     project_root,
     pwa_enabled,
 )
@@ -597,7 +595,7 @@ def load_tasks():
         return loaded if isinstance(loaded, dict) else {}
     except Exception as exc:
         logging.exception("load tasks failed")
-        print(f"[任务] 加载任务文件失败：{exc}")
+        logging.warning("[任务] 加载任务文件失败：%s", exc)
         return {}
 
 
@@ -616,7 +614,7 @@ def save_tasks(force=False):
         _last_task_save = now
     except Exception as exc:
         logging.exception("save tasks failed")
-        print(f"[任务] 保存任务文件失败：{exc}")
+        logging.warning("[任务] 保存任务文件失败：%s", exc)
 
 # ── 订阅自动检测调度器 ──────────────────────────────────
 # 周期性扫描所有「到期」的订阅（last_check_at 超过 interval_hours），
@@ -770,7 +768,7 @@ def _scheduler_tick(force=False):
             except Exception as exc:
                 subscription_manager.mark_check_error(item.get("id"), f"自动检测失败：{exc}")
                 logging.exception("subscription scheduler item failed")
-                print(f"[订阅调度] 处理 {item.get('id')} 失败：{exc}")
+                logging.warning("[订阅调度] 处理 %s 失败：%s", item.get("id"), exc)
         _scheduler_status.update({
             "running": False,
             "last_run_at": time.time(),
@@ -787,7 +785,7 @@ def _scheduler_tick(force=False):
             "last_error": str(exc),
         })
         logging.exception("subscription scheduler failed")
-        print(f"[订阅调度] 异常：{exc}")
+        logging.warning("[订阅调度] 异常：%s", exc)
 
 
 def _scheduler_loop():
@@ -801,7 +799,7 @@ def _scheduler_loop():
         except Exception as exc:
             _scheduler_status["running"] = False
             _scheduler_status["last_error"] = str(exc)
-            print(f"[订阅调度] loop 异常：{exc}")
+            logging.exception("[订阅调度] loop 异常：%s", exc)
         
         # Weekly index rebuild: force a full rebuild every 7 days to catch
         # stale entries from manual file deletions outside the app.
@@ -2767,7 +2765,6 @@ def _wecom_help_text():
         "订阅 序号：按网页版接口订阅最近一次搜索结果\n"
         "订阅 序号 杜比 / 无损：为该喜马拉雅专辑单独使用移动端 V4\n"
         "下载 序号：下载最近一次搜索结果全部章节\n"
-        "确认整理 计划ID / 安全整理 计划ID / 取消整理 计划ID：处理下载后的整理计划\n"
         "示例：搜索 三体 / 搜索 喜马拉雅 三体"
     )
 
@@ -2909,7 +2906,7 @@ def _wecom_push_page_hint(service_id, user_id, results, page):
         return
     _wecom_push(service_id, user_id, text=(
         f"📄 第 {page + 1}/{total_pages} 页 · 共 {total} 条。"
-        f"回复「下一页」/「上一页」翻页，「订阅 序号」/「下载 序号」操作。"
+        "回复「下一页」/「上一页」翻页，「订阅 序号」/「下载 序号」操作。"
     ))
 
 
@@ -3955,7 +3952,7 @@ def retry_existing_download_task(task_id, task, source):
     # 优先用失败清单侧车把范围收窄；收窄不成立时**原样**回退全集（旧行为）。
     narrowed = _retry_chapters_from_report(album, options, chapters)
     if narrowed:
-        print(f"📄 按失败清单重试：{len(narrowed)}/{len(chapters)} 集（跳过章节枚举）")
+        logging.info("按失败清单重试：%s/%s 集（跳过章节枚举）", len(narrowed), len(chapters))
         chapters = narrowed
 
     retried_task = start_download_task(
@@ -6155,7 +6152,7 @@ def _load_qidian_personal(feature):
             item["raw_data"] = book
             items.append(item)
     except Exception as e:
-        print(f"❌ 起点听书个人数据加载失败({feature}): {e}")
+        logging.warning("起点听书个人数据加载失败(%s): %s", feature, e)
         if not isinstance(e, RuntimeError):
             raise RuntimeError("起点书架加载失败，请稍后重试") from e
         raise
@@ -6454,11 +6451,11 @@ def main():
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true")
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         start_background_services()
-    print(f"🚀 启动服务器: http://{host}:{port}  debug={debug}")
+    logging.info("启动服务器: http://%s:%s  debug=%s", host, port, debug)
     try:
         from waitress import serve
-        print("📡 使用 waitress 生产服务器")
+        logging.info("使用 waitress 生产服务器")
         serve(app, host=host, port=port, threads=4)
     except ImportError:
-        print("📡 waitress 未安装，使用 Flask 内置服务器")
+        logging.info("waitress 未安装，使用 Flask 内置服务器")
         app.run(host=host, port=port, debug=debug, threaded=True)

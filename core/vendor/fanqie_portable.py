@@ -1161,7 +1161,7 @@ def _gen_register_body() -> dict:
             "clientudid": str(uuid.uuid4()),
             "req_id": str(uuid.uuid4()),
             "rom": rom,
-            "rom_version": f"PQ3A.190705.10241111+release-keys",
+            "rom_version": "PQ3A.190705.10241111+release-keys",
         },
         "_gen_time": now,
     }
@@ -2778,7 +2778,7 @@ def run_comic(client: FanqieClient, *, save: Path | None) -> None:
             info = (j.get("data") or [{}])[0]
             thumb = info.get("chapter_thumb_url") or ""
             if thumb:
-                ans = input(f"仅下载章节封面? [y/N]> ").strip().lower()
+                ans = input("仅下载章节封面? [y/N]> ").strip().lower()
                 if ans in ("y", "yes", "是"):
                     out = save or default_chapter_txt_path(book_name, ci, title).with_suffix(".heic")
                     data = download_cdn(thumb, _http_dl_headers(client))

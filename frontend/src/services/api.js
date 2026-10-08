@@ -20,7 +20,7 @@ function normalizeBody(options) {
   return {...options, body: JSON.stringify(options.body)};
 }
 
-export function apiUrl(path) {
+function apiUrl(path) {
   if (/^https?:\/\//i.test(path)) return path;
   const base = resolveApiBase();
   if (!base) return path;
@@ -82,8 +82,4 @@ export async function login(username, password) {
 
 export async function logout() {
   return requestJson('/api/auth/logout', {method: 'POST'}).catch(() => ({}));
-}
-
-export async function authStatus() {
-  return requestJson('/api/auth/status');
 }

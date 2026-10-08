@@ -10,7 +10,6 @@ import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import parse_qs, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter

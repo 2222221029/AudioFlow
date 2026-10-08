@@ -23,7 +23,7 @@ function safeHandler(action, handler) {
   }
 }
 
-export function useMediaSession(app) {
+function useMediaSession(app) {
   const {player, audioRef, actions} = app;
   const metadata = useMemo(() => ({
     title: player.title || 'AudioFlow',

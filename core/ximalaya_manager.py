@@ -6,7 +6,6 @@
 """
 
 import requests
-import time
 import base64
 import json
 import os
@@ -556,7 +555,7 @@ class XimalayaManager:
 
         for device in ('ios', 'www2', 'android'):
             mobile_api_url = (
-                f"http://mobile.ximalaya.com/v1/track/baseInfo"
+                "http://mobile.ximalaya.com/v1/track/baseInfo"
                 f"?device={device}&trackId={track_id}&_={timestamp}"
             )
             print(f"📡 移动端API device={device} ...")
@@ -668,10 +667,10 @@ class XimalayaManager:
                             self.force_clear_server_cookie()
                             print("⚠️ SVIP已过期，已强制清空服务器Cookie，使用无Cookie模式搜索")
                         else:
-                            print(f"🍪 使用服务器Cookie进行搜索（SVIP用户）...")
+                            print("🍪 使用服务器Cookie进行搜索（SVIP用户）...")
                             real_results = self._search_with_cookie(keyword, page_num, page_size)
                     else:
-                        print(f"🍪 使用本地Cookie进行搜索...")
+                        print("🍪 使用本地Cookie进行搜索...")
                         real_results = self._search_with_cookie(keyword, page_num, page_size)
                     if real_results:
                         all_books.extend(real_results)
@@ -687,7 +686,7 @@ class XimalayaManager:
                     break
                 
                 # 无Cookie搜索 - 这是正常情况，不需要Cookie也能搜索
-                print(f"🔍 使用无Cookie模式进行搜索...")
+                print("🔍 使用无Cookie模式进行搜索...")
                 
                 # 使用喜马拉雅.py中更有效的搜索API端点
                 url = f"{self.base_url}/revision/search"
@@ -1740,7 +1739,6 @@ class XimalayaManager:
             
             # 使用线程池并发获取所有页面
             import concurrent.futures
-            import time
             
             chapters = []
             max_workers = min(20, total_pages)  # 限制最大并发数
@@ -1993,7 +1991,7 @@ class XimalayaManager:
             # 关键修复：如果有Cookie，添加到请求头中
             if self.cookie_string:
                 headers['Cookie'] = self.cookie_string
-                print(f"🍪 已添加Cookie到网页端API请求")
+                print("🍪 已添加Cookie到网页端API请求")
             
             response = self.session.get(web_api_url, headers=headers, timeout=10)
             
@@ -2015,7 +2013,7 @@ class XimalayaManager:
                                 if isinstance(info, dict):
                                     print(f"   🎧 {quality}: {info.get('size_mb', 0):.2f}MB [CDN直链]")
                             return audio_urls
-                        print(f"⚠️ 网页端密文 AES 解密均未得到有效直链")
+                        print("⚠️ 网页端密文 AES 解密均未得到有效直链")
             
             # 如果API都失败，使用带正确level参数的重定向URL作为备选
             print("⚠️ API未返回直接URL，生成重定向URL作为备选")
@@ -2179,7 +2177,7 @@ class XimalayaManager:
             print(f"📥 使用原有下载逻辑: {url}")
             
             # 使用session的默认请求头，确保Cookie和User-Agent一致
-            print(f"🍪 下载请求使用session默认请求头")
+            print("🍪 下载请求使用session默认请求头")
             
             response = self.session.get(url, stream=True, timeout=30)
             

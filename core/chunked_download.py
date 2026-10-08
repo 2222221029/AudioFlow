@@ -61,7 +61,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from core import http_policy
 from core.errors import (

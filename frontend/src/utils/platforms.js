@@ -58,7 +58,7 @@ export const PLATFORM_COOKIE_KEY = {
   lizhi: 'lizhi',
 };
 
-export const PLATFORM_LOGOS = {
+const PLATFORM_LOGOS = {
   xmly: '/platform-logos/xmly.ico',
   lrts: '/platform-logos/lrts.ico',
   qidian: '/platform-logos/qidian.ico',

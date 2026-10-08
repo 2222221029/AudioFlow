@@ -6,16 +6,8 @@ import {albumEpisodeText, chapterId, chapterStatusText, chapterTitle, coverOf, f
 import {COOKIE_PLATFORMS, NO_COOKIE_KEYS, PERSONAL_FEATURES, SEARCH_PLATFORMS} from '../utils/platforms.js';
 import {applyTheme, persistTheme, savedTheme, THEMES} from '../utils/themes.js';
 import {api} from '../services/api.js';
+import {DEFAULT_QUALITY, XMLY_MOBILE_INTERFACE, XMLY_PC_INTERFACE, XMLY_WEB_INTERFACE, XMLY_WEB_LOSSLESS} from '../utils/ximalaya.js';
 
-const XMLY_MOBILE_INTERFACE = '喜马拉雅移动端接口（自动最高音质）';
-const XMLY_WEB_INTERFACE = '喜马拉雅网页版接口';
-const XMLY_PC_INTERFACE = '喜马拉雅电脑版接口（自动最高音质）';
-// 用户主动选择走网页播放器通道（v3/baseInfo），FHQ 无损母带只在那里。
-// 网页自动模式会保护易风控的 Web V3，只在章节受限时才切过去；这个档位
-// 是显式选择，所以直接打 baseInfo。
-const XMLY_WEB_LOSSLESS = '网页无损优先（FHQ WAV）';
-// 网页版接口自身的音质选择。默认沿用旧版直连（最高 96K）；选中无损时改走
-// v3/baseInfo —— FHQ（24bit WAV 母带）只在那个响应里。
 const XMLY_WEB_QUALITY_OPTIONS = [
   {value: XMLY_WEB_INTERFACE, label: '自动（旧版直连，最高 96K）'},
   {value: XMLY_WEB_LOSSLESS, label: '网页无损优先（FHQ WAV 母带）'},
@@ -1458,63 +1450,6 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
   );
 }
 
-function XimalayaMobileLoginModal({actions, onDone, onClose}) {
-  const [phone, setPhone] = useState('');
-  const [code, setCode] = useState('');
-  const [message, setMessage] = useState('输入喜马拉雅账号绑定的手机号');
-  const [error, setError] = useState('');
-  const [sending, setSending] = useState(false);
-  const [loggingIn, setLoggingIn] = useState(false);
-
-  const sendCode = async () => {
-    setSending(true); setError('');
-    try {
-      const data = await actions.sendXimalayaMobileCode(phone.trim());
-      setMessage(data.message || '验证码已发送');
-    } catch (err) { setError(err.message); }
-    finally { setSending(false); }
-  };
-  const login = async () => {
-    setLoggingIn(true); setError('');
-    try {
-      const data = await actions.loginXimalayaMobile(phone.trim(), code.trim());
-      setMessage(data.message || '登录成功');
-      onDone?.();
-      if (!data.needs_playback) onClose();
-    } catch (err) { setError(err.message); }
-    finally { setLoggingIn(false); }
-  };
-
-  return (
-    <div className="lrts-login">
-      <div className="lrts-login-head">
-        <div className="lrts-login-icon"><Icon id="i-mobile" /></div>
-        <div className="lrts-login-copy">
-          <div className="modal-title lrts-title">喜马拉雅移动端登录</div>
-          <div className="modal-sub lrts-sub">{error || message}</div>
-        </div>
-      </div>
-      <div className="lrts-panel">
-        <div className="lrts-inline">
-          <input className="field-input lrts-input" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="手机号" inputMode="tel" autoComplete="tel" />
-          <button className="btn btn-ghost btn-sm lrts-send-btn" disabled={sending || phone.length !== 11} onClick={sendCode}>
-            <BusyIcon busy={sending} icon="i-mobile" />发送验证码
-          </button>
-        </div>
-        <input className="field-input lrts-input" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 8))} placeholder="短信验证码" inputMode="numeric" autoComplete="one-time-code" />
-        {error && <div className="field-hint err">{error}</div>}
-        <div className="lrts-note">验证码由官方喜马拉雅 App 发送和校验。若账号触发人机验证，必须先在 App 中完成验证；界面明确显示“验证码已发送”前，短信尚未发出。登录成功后自动保存 Cookie、User-Agent 和动态 Ticket 所需账号信息。</div>
-        <div className="modal-actions">
-          <button className="btn btn-primary btn-sm" disabled={loggingIn || phone.length !== 11 || code.length < 4} onClick={login}>
-            <BusyIcon busy={loggingIn} icon="i-check" />登录并保存
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const LRTS_CAPTCHA_SCRIPT = 'https://turing.captcha.qcloud.com/TJCaptcha.js';
 let lrtsCaptchaScriptPromise = null;
 
@@ -1634,15 +1569,6 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
       if (sessionRef.current) api(`/api/qr/cancel/${sessionRef.current}`, {method: 'POST'}).catch(() => {});
     };
   }, [onClose, onDone, platform.qr, scope]);
-
-;
-
-;
-
-  // 启动浏览器代理登录
-;
-
-  // 手动保存 Cookie
 
   const sendLrtsCode = async () => {
     const normalizedPhone = phone.trim();
@@ -1893,7 +1819,6 @@ function notificationServiceTemplate(type = 'telegram') {
     name: label,
     type,
     enabled: true,
-    switchs: [],
     config: {},
   };
 }
@@ -2171,13 +2096,12 @@ function BackupImportModal({actions, onClose}) {
 export function SettingsPage({app}) {
   const {config, logs, events, actions, setModal, closeModal, busy, diagnostics} = app;
   const [downloadDir, setDownloadDir] = useState('');
-  const [quality, setQuality] = useState('M4A 96K');
+  const [quality, setQuality] = useState(DEFAULT_QUALITY);
   const [downloadThreads, setDownloadThreads] = useState(4);
   const [organizeByPlatformEnabled, setOrganizeByPlatformEnabled] = useState(false);
   const [splitChaptersEnabled, setSplitChaptersEnabled] = useState(false);
   const [chaptersPerFolder, setChaptersPerFolder] = useState(200);
   const [filenamePrefixFormat, setFilenamePrefixFormat] = useState('0001-');
-  const [manualOrganizeMode, setManualOrganizeMode] = useState('review');
   const [taskHistoryMaxKeep, setTaskHistoryMaxKeep] = useState(100);
   const [taskHistoryMaxAgeDays, setTaskHistoryMaxAgeDays] = useState(30);
   const [taskDetailRetentionDays, setTaskDetailRetentionDays] = useState(7);
@@ -2186,13 +2110,12 @@ export function SettingsPage({app}) {
   const [backgroundEventsMaxKeep, setBackgroundEventsMaxKeep] = useState(10);
   useEffect(() => {
     setDownloadDir(config.download_dir || '');
-    setQuality(config.quality || 'M4A 96K');
+    setQuality(config.quality || DEFAULT_QUALITY);
     setDownloadThreads(config.download_threads || 4);
     setOrganizeByPlatformEnabled(!!config.organize_by_platform_enabled);
     setSplitChaptersEnabled(!!config.split_chapters_enabled);
     setChaptersPerFolder(config.chapters_per_folder || 200);
     setFilenamePrefixFormat(config.filename_prefix_format || '0001-');
-    setManualOrganizeMode(config.manual_organize_mode || 'review');
     setTaskHistoryMaxKeep(config.task_history_max_keep || 100);
     setTaskHistoryMaxAgeDays(config.task_history_max_age_days || 30);
     setTaskDetailRetentionDays(config.task_detail_retention_days ?? 7);
@@ -2235,15 +2158,6 @@ export function SettingsPage({app}) {
             <div className="field-row settings-span-2"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
             <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option><option value={XMLY_PC_INTERFACE}>喜马拉雅电脑版 · 自动最佳</option><option value="PC 256K">PC 256K（电脑版最高档）</option><option value="PC 128K">PC 128K（电脑版 HQ）</option></select></div>
             <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64" /></div>
-            <div className="field-row settings-span-2">
-              <label className="field-label">自动整理（仅手动下载）</label>
-              <select className="field-select" value={manualOrganizeMode} onChange={(e) => setManualOrganizeMode(e.target.value)}>
-                <option value="off">关闭</option>
-                <option value="review">完成后生成计划并等待确认（推荐）</option>
-                <option value="auto_safe">已确认的同一专辑无风险时自动执行</option>
-              </select>
-              <div className="settings-help">自动任务不会进入整理流程，新专辑仍会先确认书名、格式和特殊文件。</div>
-            </div>
           </div>
         </div>
 
@@ -2271,7 +2185,7 @@ export function SettingsPage({app}) {
 
         <div className="settings-footer">
           <div><strong>账号与安全</strong><div className="settings-account-actions"><button className="btn btn-ghost btn-sm" onClick={openPassword}><Icon id="i-key" className="icon icon-sm" />修改密码</button><button className="btn btn-danger btn-sm" onClick={actions.logoutAccount}><Icon id="i-close" className="icon icon-sm" />退出登录</button></div></div>
-          <button className="btn btn-primary settings-save" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, manualOrganizeMode, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
+          <button className="btn btn-primary settings-save" disabled={busy.settings} onClick={() => actions.saveSettings({downloadDir, quality, downloadThreads, organizeByPlatformEnabled, splitChaptersEnabled, chaptersPerFolder, filenamePrefixFormat, taskHistoryMaxKeep, taskHistoryMaxAgeDays, taskDetailRetentionDays, taskFailureChapterLimit, taskHistoryMaxMB, backgroundEventsMaxKeep})}><BusyIcon busy={busy.settings} icon="i-check" />保存设置</button>
         </div>
       </div>
       <div className="glass glass-pad settings-card">

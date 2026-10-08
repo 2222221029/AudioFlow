@@ -13,16 +13,6 @@ export default function PlatformLogo({value, name, className = 'platform-logo'})
   );
 }
 
-export function PlatformName({value, name}) {
-  const label = name || value || '';
-  return (
-    <span className="platform-name">
-      <PlatformLogo value={value} name={label} />
-      <span>{label}</span>
-    </span>
-  );
-}
-
 export function PlatformTag({value, name}) {
   const label = name || value || '?';
   return (

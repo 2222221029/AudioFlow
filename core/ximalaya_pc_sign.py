@@ -66,7 +66,7 @@ import threading
 import time
 import uuid
 import zlib
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 #: 模块加载时快照的实时时钟。签名/上报链路一律用它而不是 ``time.time``：
 #: 测试套件会用 ``mock.patch("xxx.time.time")`` 替换**全局** time 模块的属性，
@@ -278,7 +278,7 @@ def decode_session_id(session_id: str) -> Dict[str, object]:
     if not value.endswith(SESSION_SUFFIX_2):
         raise XmSignError(
             f"只支持解析本模块生成的 {SESSION_SUFFIX_2} 形态；"
-            f"服务端下发的 _1 使用另一套算法"
+            "服务端下发的 _1 使用另一套算法"
         )
     core = value[: -len(SESSION_SUFFIX_2)]
     padded = core + "=" * (-len(core) % 4)

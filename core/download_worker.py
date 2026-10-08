@@ -409,7 +409,7 @@ class DownloadWorker(QThread):
                 max_workers = max(1, min(hard_max, chosen, total_chapters))
                 print(f"🍅 番茄畅听下载并发: {max_workers}（{src}；"
                       f"{'标准档 ffmpeg 解密，上限 4' if standard_quality else '高码率档，上限 16'}，"
-                      f"可用 FANQIE_DOWNLOAD_THREADS 覆盖）")
+                      "可用 FANQIE_DOWNLOAD_THREADS 覆盖）")
             if self.platform in ('番茄听书', '七猫听书'):
                 print(f"📖 {self.platform} 并发下载，线程数: {max_workers}（与设置一致）")
             max_workers = max(1, min(64, max_workers, total_chapters))
@@ -427,7 +427,7 @@ class DownloadWorker(QThread):
             self.task_info_updated.emit(self.task_id, task_info)
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                print(f"🚀 开始下载...")
+                print("🚀 开始下载...")
                 futures = {}
                 chapter_iter = iter(enumerate(self.chapters, 1))
 
@@ -445,11 +445,11 @@ class DownloadWorker(QThread):
                     futures[future] = (i, chapter)
                     return True
 
-                print(f"📝 正在准备下载任务...")
+                print("📝 正在准备下载任务...")
                 for _ in range(max_workers):
                     if not submit_next():
                         break
-                print(f"✅ 首批任务准备完成，开始下载...")
+                print("✅ 首批任务准备完成，开始下载...")
 
                 completed_count = 0
                 last_update_time = 0
@@ -522,7 +522,7 @@ class DownloadWorker(QThread):
                         break
 
             if self._is_stopped:
-                print(f"⏹️ 下载任务已停止")
+                print("⏹️ 下载任务已停止")
                 self._write_download_report(state="stopped")
                 self.download_completed.emit(
                     self.task_id,
@@ -991,7 +991,7 @@ class DownloadWorker(QThread):
                     chapter_id, self.voice_config or '无损真人录制', self.album_id
                 )
                 if not fanqie_audio_info or not fanqie_audio_info.get('url'):
-                    print(f"❌ 无法获取番茄音频链接")
+                    print("❌ 无法获取番茄音频链接")
                     chapter['_error'] = '无法获取音频链接'
                     return False
                 # 高码率档是未加密 MP3，但 URL 里不含 .mp3、CDN 的 Content-Type 也乱报，
@@ -1083,9 +1083,9 @@ class DownloadWorker(QThread):
                     self._dbg(f"✅ 文件已存在，跳过下载 ({size_mb:.1f}MB)")
                     return True
                 else:
-                    self._dbg(f"🔄 文件损坏，重新下载")
+                    self._dbg("🔄 文件损坏，重新下载")
             else:
-                self._dbg(f"📥 开始下载文件")
+                self._dbg("📥 开始下载文件")
 
             # ---- 番茄听书 / 七猫听书 直接走各自 download_chapter ----
             if self.platform == '番茄听书':
@@ -1145,22 +1145,22 @@ class DownloadWorker(QThread):
                     if audio_url:
                         self._dbg(f"☁️ 云听FM音频URL: {audio_url[:100]}...")
                     else:
-                        print(f"❌ 云听FM章节数据中没有音频URL")
+                        print("❌ 云听FM章节数据中没有音频URL")
                         print(f"   章节数据字段: {list(chapter.keys())}")
                 elif self.platform == '起点听书':
-                    self._dbg(f"📖 获取起点听书音频URL...")
+                    self._dbg("📖 获取起点听书音频URL...")
                     audio_url_dict = download_manager.get_qidian_audio_url(self.album_id, chapter_id)
                     if audio_url_dict and 'default' in audio_url_dict:
                         audio_url = audio_url_dict['default'].get('url', '')
                     else:
                         audio_url = None
                 elif self.platform == '蜻蜓FM':
-                    self._dbg(f"🎧 获取蜻蜓FM音频URL...")
+                    self._dbg("🎧 获取蜻蜓FM音频URL...")
                     audio_url = download_manager.get_audio_url(self.album_id, chapter_id)
                     if audio_url:
                         self._dbg(f"🎧 蜻蜓FM音频URL: {audio_url[:100]}...")
                     else:
-                        print(f"❌ 蜻蜓FM音频URL获取失败")
+                        print("❌ 蜻蜓FM音频URL获取失败")
                 elif self.platform == '酷我听书':
                     kuwo_quality = (
                         download_manager.normalize_download_quality(self.quality, self.voice_config)
@@ -1188,9 +1188,9 @@ class DownloadWorker(QThread):
                             chapter['_error'] = error[:200]
                         if error_type:
                             chapter['_error_type'] = error_type
-                        print(f"❌ 酷我听书下载信息获取失败")
+                        print("❌ 酷我听书下载信息获取失败")
                 elif self.platform == '网易云听书':
-                    self._dbg(f"🎧 获取网易云听书音频URL...")
+                    self._dbg("🎧 获取网易云听书音频URL...")
                     download_info = download_manager.get_download_info(chapter_id, 'exhigh')
                     if download_info and download_info.get('url'):
                         audio_url = download_info['url']
@@ -1202,7 +1202,7 @@ class DownloadWorker(QThread):
                         self._dbg(f"🎧 网易云听书音频URL: {audio_url[:100]}...")
                     else:
                         audio_url = None
-                        print(f"❌ 网易云听书下载信息获取失败")
+                        print("❌ 网易云听书下载信息获取失败")
                 elif self.platform == '荔枝FM':
                     audio_url = (
                         chapter.get('audio_url')
@@ -1220,7 +1220,7 @@ class DownloadWorker(QThread):
                     chapter['_error'] = f'不支持的平台: {self.platform}'
                     return False
             except TimeoutError:
-                print(f"❌ 获取音频链接超时")
+                print("❌ 获取音频链接超时")
                 chapter['_error'] = '获取音频链接超时'
                 return False
             except Exception as e:
@@ -1238,7 +1238,7 @@ class DownloadWorker(QThread):
                 return False
 
             if not audio_url:
-                print(f"❌ 无法获取音频链接（URL为空）")
+                print("❌ 无法获取音频链接（URL为空）")
                 chapter['_error'] = '无法获取音频链接（URL为空）'
                 return False
 
@@ -1300,7 +1300,7 @@ class DownloadWorker(QThread):
                         if error_type:
                             chapter['_error_type'] = error_type
                 elif self.platform == '番茄畅听':
-                    self._dbg(f"🍅 番茄畅听下载（CENC管线优先）...")
+                    self._dbg("🍅 番茄畅听下载（CENC管线优先）...")
                     voice_for_download = self.voice_config or '无损真人录制'
                     changting_chapter_id = str(chapter_id).replace("chapter-", "", 1)
                     if hasattr(download_manager, 'download_changting_chapter'):
@@ -1319,7 +1319,7 @@ class DownloadWorker(QThread):
                         if final_path and os.path.exists(final_path):
                             file_path = final_path
                     if not success:
-                        self._dbg(f"🔄 CENC管线失败，回退普通下载...")
+                        self._dbg("🔄 CENC管线失败，回退普通下载...")
                         success = download_manager.download_audio(
                             audio_url, file_path,
                             progress_callback=self._make_progress_callback(chapter_index),
@@ -1332,7 +1332,7 @@ class DownloadWorker(QThread):
                         progress_callback=self._make_progress_callback(chapter_index),
                     )
                 elif self.platform == '云听FM':
-                    self._dbg(f"☁️ 下载云听FM音频中...")
+                    self._dbg("☁️ 下载云听FM音频中...")
                     import requests as _requests
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
                     response = _requests.get(audio_url, stream=True, timeout=(10, 90))
@@ -1347,15 +1347,15 @@ class DownloadWorker(QThread):
                                 downloaded_size += len(chunk)
                                 progress_callback(downloaded_size, total_size)
                     success = True
-                    self._dbg(f"✅ 云听FM音频下载成功")
+                    self._dbg("✅ 云听FM音频下载成功")
                 elif self.platform == '起点听书':
-                    self._dbg(f"📖 下载起点听书音频中...")
+                    self._dbg("📖 下载起点听书音频中...")
                     success = download_manager.download_qidian_audio(
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
                     )
                 elif self.platform == '蜻蜓FM':
-                    self._dbg(f"🎧 下载蜻蜓FM音频中...")
+                    self._dbg("🎧 下载蜻蜓FM音频中...")
                     success = download_manager.download_audio(
                         book_id=self.album_id,
                         program_id=chapter_id,
@@ -1364,7 +1364,7 @@ class DownloadWorker(QThread):
                         progress_callback=self._make_progress_callback(chapter_index),
                     )
                 elif self.platform == '酷我听书':
-                    self._dbg(f"🎵 下载酷我听书音频中...")
+                    self._dbg("🎵 下载酷我听书音频中...")
                     success = download_manager.download_audio(
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
@@ -1402,13 +1402,13 @@ class DownloadWorker(QThread):
                             if error_type:
                                 chapter['_error_type'] = error_type
                 elif self.platform == '网易云听书':
-                    self._dbg(f"🎧 下载网易云听书音频中...")
+                    self._dbg("🎧 下载网易云听书音频中...")
                     success = download_manager.download_audio(
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
                     )
                 elif self.platform == '荔枝FM':
-                    self._dbg(f"🍥 下载荔枝FM音频中...")
+                    self._dbg("🍥 下载荔枝FM音频中...")
                     success = download_manager.download_audio(
                         audio_url, file_path,
                         progress_callback=self._make_progress_callback(chapter_index),
@@ -1418,7 +1418,7 @@ class DownloadWorker(QThread):
                     chapter['_error'] = f'不支持的平台: {self.platform}'
                     return False
             except TimeoutError:
-                print(f"❌ 下载超时")
+                print("❌ 下载超时")
                 chapter['_error'] = '下载超时'
                 return False
             except ConnectionError as e:

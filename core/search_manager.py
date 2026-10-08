@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import random
 from .ximalaya_manager import XimalayaManager
 from .lrts_manager import LRTSManager
 from .fanqie_manager import FanqieManager
@@ -169,21 +168,21 @@ class SearchManager:
         """搜索起点听书"""
         try:
             if not self.qidian_cookies:
-                print(f"❌ 未登录起点听书，无法搜索")
+                print("❌ 未登录起点听书，无法搜索")
                 return []
             
             system = QidianAudioSystem(self.qidian_cookies)
             items = system.search(keyword, site=3, page_index=1, page_size=max(1, min(int(page_size or 20), 50)))
             
             if items is None:
-                print(f"❌ 起点API返回None，搜索失败")
+                print("❌ 起点API返回None，搜索失败")
                 return []
             
             if not items:
-                print(f"⚠️ 起点搜索: 未找到相关结果")
-                print(f"   建议: 1. 确保已正确登录")
-                print(f"         2. 尝试其他关键词")
-                print(f"         3. 检查网络连接")
+                print("⚠️ 起点搜索: 未找到相关结果")
+                print("   建议: 1. 确保已正确登录")
+                print("         2. 尝试其他关键词")
+                print("         3. 检查网络连接")
                 print(f"   Cookie信息: {len(self.qidian_cookies)} 个字段")
                 return []
             
@@ -322,7 +321,7 @@ class SearchManager:
                         break
                 
                 if not has_next:
-                    print(f"   ✅ 已到达最后一页")
+                    print("   ✅ 已到达最后一页")
                     break
                 page += 1
             
@@ -371,7 +370,7 @@ class SearchManager:
             detail = system.get_audio_detail(album_id)
             
             if not detail:
-                print(f"⚠️ 无法获取起点有声书详情（API 返回无数据）")
+                print("⚠️ 无法获取起点有声书详情（API 返回无数据）")
                 return None
             
             # 获取 CoverUrl 并补全（如果不完整）
@@ -423,7 +422,7 @@ class SearchManager:
             return {'default': {'url': url}} if url else {}
         elif platform == '起点听书':
             # 起点需要album_id和acid
-            print(f"🔧 get_audio_urls 路由到起点听书:")
+            print("🔧 get_audio_urls 路由到起点听书:")
             print(f"   book_id={book_id}, track_id={track_id}")
             return self.get_qidian_audio_url(book_id, track_id)
         else:
@@ -456,12 +455,12 @@ class SearchManager:
                 print(f"❌ 缺少必要参数: album_id={album_id}, acid={acid}")
                 return {}
             
-            print(f"🔍 直接调用起点API获取音频:")
+            print("🔍 直接调用起点API获取音频:")
             print(f"   album_id(adid): {album_id}")
             print(f"   acid: {acid}")
             
             # 调试：检查cookies中的关键字段
-            print(f"🔑 Cookies字段检查:")
+            print("🔑 Cookies字段检查:")
             print(f"   ywguid: {'✅ 存在' if 'ywguid' in self.qidian_cookies else '❌ 缺失'}")
             print(f"   ywkey: {'✅ 存在' if 'ywkey' in self.qidian_cookies else '❌ 缺失'}")
             print(f"   ywOpenId: {'✅ 存在' if 'ywOpenId' in self.qidian_cookies else '❌ 缺失'}")
@@ -472,7 +471,7 @@ class SearchManager:
             url = f"{base_url}/api/audio/play"
             params = {'adid': album_id, 'acid': acid, '_csrfToken': ''}
             
-            print(f"📡 API请求（使用起点API headers）:")
+            print("📡 API请求（使用起点API headers）:")
             print(f"   URL: {url}")
             print(f"   参数: {params}")
             print(f"   YwGuid: {self.qidian_headers.get('YwGuid', 'N/A')[:20]}...")
@@ -497,7 +496,7 @@ class SearchManager:
                     print(f"✅ 成功获取音频URL: {audio_url[:100]}...")
                     return {'default': {'url': audio_url}}
                 else:
-                    print(f"⚠️ 响应中没有AudioUrl字段")
+                    print("⚠️ 响应中没有AudioUrl字段")
                     return {}
             else:
                 print(f"❌ API返回错误: Result={data.get('Result')}, Message={data.get('Message')}")
@@ -531,7 +530,7 @@ class SearchManager:
                 print("❌ 缺少URL或保存路径")
                 return False
             
-            print(f"📥 开始下载起点音频...")
+            print("📥 开始下载起点音频...")
             print(f"   URL: {url[:80]}...")
             print(f"   保存位置: {save_path}")
             
@@ -619,14 +618,14 @@ class SearchManager:
         try:
             if not self.qidian_cookies:
                 print(f"⚠️ 警告：qidian_cookies为空！当前cookies: {self.qidian_cookies}")
-                print(f"⚠️ 尝试从cookie_manager重新加载...")
+                print("⚠️ 尝试从cookie_manager重新加载...")
                 if self.cookie_manager:
                     qidian_cookie = self.cookie_manager.get_cookie('qidian')
                     if qidian_cookie:
-                        print(f"✅ 从cookie_manager重新加载成功")
+                        print("✅ 从cookie_manager重新加载成功")
                         self.set_qidian_cookie(qidian_cookie)
                     else:
-                        print(f"❌ cookie_manager中没有qidian cookies")
+                        print("❌ cookie_manager中没有qidian cookies")
                         return [], {}
             
             url = "https://wxapp.qidian.com/api/bookShelf/list"
@@ -648,7 +647,7 @@ class SearchManager:
                 'Sec-Fetch-Site': 'same-site',
             }
             
-            print(f"📡 发送API请求:")
+            print("📡 发送API请求:")
             print(f"   URL: {url}")
             print(f"   Params: {params}")
             print(f"   Cookies: {list(self.qidian_cookies.keys()) if self.qidian_cookies else '空'}")
@@ -679,7 +678,7 @@ class SearchManager:
                 page_info = data.get('data', {}).get('pageInfo', {})
                 
                 print(f"📚 原始书籍数据: 总共 {len(books)} 本")
-                print(f"🔍 筛选有声书（bookType == 2）:")
+                print("🔍 筛选有声书（bookType == 2）:")
                 
                 # 🔧 关键：只提取有声书（bookType == 2），过滤掉文字小说（bookType == 1）
                 audio_books = []
@@ -759,7 +758,7 @@ class SearchManager:
         print("🔍 起点听书诊断信息")
         print("="*60)
         
-        print(f"\n1️⃣ Cookies状态:")
+        print("\n1️⃣ Cookies状态:")
         print(f"   qidian_cookies类型: {type(self.qidian_cookies)}")
         print(f"   qidian_cookies为空: {not self.qidian_cookies}")
         if self.qidian_cookies:
@@ -769,23 +768,23 @@ class SearchManager:
             print(f"   ywkey: {self.qidian_cookies.get('ywkey', 'N/A')[:30] if self.qidian_cookies.get('ywkey') else 'N/A'}")
             print(f"   ywOpenId: {self.qidian_cookies.get('ywOpenId', 'N/A')[:30] if self.qidian_cookies.get('ywOpenId') else 'N/A'}")
         
-        print(f"\n2️⃣ Session状态:")
+        print("\n2️⃣ Session状态:")
         print(f"   qidian_session: {self.qidian_session}")
         print(f"   qidian_session.cookies: {dict(self.qidian_session.cookies)}")
         
-        print(f"\n3️⃣ Headers状态:")
+        print("\n3️⃣ Headers状态:")
         print(f"   qidian_headers字段数: {len(self.qidian_headers)}")
         if self.qidian_headers:
             print(f"   qidian_headers: {list(self.qidian_headers.keys())}")
         
-        print(f"\n4️⃣ Cookie Manager状态:")
+        print("\n4️⃣ Cookie Manager状态:")
         if self.cookie_manager:
-            print(f"   cookie_manager存在: ✅")
+            print("   cookie_manager存在: ✅")
             qidian_cookie = self.cookie_manager.get_cookie('qidian')
             print(f"   从cookie_manager获取的cookie类型: {type(qidian_cookie)}")
             if isinstance(qidian_cookie, dict):
                 print(f"   从cookie_manager获取的cookie字段: {list(qidian_cookie.keys())}")
         else:
-            print(f"   cookie_manager存在: ❌")
+            print("   cookie_manager存在: ❌")
         
         print("\n" + "="*60 + "\n")

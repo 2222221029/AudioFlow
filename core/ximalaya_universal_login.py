@@ -171,11 +171,11 @@ def build_mobile_cookie(token: str, device_uuid: str,
     return (
         f"1&_device=android&{device_uuid}&{app_version}; "
         f"1&_token={tok}; "
-        f"channel=and-d12; "
-        f"impl=com.ximalaya.ting.android; "
+        "channel=and-d12; "
+        "impl=com.ximalaya.ting.android; "
         f"osversion={os_version}; "
         f"device_model={device_model}; "
-        f"url_verify_mode=1"
+        "url_verify_mode=1"
     )
 
 

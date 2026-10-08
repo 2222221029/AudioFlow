@@ -166,7 +166,7 @@ def describe_downgrade(quality: Any, source: Any) -> str:
     return (
         f"实际交付档位低于所选：所选「{str(quality).strip()}」，"
         f"实际为「{source_label(source)}」。"
-        f"平台可能对该章节限制了更高档位（付费/版权/限流），已自动使用可用档位。"
+        "平台可能对该章节限制了更高档位（付费/版权/限流），已自动使用可用档位。"
     )
 
 

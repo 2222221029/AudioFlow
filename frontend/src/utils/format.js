@@ -1,4 +1,4 @@
-export const TASK_STATUS_TEXT = {
+const TASK_STATUS_TEXT = {
   queued: '排队中',
   running: '下载中',
   paused: '已暂停',
@@ -18,7 +18,7 @@ export function taskStatusText(status) {
   return TASK_STATUS_TEXT[status] || status || '未知';
 }
 
-export const CHAPTER_STATUS_TEXT = {
+const CHAPTER_STATUS_TEXT = {
   success: '成功',
   failed: '失败',
   downloading: '下载中',

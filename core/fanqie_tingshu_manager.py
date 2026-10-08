@@ -15,7 +15,7 @@ import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .app_paths import app_root
 

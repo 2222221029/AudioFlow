@@ -8,14 +8,12 @@
 """
 
 import requests
-import json
 import time
-import os
 import hmac
 import hashlib
 import math
 import concurrent.futures
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from core.qt_compat import QObject, pyqtSignal, QTimer
 
 
@@ -138,7 +136,7 @@ class QtfmManager(QObject):
             # 第一步：获取第一页，确定总数
             first_result = self._search_single_page(keyword, 1)
             if not first_result:
-                print(f"❌ 第一页搜索无结果")
+                print("❌ 第一页搜索无结果")
                 return []
             
             all_results = list(first_result.get('results', []))
@@ -147,7 +145,7 @@ class QtfmManager(QObject):
             print(f"📊 搜索结果: 总共 {total_found} 个，第一页获取 {len(all_results)} 个")
             
             if not all_results:
-                print(f"❌ 第一页无有效结果")
+                print("❌ 第一页无有效结果")
                 return []
             
             # 计算需要的总页数 (每页约15个结果)
@@ -561,7 +559,7 @@ class QtfmManager(QObject):
                         self.cookie_str = f"access_token={access_token}; qingting_id={qingting_id}"
                         self.session.headers["Cookie"] = self.cookie_str
                         
-                        print(f"✅ 扫码登录成功！")
+                        print("✅ 扫码登录成功！")
                         self.login_check_timer.stop()
                         self._current_code_id = ''
                         

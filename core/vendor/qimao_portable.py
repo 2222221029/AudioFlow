@@ -620,8 +620,8 @@ class QimaoClient:
         if CDN_TTS_ALI_HOST in host or "getaddrinfo failed" in msg or "11001" in msg:
             return (
                 f"CDN 域名无法解析：{host}。"
-                f"voice_id=2/3（type=2）依赖该域名；可改用 --voice-id 4~10（如 10=多角色），"
-                f"或开启能解析此域名的 VPN 后再试。"
+                "voice_id=2/3（type=2）依赖该域名；可改用 --voice-id 4~10（如 10=多角色），"
+                "或开启能解析此域名的 VPN 后再试。"
             )
         if "UNEXPECTED_EOF_WHILE_READING" in msg or "SSL" in msg.upper():
             return f"CDN TLS 握手失败（{host}），请关闭 VPN/系统代理后重试。"
@@ -1584,7 +1584,7 @@ def flow_book(c: QimaoClient, out_dir: Path) -> None:
         return
     book_id = str(item.get("id") or item.get("book_id"))
     title = item.get("title") or kw
-    print(f"\n加载章节目录…")
+    print("\n加载章节目录…")
     cl = c.book_chapter_list(book_id)
     chapters = c.iter_chapters(cl)
     print(f"《{title}》共 {len(chapters)} 章（正文目录）")
@@ -1680,7 +1680,7 @@ def flow_listen(c: QimaoClient, out_dir: Path) -> None:
         return
     album_id = str(item["album_id"])
     title = item.get("title") or kw
-    print(f"\n加载专辑目录…")
+    print("\n加载专辑目录…")
     cl = c.album_chapter_list(album_id)
     chapters = cl.get("chapter_list") or []
     print(f"《{title}》共 {len(chapters)} 集")
@@ -1708,7 +1708,7 @@ def flow_playlet(c: QimaoClient, out_dir: Path) -> None:
         return
     pid = str(item["id"])
     title = item.get("title") or kw
-    print(f"\n加载分集列表…")
+    print("\n加载分集列表…")
     episodes = c.playlet_episodes(pid)
     print(f"《{title}》共 {len(episodes)} 集")
     chapters = [{"id": i + 1, "title": ep.get("title") or f"第{i + 1}集"} for i, ep in enumerate(episodes)]

@@ -705,7 +705,7 @@ class EnhancedSearchManager:
                         results.append(album_info)
                         print(f"✅ 喜马拉雅找到专辑: {album_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 喜马拉雅ID搜索无结果")
+                        print("❌ 喜马拉雅ID搜索无结果")
                 except Exception as e:
                     print(f"❌ 喜马拉雅ID搜索失败: {e}")
                     import traceback
@@ -719,7 +719,7 @@ class EnhancedSearchManager:
                         results.append(book_info)
                         print(f"✅ 懒人听书找到书籍: {book_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 懒人听书ID搜索无结果")
+                        print("❌ 懒人听书ID搜索无结果")
                 except Exception as e:
                     print(f"❌ 懒人听书ID搜索失败: {e}")
                     import traceback
@@ -733,7 +733,7 @@ class EnhancedSearchManager:
                         results.append(book_info)
                         print(f"✅ 番茄畅听找到书籍: {book_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 番茄畅听ID搜索无结果")
+                        print("❌ 番茄畅听ID搜索无结果")
                 except Exception as e:
                     print(f"❌ 番茄畅听ID搜索失败: {e}")
                     import traceback
@@ -748,7 +748,7 @@ class EnhancedSearchManager:
                         results.append(book_info)
                         print(f"✅ 番茄听书找到书籍: {book_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 番茄听书ID搜索无结果")
+                        print("❌ 番茄听书ID搜索无结果")
                 except Exception as e:
                     print(f"❌ 番茄听书ID搜索失败: {e}")
                     import traceback
@@ -763,7 +763,7 @@ class EnhancedSearchManager:
                         results.append(book_info)
                         print(f"✅ 七猫听书找到书籍: {book_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 七猫听书ID搜索无结果")
+                        print("❌ 七猫听书ID搜索无结果")
                 except Exception as e:
                     print(f"❌ 七猫听书ID搜索失败: {e}")
                     import traceback
@@ -777,7 +777,7 @@ class EnhancedSearchManager:
                         results.append(book_info)
                         print(f"✅ 酷我听书找到书籍: {book_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 酷我听书ID搜索无结果")
+                        print("❌ 酷我听书ID搜索无结果")
                 except Exception as e:
                     print(f"❌ 酷我听书ID搜索失败: {e}")
                     import traceback
@@ -791,7 +791,7 @@ class EnhancedSearchManager:
                         results.append(book_info)
                         print(f"✅ 蜻蜓FM找到书籍: {book_info.get('title', '未知')}")
                     else:
-                        print(f"❌ 蜻蜓FMID搜索无结果")
+                        print("❌ 蜻蜓FMID搜索无结果")
                 except Exception as e:
                     print(f"❌ 蜻蜓FMID搜索失败: {e}")
                     import traceback
@@ -870,7 +870,7 @@ class EnhancedSearchManager:
                 album_info['platform'] = '喜马拉雅'
                 return album_info
             else:
-                print(f"❌ 喜马拉雅专辑详情获取失败")
+                print("❌ 喜马拉雅专辑详情获取失败")
                 return None
             
         except Exception as e:
@@ -891,7 +891,7 @@ class EnhancedSearchManager:
                     self.lrts_manager.set_cookie(lrts_cookie)
                     print(f"🍪 懒人听书Cookie已设置: {len(lrts_cookie)} 字符")
                 else:
-                    print(f"⚠️ 未找到懒人听书Cookie，API可能无法获取书籍详情")
+                    print("⚠️ 未找到懒人听书Cookie，API可能无法获取书籍详情")
             
             # 懒人听书直接调用详情API，不需要搜索
             print(f"🔍 直接调用懒人听书书籍详情API: {book_id}")
@@ -901,7 +901,7 @@ class EnhancedSearchManager:
                 print(f"✅ 懒人听书书籍详情获取成功: {book_info.get('title', '未知')}")
                 return book_info
             else:
-                print(f"❌ 懒人听书书籍详情获取失败")
+                print("❌ 懒人听书书籍详情获取失败")
                 return None
             
         except Exception as e:
@@ -923,7 +923,7 @@ class EnhancedSearchManager:
                 print(f"✅ 番茄畅听书籍详情获取成功: {book_info.get('title', '未知')}")
                 return book_info
             else:
-                print(f"❌ 番茄畅听书籍详情获取失败")
+                print("❌ 番茄畅听书籍详情获取失败")
                 return None
             
         except Exception as e:
@@ -945,7 +945,7 @@ class EnhancedSearchManager:
                 print(f"✅ 蜻蜓FM书籍详情获取成功: {book_info.get('title', '未知')}")
                 return book_info
             else:
-                print(f"❌ 蜻蜓FM书籍详情获取失败")
+                print("❌ 蜻蜓FM书籍详情获取失败")
                 return None
             
         except Exception as e:
@@ -967,7 +967,7 @@ class EnhancedSearchManager:
                 print(f"✅ 酷我听书书籍详情获取成功: {book_info.get('title', '未知')}")
                 return book_info
             else:
-                print(f"❌ 酷我听书书籍详情获取失败")
+                print("❌ 酷我听书书籍详情获取失败")
                 return None
             
         except Exception as e:
@@ -1231,7 +1231,7 @@ class EnhancedSearchManager:
                         page += 1
                         # 防止无限循环
                         if page > 1000:  # 最多1000页，支持最多100000集
-                            print(f"⚠️ 达到最大页数限制，停止获取")
+                            print("⚠️ 达到最大页数限制，停止获取")
                             break
                         
                         # 添加短暂延迟避免请求过于频繁
@@ -1240,16 +1240,16 @@ class EnhancedSearchManager:
                     
                     chapters = all_chapters
                 elif not chapters:
-                    print(f"⚠️ 蜻蜓FM获取章节失败，尝试使用version参数")
+                    print("⚠️ 蜻蜓FM获取章节失败，尝试使用version参数")
                     # 如果失败，尝试获取version后再获取章节
                     if book_detail:
                         version = book_detail.get('version')
                         if version:
                             chapters = self.qtfm_manager.get_chapters(album_id, version=version, page=1, page_size=10000)
                             if not chapters:
-                                print(f"❌ 使用version参数仍然失败")
+                                print("❌ 使用version参数仍然失败")
                     else:
-                        print(f"❌ 无法获取书籍详情，章节获取失败")
+                        print("❌ 无法获取书籍详情，章节获取失败")
             elif platform in ['云听FM', 'yuntu']:
                 # 云听FM尝试获取所有章节
                 # 先尝试一次性获取大量章节
@@ -1367,21 +1367,21 @@ class EnhancedSearchManager:
             elif platform in ['云听FM', 'yuntu']:
                 # 云听FM的音频URL需要从章节数据中获取
                 # 这里返回空，实际URL在播放时从章节数据的mediaUrl字段获取
-                print(f"☁️ 云听FM音频URL将从章节数据中获取")
+                print("☁️ 云听FM音频URL将从章节数据中获取")
                 return {'default': ''}
             elif platform in ['起点听书', 'qidian']:
                 # 🔧 起点听书音频URL获取
-                print(f"📖 EnhancedSearchManager.get_audio_urls 路由到起点听书:")
+                print("📖 EnhancedSearchManager.get_audio_urls 路由到起点听书:")
                 print(f"   book_id={book_id}, track_id={track_id}")
                 return self.search_manager.get_qidian_audio_url(book_id, track_id)
             elif platform in ['酷我听书', 'kuwo']:
                 # 酷我听书音频URL获取
-                print(f"🎵 EnhancedSearchManager.get_audio_urls 路由到酷我听书:")
+                print("🎵 EnhancedSearchManager.get_audio_urls 路由到酷我听书:")
                 print(f"   track_id={track_id}")
                 url = self.kuwo_manager.get_audio_url(track_id, self.current_quality or 'standard')
                 return {'default': url or ''}
             elif platform in ['网易云听书', 'netease']:
-                print(f"🎧 EnhancedSearchManager.get_audio_urls 路由到网易云听书:")
+                print("🎧 EnhancedSearchManager.get_audio_urls 路由到网易云听书:")
                 print(f"   program_id={track_id}")
                 url = self.netease_manager.get_audio_url(track_id, 'exhigh')
                 return {'default': url or ''}

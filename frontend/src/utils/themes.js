@@ -13,9 +13,9 @@ export const THEMES = [
   {value: 'paper_ink_night', name: '墨夜书房', mode: 'dark', colors: ['#c4860a', '#96600a', '#d4a44c']},
 ];
 
-export const DEFAULT_THEME = 'midnight_aurora';
+const DEFAULT_THEME = 'midnight_aurora';
 
-export function themeByValue(value) {
+function themeByValue(value) {
   return THEMES.find((theme) => theme.value === value) || THEMES[0];
 }
 

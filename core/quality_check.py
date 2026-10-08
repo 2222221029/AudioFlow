@@ -37,9 +37,9 @@ from __future__ import annotations
 
 import os
 import struct
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
-from core import http_policy, local_index
+from core import local_index
 
 #: 档位文本 → 最低可接受码率（kbps）。
 #: 键既包含各平台实际使用的档位串（`96K`、`无损优先（自动降级）` …），

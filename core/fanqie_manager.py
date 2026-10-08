@@ -10,10 +10,7 @@ import requests
 import time
 import json
 import re
-from urllib.parse import urlparse, parse_qs, unquote
 import hashlib
-import base64
-import datetime
 import binascii
 import struct
 import random
@@ -21,7 +18,7 @@ import contextlib
 import io
 from pathlib import Path
 from collections import Counter
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs, unquote
 from .time_api import get_timestamp_ms_str
 
@@ -236,7 +233,7 @@ class FanqieManager:
                     
                     page_num += 1
                 else:
-                    print(f"❌ 搜索失败，停止获取")
+                    print("❌ 搜索失败，停止获取")
                     break
             
             print(f"✅ 番茄畅听搜索完成，总共找到 {len(all_books)} 本书")
@@ -782,7 +779,7 @@ class FanqieManager:
                     
                     return chapters
             
-            print(f"❌ 获取章节失败")
+            print("❌ 获取章节失败")
             return []
             
         except Exception as e:
@@ -834,7 +831,7 @@ class FanqieManager:
         """获取官方下载信息：reading.snssdk.com audio/playinfo + play dict。"""
         try:
             print(f"\n{'='*60}")
-            print(f"📡 番茄官方API - 获取音频播放信息")
+            print("📡 番茄官方API - 获取音频播放信息")
             print(f"   章节ID: {chapter_id}")
             print(f"   请求音色: {voice_name.get('name') if isinstance(voice_name, dict) else voice_name}")
             normalized_chapter_id = str(chapter_id).replace("chapter-", "", 1)
@@ -936,24 +933,24 @@ class FanqieManager:
                 ai_voice_id = self.get_ai_voice_id_by_tone_id(tone_id)
                 if ai_voice_id:
                     params["ai_voice_id"] = ai_voice_id
-                print(f"🎭 AI音色API参数:")
+                print("🎭 AI音色API参数:")
                 print(f"   音色名称: {voice_name}")
                 print(f"   tone_id: {tone_id}")
-                print(f"   is_real_person: 0")
+                print("   is_real_person: 0")
                 if ai_voice_id:
                     print(f"   ai_voice_id: {ai_voice_id} (从tone_id映射)")
                 else:
-                    print(f"   ai_voice_id: 无 (此tone_id无映射)")
+                    print("   ai_voice_id: 无 (此tone_id无映射)")
             else:
                 # 真人音色
                 params["tone_id"] = "0"
                 params["is_real_person"] = "1"
                 params["real_person_voice"] = "1"
-                print(f"🎭 真人音色API参数:")
+                print("🎭 真人音色API参数:")
                 print(f"   音色名称: {voice_name}")
-                print(f"   tone_id: 0")
-                print(f"   is_real_person: 1")
-                print(f"   real_person_voice: 1")
+                print("   tone_id: 0")
+                print("   is_real_person: 1")
+                print("   real_person_voice: 1")
             
             # APP版本中原始API不使用X-Gorgon签名，使用简单的HTTP请求
             # 与APP版本完全一致的请求头
@@ -967,7 +964,7 @@ class FanqieManager:
             # APP版本中原始API直接使用reading.snssdk.com域名（不使用多域名尝试）
             api_url = "https://reading.snssdk.com/reading/reader/audio/playinfo/"
             
-            print(f"📤 发送原始API请求（与APP版本一致）:")
+            print("📤 发送原始API请求（与APP版本一致）:")
             print(f"   URL: {api_url}")
             print(f"   参数: {params}")
             
@@ -980,7 +977,7 @@ class FanqieManager:
                 return None
             
             if response is None:
-                print(f"❌ API请求失败，无法获取音频URL")
+                print("❌ API请求失败，无法获取音频URL")
                 return None
             
             print(f"📥 收到原始API响应: HTTP {response.status_code}")
@@ -991,8 +988,8 @@ class FanqieManager:
             if response.status_code == 200:
                 # 检查响应是否为空
                 if len(response.content) == 0:
-                    print(f"⚠️ 原始API返回空响应")
-                    print(f"   这可能是因为章节ID无效或需要更多参数")
+                    print("⚠️ 原始API返回空响应")
+                    print("   这可能是因为章节ID无效或需要更多参数")
                     return None
                 
                 # 处理压缩响应并解析JSON
@@ -1016,7 +1013,7 @@ class FanqieManager:
                             response_data = brotli.decompress(response.content)
                             print(f"✅ Brotli解压成功，解压后长度: {len(response_data)} 字节")
                         except ImportError:
-                            print(f"⚠️ 需要brotli库来解压响应")
+                            print("⚠️ 需要brotli库来解压响应")
                             response_data = None
                         except Exception as e2:
                             print(f"⚠️ Brotli解压失败: {e2}")
@@ -1026,20 +1023,20 @@ class FanqieManager:
                     if response_data is None:
                         # 检查Gzip magic number
                         if response.content[:2] == b'\x1f\x8b':
-                            print(f"   检测到Gzip压缩数据，尝试解压...")
+                            print("   检测到Gzip压缩数据，尝试解压...")
                             try:
                                 import gzip
                                 response_data = gzip.decompress(response.content)
-                                print(f"✅ Gzip解压成功")
+                                print("✅ Gzip解压成功")
                             except Exception as e2:
                                 print(f"   Gzip解压失败: {e2}")
                         # 检查Zlib magic number
                         elif response.content[:2] == b'\x78\x9c' or response.content[:2] == b'\x78\x01':
-                            print(f"   检测到Zlib压缩数据，尝试解压...")
+                            print("   检测到Zlib压缩数据，尝试解压...")
                             try:
                                 import zlib
                                 response_data = zlib.decompress(response.content)
-                                print(f"✅ Zlib解压成功")
+                                print("✅ Zlib解压成功")
                             except Exception as e2:
                                 print(f"   Zlib解压失败: {e2}")
                     
@@ -1059,14 +1056,14 @@ class FanqieManager:
                                 data = json.loads(json_str)
                             else:
                                 data = json.loads(response_data)
-                            print(f"✅ 解压后JSON解析成功")
+                            print("✅ 解压后JSON解析成功")
                         except (json.JSONDecodeError, ValueError) as e2:
                             print(f"❌ 解压后JSON解析仍然失败: {e2}")
                             data = None
                     
                     # 如果仍然无法解析，尝试不使用压缩重新请求
                     if data is None:
-                        print(f"🔄 尝试不使用压缩重新请求...")
+                        print("🔄 尝试不使用压缩重新请求...")
                         headers_no_compression = headers.copy()
                         headers_no_compression.pop('Accept-Encoding', None)
                         try:
@@ -1074,7 +1071,7 @@ class FanqieManager:
                             if response2.status_code == 200:
                                 try:
                                     data = response2.json()
-                                    print(f"✅ 不使用压缩的请求成功解析JSON")
+                                    print("✅ 不使用压缩的请求成功解析JSON")
                                 except (json.JSONDecodeError, ValueError) as e2:
                                     print(f"❌ 不使用压缩的请求仍然无法解析JSON: {e2}")
                                     # 输出调试信息
@@ -1092,7 +1089,7 @@ class FanqieManager:
                 
                 # 如果仍然无法解析，返回None
                 if data is None:
-                    print(f"❌ 所有解析尝试都失败，无法获取音频URL")
+                    print("❌ 所有解析尝试都失败，无法获取音频URL")
                     return None
                 
                 # 检查响应格式
@@ -1107,23 +1104,23 @@ class FanqieManager:
                             audio_url = audio_info.get('main_url')
                             is_encrypt = audio_info.get('is_encrypt', True)
                             
-                            print(f"🎵 音频信息:")
+                            print("🎵 音频信息:")
                             print(f"   URL: {audio_url[:80] if audio_url else 'None'}...")
                             print(f"   加密状态: {is_encrypt}")
                             
                             if audio_url:
                                 if not is_encrypt:
-                                    print(f"✅ 获取未加密音频URL成功！")
+                                    print("✅ 获取未加密音频URL成功！")
                                     return audio_url
                                 else:
-                                    print(f"✅ 获取加密音频URL成功（支持播放和下载）！")
+                                    print("✅ 获取加密音频URL成功（支持播放和下载）！")
                                     return audio_url
                             else:
-                                print(f"❌ 未获取到音频URL")
+                                print("❌ 未获取到音频URL")
                         else:
-                            print(f"❌ 原始API返回的音频数据为空")
+                            print("❌ 原始API返回的音频数据为空")
                     else:
-                        print(f"❌ 原始API响应中没有data字段")
+                        print("❌ 原始API响应中没有data字段")
                 else:
                     print(f"❌ 原始API返回错误 (code={data.get('code')})")
                     if 'message' in data:
@@ -1144,7 +1141,7 @@ class FanqieManager:
     def _get_audio_url_new_api(self, chapter_id: str) -> Optional[str]:
         """使用新API获取音频URL"""
         try:
-            print(f"📡 使用新API获取音频URL")
+            print("📡 使用新API获取音频URL")
             print(f"   章节ID: {chapter_id}")
             
             # 新API地址
@@ -1157,7 +1154,7 @@ class FanqieManager:
                 'Connection': 'keep-alive'
             }
             
-            print(f"📤 发送新API请求...")
+            print("📤 发送新API请求...")
             print(f"   URL: {api_url}")
             print(f"   请求头: {headers}")
             
@@ -1176,11 +1173,11 @@ class FanqieManager:
                         # 获取音频URL
                         audio_url = data['data'].get('url')
                         if audio_url:
-                            print(f"✅ 新API获取音频URL成功!")
+                            print("✅ 新API获取音频URL成功!")
                             print(f"   音频URL: {audio_url[:100]}...")
                             return audio_url
                         else:
-                            print(f"❌ 新API响应中没有找到音频URL")
+                            print("❌ 新API响应中没有找到音频URL")
                             print(f"   完整响应: {data}")
                     else:
                         print(f"❌ 新API返回错误 (code={data.get('code')})")
@@ -1204,7 +1201,7 @@ class FanqieManager:
     def _get_audio_url_third_party(self, chapter_id: str) -> Optional[str]:
         """使用第三方API获取音频URL"""
         try:
-            print(f"📡 使用第三方API获取音频URL")
+            print("📡 使用第三方API获取音频URL")
             print(f"   章节ID: {chapter_id}")
             
             # 第三方API地址
@@ -1223,7 +1220,7 @@ class FanqieManager:
                 'Connection': 'keep-alive'
             }
             
-            print(f"📤 发送第三方API请求...")
+            print("📤 发送第三方API请求...")
             print(f"   URL: {api_url}")
             print(f"   参数: {params}")
             print(f"   请求头: {headers}")
@@ -1243,11 +1240,11 @@ class FanqieManager:
                         # 获取音频URL
                         audio_url = data.get('content') or data.get('url') or data.get('audio_url') or data.get('play_url')
                         if audio_url:
-                            print(f"✅ 第三方API获取音频URL成功!")
+                            print("✅ 第三方API获取音频URL成功!")
                             print(f"   音频URL: {audio_url[:100]}...")
                             return audio_url
                         else:
-                            print(f"❌ 第三方API响应中没有找到音频URL")
+                            print("❌ 第三方API响应中没有找到音频URL")
                             print(f"   完整响应: {data}")
                     else:
                         print(f"❌ 第三方API返回错误 (code={data.get('code')})")
@@ -1358,7 +1355,7 @@ class FanqieManager:
         # Reuse it here so each chapter performs one signed API request, not two.
         play = play or self._get_play_dict(normalized_id, voice_name)
         if not play or not (play.get("main_url") or play.get("backup_url")):
-            print(f"⚠️ 番茄畅听: 无 play dict，回退普通下载")
+            print("⚠️ 番茄畅听: 无 play dict，回退普通下载")
             return False
 
         out = Path(output_path)
@@ -1385,7 +1382,7 @@ class FanqieManager:
                 self.last_output_path = str(final_out)
                 print(f"✅ 番茄畅听下载完成: {final_out} ({final_out.stat().st_size // 1024} KB)")
                 return True
-            print(f"❌ 番茄畅听: 文件过小或解密失败")
+            print("❌ 番茄畅听: 文件过小或解密失败")
             if tmp_out.exists():
                 tmp_out.unlink()
             if raw_out.exists():
@@ -1415,7 +1412,7 @@ class FanqieManager:
                 # 不设置Referer，避免触发CDN的referer访问规则
             }
             
-            print(f"🍅 下载番茄音频，使用专用请求头")
+            print("🍅 下载番茄音频，使用专用请求头")
             response = self.session.get(url, headers=headers, stream=True, timeout=30)
             if response.status_code == 200:
                 total_size = int(response.headers.get('Content-Length') or 0)
