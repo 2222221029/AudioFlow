@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {api, login, logout, setAuthRequiredHandler} from '../services/api.js';
+import {PasswordModal} from '../components/Shared.jsx';
 import {chapterId, chapterTitle, coverOf} from '../utils/format.js';
 import {AGGREGATE_SEARCH_PLATFORMS, NO_COOKIE_KEYS, PLATFORM_COOKIE_KEY} from '../utils/platforms.js';
 import {DEFAULT_QUALITY, XMLY_MOBILE_INTERFACE, XMLY_PC_INTERFACE, XMLY_PC_QUALITIES, XMLY_WEB_INTERFACE, XMLY_WEB_LOSSLESS} from '../utils/ximalaya.js';
@@ -111,7 +112,11 @@ const XMLY_DOWNLOAD_QUALITIES = new Set([
 ]);
 
 function ximalayaDownloadQuality(value) {
-  return XMLY_DOWNLOAD_QUALITIES.has(value) ? value : XMLY_MOBILE_INTERFACE;
+  if (XMLY_DOWNLOAD_QUALITIES.has(value)) return value;
+  // 系统默认音质 M4A 96K 与专辑级 M4A 128K 同属 level 2（128/96K），
+  // 避免「选了 96K 却被静默改成自动档」的困惑。
+  if (value === 'M4A 96K') return 'M4A 128K';
+  return XMLY_MOBILE_INTERFACE;
 }
 
 function ximalayaSubscriptionQuality(value) {
@@ -243,6 +248,8 @@ export function useAudioFlowApp() {
   }, []);
 
   const closeModal = useCallback(() => setModal(null), []);
+  // changePassword 定义在文件后部，此处经 ref 间接引用，规避 TDZ 顺序问题
+  const changePasswordRef = useRef(null);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -282,17 +289,28 @@ export function useAudioFlowApp() {
     setLoginLoading(true);
     setLoginError('');
     try {
-      await login(username, password);
+      const data = await login(username, password);
       setLoginVisible(false);
       const resolve = loginResolveRef.current;
       loginResolveRef.current = null;
       if (resolve) resolve(true);
+      // 首次部署使用默认口令时，后端会限制其余功能；此处直接引导改密
+      if (data?.user?.must_change_password && changePasswordRef.current) {
+        setModal({
+          className: 'modal-narrow',
+          content: <PasswordModal
+            onSubmit={changePasswordRef.current}
+            onClose={closeModal}
+            notice="当前仍在使用系统默认口令。为安全起见，请先设置自己的登录密码后再继续。"
+          />,
+        });
+      }
     } catch (error) {
       setLoginError(error.message || '登录失败');
     } finally {
       setLoginLoading(false);
     }
-  }, []);
+  }, [closeModal]);
 
   // 下载统计改由后端 summary 提供（分页后前端只有当前页，不能再靠全量 filter 计算）
 
@@ -410,8 +428,9 @@ export function useAudioFlowApp() {
     setSearchHistory([]);
   }, []);
 
-  const doSearch = useCallback(async () => {
-    const keyword = query.trim();
+  const doSearch = useCallback(async (keywordOverride) => {
+    // 支持显式传关键词（历史记录/分享链接直达），避免依赖 setQuery 的异步时序
+    const keyword = String(keywordOverride ?? query).trim();
     if (!keyword) {
       showToast('请输入关键词', 'err');
       return;
@@ -930,15 +949,19 @@ export function useAudioFlowApp() {
   const saveCookie = useCallback(async (platformKey, cookie) => {
     if (!cookie || !cookie.trim()) {
       showToast('Cookie 不能为空', 'err');
-      return;
+      return false;
     }
-    await runBusy('cookie:' + platformKey, async () => {
-      await api('/api/cookies', {method: 'POST', body: {platform: platformKey, cookie: cookie.trim()}});
-      showToast('Cookie 已保存到本地配置', 'ok');
-      loadCookies();
-    }).catch((error) => {
+    try {
+      await runBusy('cookie:' + platformKey, async () => {
+        await api('/api/cookies', {method: 'POST', body: {platform: platformKey, cookie: cookie.trim()}});
+        showToast('Cookie 已保存到本地配置', 'ok');
+        loadCookies();
+      });
+      return true;
+    } catch (error) {
       showToast(error.message, 'err');
-    });
+      return false;
+    }
   }, [loadCookies, runBusy, showToast]);
 
   const generateXimalayaWfp = useCallback(async () => {
@@ -948,7 +971,7 @@ export function useAudioFlowApp() {
         await loadCookies();
         return r;
       });
-      showToast(data?.ready ? '网页指纹已就绪' : '网页指纹生成完成', data?.ready ? 'ok' : 'ok');
+      showToast('网页指纹已就绪', 'ok');
       return data;
     } catch (error) {
       showToast('网页指纹生成失败：' + error.message, 'err');
@@ -1091,6 +1114,7 @@ export function useAudioFlowApp() {
       showToast('修改失败：' + error.message, 'err');
     }
   }, [showToast]);
+  changePasswordRef.current = changePassword;
 
   const logoutAccount = useCallback(async () => {
     await logout();

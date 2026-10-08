@@ -18,15 +18,23 @@ class TestStatusTables:
 
     def test_permission_status_matches_reference_implementation(self):
         # 与 Core/Net.cs:34 的 DeniedHttp 一致，并补上 451（法律原因不可用）。
-        assert {400, 401, 403, 404, 410} <= errors.PERMISSION_STATUS
+        # ⚠ 刻意不含 400：网关/限流中间层的瞬时 400 不应被判死（按瞬时重试），
+        #   401/403/404/410/451 才是明确的权限/不存在语义。
+        assert {401, 403, 404, 410, 451} <= errors.PERMISSION_STATUS
+        assert 400 not in errors.PERMISSION_STATUS
 
     @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 522, 524, 408, 425])
     def test_is_transient_status(self, status):
         assert errors.is_transient_status(status) is True
 
-    @pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 451])
+    @pytest.mark.parametrize("status", [401, 403, 404, 410, 451])
     def test_is_permission_status(self, status):
         assert errors.is_permission_status(status) is True
+
+    def test_http_400_is_not_treated_as_permanent(self):
+        # 偶发 400（网关抖动/中间件限流）不应被判成永久失败，应走重试分支
+        assert errors.is_permission_status(400) is False
+        assert errors.should_retry(errors.classify(errors.DownloadError("boom", status_code=400)), 400) is True
 
     @pytest.mark.parametrize("value", [None, "", "abc", object()])
     def test_status_helpers_tolerate_junk(self, value):

@@ -1,5 +1,5 @@
-const CACHE_NAME = "audioflow-pwa-v14";
-const RUNTIME_CACHE = "audioflow-runtime-v13";
+const CACHE_NAME = "audioflow-pwa-v15";
+const RUNTIME_CACHE = "audioflow-runtime-v14";
 const CORE_ASSETS = [
   "/",
   "/?source=pwa&v=m",
@@ -19,7 +19,9 @@ const CORE_ASSETS = [
   "/pwa/icon-384.png",
   "/pwa/icon-512.png",
   "/pwa/maskable-icon-192.png",
-  "/pwa/maskable-icon-512.png"
+  "/pwa/maskable-icon-512.png",
+  "/assets/branding/logos/audioflow-mark.svg",
+  "/assets/branding/logos/audioflow-logo-light.svg"
 ];
 
 self.addEventListener("install", (event) => {
@@ -29,6 +31,11 @@ self.addEventListener("install", (event) => {
     )
   );
   self.skipWaiting();
+});
+
+// 新版本就绪后由页面发消息触发 skipWaiting，旧版页面随后会自动刷新
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
@@ -59,7 +66,7 @@ self.addEventListener("fetch", (event) => {
           caches.open(RUNTIME_CACHE).then((cache) => cache.put("/", copy));
           return response;
         })
-        .catch(() => caches.match("/") || caches.match("/offline.html"))
+        .catch(async () => (await caches.match("/")) || (await caches.match("/offline.html")))
     );
     return;
   }

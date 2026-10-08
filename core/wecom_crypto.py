@@ -3,6 +3,7 @@
 
 import base64
 import hashlib
+import hmac
 import struct
 import time
 import uuid
@@ -34,7 +35,7 @@ class WeComCrypto:
 
     def verify_signature(self, msg_signature, timestamp, nonce, encrypt):
         expected = self.signature(timestamp, nonce, encrypt)
-        if expected != str(msg_signature or ""):
+        if not hmac.compare_digest(expected, str(msg_signature or "")):
             raise ValueError("企业微信回调签名验证失败")
 
     def decrypt(self, encrypt):

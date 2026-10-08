@@ -9,6 +9,7 @@ import ipaddress
 import re
 import shutil
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -50,6 +51,7 @@ from core.platform_config import (
     ensure_runtime_dirs,
     log_dir,
     project_root,
+    public_base_url,
     pwa_enabled,
 )
 from core.subscription_manager import SubscriptionManager, canonical_subscription_platform, chapter_key
@@ -76,14 +78,16 @@ def handle_500(e):
     """捕获所有未处理异常，返回 JSON 而非 Waitress 错误页。"""
     import traceback
     traceback.print_exc()
-    return jsonify(ok=False, error=str(e) or "服务器内部错误"), 500
+    logging.error("internal error: %s", e)
+    return jsonify(ok=False, error="服务器内部错误，请查看服务日志"), 500
 
 @app.errorhandler(Exception)
 def handle_unhandled(e):
     """兜底异常处理。"""
     import traceback
     traceback.print_exc()
-    return jsonify(ok=False, error=str(e) or "未处理的异常"), 500
+    logging.error("unhandled error: %s", e)
+    return jsonify(ok=False, error="未处理的异常，请查看服务日志"), 500
 ensure_runtime_dirs()
 
 LOG_FILE = log_dir() / "server.log"
@@ -253,11 +257,112 @@ def _is_public_endpoint(path):
     )
 
 
+# 跨站请求伪造（CSRF）加固：JSON 请求内容类型已经天然阻止表单型 CSRF，
+# 这里再做一层 Origin 校验 —— 只要浏览器带上了 Origin 头，就必须与本服务
+# 同源（或 PUBLIC_BASE_URL 配置的反代地址），否则拒绝。无 Origin 的请求
+# （curl / 终端等非浏览器客户端）不受影响。
+def _origin_host_allowed(origin):
+    try:
+        parsed = urlparse(str(origin or "").strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    allowed_hosts = {request.host}
+    public_base = public_base_url()
+    if public_base:
+        try:
+            allowed_hosts.add(urlparse(public_base).netloc)
+        except ValueError:
+            pass
+    return parsed.netloc in allowed_hosts
+
+
+@app.before_request
+def csrf_origin_guard():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    # 企业微信回调由外部服务器直接调用（无浏览器 Origin），天然豁免
+    if request.path.startswith("/api/wecom/callback/"):
+        return None
+    # 纯数据下载类端点（token 门控）不校验 Origin
+    if request.path == "/api/proxy/audio" or request.path.startswith("/api/local-audio/"):
+        return None
+    origin = request.headers.get("Origin") or request.headers.get("Sec-Fetch-Site")
+    if not origin:
+        return None
+    if origin == "same-origin":
+        return None
+    if _origin_host_allowed(origin):
+        return None
+    logging.warning("rejected cross-origin request: %s %s origin=%s", request.method, request.path, origin)
+    return json_error("跨站请求被拒绝", 403)
+
+
 def _session_token():
     header = request.headers.get("Authorization", "")
     if header.lower().startswith("bearer "):
         return header[7:].strip()
     return request.cookies.get(AUTH_COOKIE_NAME, "")
+
+
+# 登录接口的 IP 级节流（在账号级锁定之上再加一层）：
+# 同一来源 IP 在窗口内失败过多则临时拒绝，缓解分布式/账号枚举爆破。
+_LOGIN_IP_LOCK = threading.Lock()
+_LOGIN_IP_STATE = {}  # ip -> [failures(timestamps), lock_until]
+_LOGIN_IP_WINDOW = 600
+_LOGIN_IP_MAX_FAILURES = 8
+_LOGIN_IP_LOCK_SECONDS = 300
+
+
+def _login_client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    return str(request.remote_addr or "unknown")
+
+
+def _login_ip_allowed():
+    ip = _login_client_ip()
+    now = time.time()
+    with _LOGIN_IP_LOCK:
+        state = _LOGIN_IP_STATE.get(ip)
+        if not state:
+            return True
+        if float(state.get("lock_until") or 0) > now:
+            return False
+        recent = [t for t in state.get("failures") or [] if now - t < _LOGIN_IP_WINDOW]
+        state["failures"] = recent
+        return len(recent) < _LOGIN_IP_MAX_FAILURES
+
+
+def _login_ip_record_failure():
+    ip = _login_client_ip()
+    now = time.time()
+    with _LOGIN_IP_LOCK:
+        state = _LOGIN_IP_STATE.setdefault(ip, {"failures": [], "lock_until": 0})
+        recent = [t for t in state.get("failures") or [] if now - t < _LOGIN_IP_WINDOW]
+        recent.append(now)
+        state["failures"] = recent[-64:]
+        state["lock_until"] = 0
+        if len(recent) >= _LOGIN_IP_MAX_FAILURES:
+            state["lock_until"] = now + _LOGIN_IP_LOCK_SECONDS
+        # 裁剪过期条目（原地 pop，避免重绑定把全局变量变成局部变量）
+        if len(_LOGIN_IP_STATE) > 1024:
+            for key, value in list(_LOGIN_IP_STATE.items()):
+                if float(value.get("lock_until") or 0) > now:
+                    continue
+                if any(now - t < _LOGIN_IP_WINDOW for t in value.get("failures") or []):
+                    continue
+                _LOGIN_IP_STATE.pop(key, None)
+
+
+def _login_ip_record_success():
+    ip = _login_client_ip()
+    with _LOGIN_IP_LOCK:
+        _LOGIN_IP_STATE.pop(ip, None)
 
 
 def current_user():
@@ -270,9 +375,31 @@ def guard_api_requests():
         return json_error("请求体过大", 413)
     if _is_public_endpoint(request.path):
         return None
-    if current_user():
-        return None
-    return json_error("未登录或会话已过期", 401)
+    user = current_user()
+    if not user:
+        return json_error("未登录或会话已过期", 401)
+    # 首次部署使用默认口令时，强制先改密再使用其余功能（防弱口令/默认凭据被扫）
+    if user.get("must_change_password") and not request.path.startswith("/api/auth/"):
+        return json_error("请先修改默认密码后再继续使用", 403)
+    return None
+
+
+@app.after_request
+def security_headers(response):
+    """统一安全响应头：防止 MIME 嗅探/点击劫持/混合内容归类问题。"""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()")
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "text/html" in content_type:
+        # 仅限制嵌入，不限制脚本/样式，避免破坏前端内联样式与模块脚本
+        response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'")
+        response.headers.setdefault("Cache-Control", "no-cache")
+    path = str(request.path or "")
+    if path.startswith("/api/") and path not in ("/api/proxy/audio",):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
 def active_download_dir():
@@ -817,6 +944,21 @@ def _scheduler_loop():
                     logging.info("weekly index rebuild: {} files indexed".format(count))
         except Exception:
             pass  # rebuild is best-effort; never break the main loop
+        # 例行清理：试听临时音频文件、扫码会话与 DNS 钉住缓存
+        try:
+            cleanup_local_audio_tokens()
+            qr_manager = None
+            try:
+                from core.qr_login import manager as qr_manager
+            except Exception:
+                qr_manager = None
+            if qr_manager is not None:
+                qr_manager.cleanup(max_age=1800)
+            with _PIN_DNS_LOCK:
+                if _PINNED_IPS:
+                    _PINNED_IPS.clear()
+        except Exception:
+            pass
         _scheduler_event.wait(60)
         _scheduler_event.clear()
 
@@ -1160,9 +1302,13 @@ def api_auth_login():
     password = str(payload.get("password") or "")
     if auth_manager.is_locked(username):
         return json_error(f"登录失败次数过多，请 {auth_manager.lock_remaining(username)} 秒后再试", 429)
+    if not _login_ip_allowed():
+        return json_error("该网络地址尝试过于频繁，请稍后再试", 429)
     token = auth_manager.login(username, password)
     if not token:
+        _login_ip_record_failure()
         return json_error("账号或密码错误", 401)
+    _login_ip_record_success()
     user = auth_manager.user_for_session(token)
     response = json_ok(user=user)
     response.set_cookie(
@@ -3471,6 +3617,120 @@ _PROXY_ALLOWED_SCHEMES = ("http", "https")
 _AUDIO_PROXY_TOKENS = {}
 _AUDIO_PROXY_TOKEN_TTL = 15 * 60
 
+# ── SSRF 加固 ──────────────────────────────────────────────
+# 音频代理本质上是一次「服务端拉取任意 URL」的能力，必须把 DNS 解析钉死在
+# 发起请求的那一刻：先用 getaddrinfo 解析并拒绝内网地址，随后通过自定义
+# urllib3 连接类把 TCP 连接固定到已校验的 IP（仍保留 Host/SNI 为原域名），
+# 避免「校验时公网 IP、发包时内网 IP」的 DNS 重绑定竞态。
+_PIN_DNS_LOCK = threading.Lock()
+_PINNED_IPS = {}  # (host, port) -> validated public IP
+
+
+def _resolve_public_ip(hostname):
+    """Resolve a hostname to its first public IP. No public IP -> empty string."""
+    if not hostname:
+        return ""
+    try:
+        infos = socket.getaddrinfo(str(hostname), None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return ""
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+        ):
+            continue
+        return str(ip)
+    return ""
+
+
+class _PinnedConnectionMixin:
+    """urllib3 connection that connects to a pre-validated (public) IP.
+
+    `self.host` is kept as the original hostname so the HTTP ``Host`` header
+    and TLS SNI stay correct while the TCP connection targets the pinned IP.
+    """
+
+    def _new_conn(self):
+        from urllib3 import connection as _urllib3_connection
+
+        with _PIN_DNS_LOCK:
+            pinned = _PINNED_IPS.get((self.host, self.port))
+        if pinned:
+            try:
+                sock = _urllib3_connection.create_connection(
+                    (pinned, self.port),
+                    self.timeout,
+                    source_address=getattr(self, "source_address", None),
+                    socket_options=getattr(self, "socket_options", None),
+                )
+                sys.audit("http.client.connect", self, self.host, self.port)
+                return sock
+            except socket.gaierror as exc:
+                from urllib3.exceptions import NameResolutionError
+                raise NameResolutionError(self.host, self, exc) from exc
+            except OSError:
+                # Fall back to default resolution if the pinned IP is unreachable
+                # (e.g. upstream only serves one of multiple addresses).
+                pass
+        return super()._new_conn()
+
+
+def _ssrf_hardened_session():
+    """Build a requests.Session whose pools connect via pinned public IPs."""
+    from urllib3.connection import HTTPConnection, HTTPSConnection
+    from urllib3.poolmanager import PoolManager
+    from requests.adapters import HTTPAdapter
+
+    class PinnedHTTPConnection(_PinnedConnectionMixin, HTTPConnection):
+        pass
+
+    class PinnedHTTPSConnection(_PinnedConnectionMixin, HTTPSConnection):
+        pass
+
+    class _PinnedHTTPAdapter(HTTPAdapter):
+        def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+            self.poolmanager = PoolManager(
+                num_pools=connections,
+                maxsize=maxsize,
+                block=block,
+                HTTPConnectionCls=PinnedHTTPConnection,
+                HTTPSConnectionCls=PinnedHTTPSConnection,
+                **pool_kwargs,
+            )
+
+    session = requests.Session()
+    adapter = _PinnedHTTPAdapter(pool_connections=16, pool_maxsize=8)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+_SSRF_AUDIO_SESSION = None
+
+
+def _audio_proxy_session():
+    global _SSRF_AUDIO_SESSION
+    if _SSRF_AUDIO_SESSION is None:
+        _SSRF_AUDIO_SESSION = _ssrf_hardened_session()
+    return _SSRF_AUDIO_SESSION
+
+
+def _pin_host_for_request(scheme, hostname, port):
+    """Validate + resolve + remember a pinned public IP for one upstream request."""
+    ip = _resolve_public_ip(hostname)
+    if not ip:
+        raise ValueError("不允许访问内网或本机地址")
+    with _PIN_DNS_LOCK:
+        if len(_PINNED_IPS) > 512:
+            _PINNED_IPS.clear()
+        _PINNED_IPS[(hostname, port)] = ip
+    return ip
+
 _PLATFORM_AUDIO_HOST_HINTS = {
     "喜马拉雅": ("ximalaya.com", "xmcdn.com", "ximalayaos.com"),
     "懒人听书": ("lrts.me", "lrts1.com", "ting55.com"),
@@ -3497,6 +3757,12 @@ def register_audio_proxy_url(url, platform):
     parsed = urlparse(str(url or "").strip())
     if parsed.scheme not in _PROXY_ALLOWED_SCHEMES or not parsed.netloc:
         return ""
+    if parsed.username or parsed.password:
+        return ""
+    # 注册时即校验平台域名白名单：即使后续以 token 形式被引用，
+    # 也只允许代理该平台的合法 CDN 域名，杜绝任意 URL 代理（SSRF 入口）。
+    if not _is_allowed_audio_host(platform, parsed.hostname or ""):
+        return ""
     _cleanup_audio_proxy_tokens()
     token = uuid.uuid4().hex
     _AUDIO_PROXY_TOKENS[token] = {
@@ -3505,22 +3771,6 @@ def register_audio_proxy_url(url, platform):
         "created_at": time.time(),
     }
     return "/api/proxy/audio?token=" + quote(token, safe="")
-
-
-def _hostname_is_private(hostname):
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return True
-    for info in infos:
-        address = info[4][0]
-        try:
-            ip = ipaddress.ip_address(address)
-        except ValueError:
-            return True
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
-            return True
-    return False
 
 
 def _is_allowed_audio_host(platform, hostname):
@@ -3553,18 +3803,29 @@ def _validate_audio_proxy_target(src, platform, trusted_token=False):
     if parsed.username or parsed.password:
         raise ValueError("音频地址不能包含认证信息")
     hostname = parsed.hostname or ""
-    if _hostname_is_private(hostname):
-        raise ValueError("不允许访问内网或本机地址")
-    if not trusted_token and not _is_allowed_audio_host(platform, hostname):
+    # 所有代理目标（含服务端签发的 token）都必须命中平台白名单，
+    # 避免通过 token 转发到任意域名。
+    if not _is_allowed_audio_host(platform or "", hostname):
         raise ValueError("音频域名不在平台白名单内")
+    # 域名到 IP 的解析只允许命中公网地址。
+    if not _resolve_public_ip(hostname):
+        raise ValueError("不允许访问内网或本机地址")
     return parsed
 
 
 def _request_audio_upstream(method, src, platform, headers, trusted_token):
     current = src
     for _ in range(4):
-        _validate_audio_proxy_target(current, platform, trusted_token=trusted_token)
-        upstream = requests.request(method, current, headers=headers, stream=True, timeout=(10, 60), allow_redirects=False)
+        parsed = _validate_audio_proxy_target(current, platform, trusted_token=trusted_token)
+        hostname = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        # 在发起请求前把 DNS 解析结果钉住：TCP 连接走已校验的公网 IP，
+        # Host/SNI 仍保留原域名，避免 DNS 重绑定（TOCTOU）被打到内网地址。
+        _pin_host_for_request(parsed.scheme, hostname, port)
+        session = _audio_proxy_session()
+        upstream = session.request(
+            method, current, headers=headers, stream=True, timeout=(10, 60), allow_redirects=False,
+        )
         if upstream.status_code not in (301, 302, 303, 307, 308):
             return upstream, current
         location = upstream.headers.get("Location", "")
@@ -4547,10 +4808,9 @@ def _format_bytes(size):
 
 
 def _sanitize_download_folder_name(name):
-    text = str(name or "").strip() or "未知专辑"
-    for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
-        text = text.replace(char, "_")
-    return text[:200] or "未知专辑"
+    # 收敛到 core.naming 的单一实现（含 Windows 保留名 / 尾随点空格 / `..` 加固）
+    from core.naming import sanitize_segment
+    return sanitize_segment(name, max_len=200, fallback="未知专辑")
 
 
 def _album_download_folder(album, options=None):
@@ -4944,6 +5204,9 @@ def api_ximalaya_mobile_send_code():
     phone = str(payload.get("phone") or "").strip()
     if not (phone.isdigit() and len(phone) == 11):
         return json_error("请输入 11 位手机号")
+    allowed, reason = _sms_rate_allowed(phone)
+    if not allowed:
+        return json_error(reason, status=429)
     try:
         result = _ximalaya_bridge_request("/ximalaya/login/sms/send", {"phone": phone})
     except (requests.RequestException, ValueError) as exc:
@@ -5219,6 +5482,39 @@ def api_clear_cookies():
 _LRTS_LOGIN_DEVICE_KEY = "_lrts_login_device_id"
 _LRTS_LOGIN_DEVICE_LOCK = threading.Lock()
 
+# 短信发送限流：防暴力轰炸/接口滥用。
+# 每个手机号：同一窗口最多 _SMS_MAX_PER_PHONE 条；全天累计上限防日配额耗尽。
+_SMS_RATE_LOCK = threading.Lock()
+_SMS_RATE_WINDOW_SECONDS = 300
+_SMS_MAX_PER_PHONE = 5
+_SMS_MAX_PER_PHONE_DAY = 10
+_SMS_PHONE_HITS = {}  # phone -> [timestamp, ...]（仅保留窗口与当日）
+_SMS_DAY_HITS = {}  # phone -> date_str -> count
+
+
+def _sms_rate_allowed(phone):
+    """Return (allowed, reason). 内存限流，服务重启即重置（可接受）。"""
+    from datetime import date
+    phone = str(phone or "").strip()
+    if not phone:
+        return False, "手机号缺失"
+    now = time.time()
+    today = date.today().isoformat()
+    with _SMS_RATE_LOCK:
+        hits = [t for t in _SMS_PHONE_HITS.get(phone, []) if now - t < _SMS_RATE_WINDOW_SECONDS]
+        if len(hits) >= _SMS_MAX_PER_PHONE:
+            _SMS_PHONE_HITS[phone] = hits
+            return False, "发送过于频繁，请稍后再试"
+        day_count = int(_SMS_DAY_HITS.get(phone, {}).get(today, 0))
+        if day_count >= _SMS_MAX_PER_PHONE_DAY:
+            return False, "今日发送次数已达上限，请明天再试"
+        hits.append(now)
+        if len(hits) > 60:
+            hits = hits[-60:]
+        _SMS_PHONE_HITS[phone] = hits
+        _SMS_DAY_HITS.setdefault(phone, {})[today] = day_count + 1
+    return True, ""
+
 
 def _lrts_login_device_id():
     with _LRTS_LOGIN_DEVICE_LOCK:
@@ -5273,6 +5569,9 @@ def api_lrts_send_code():
     randstr = str(payload.get("randstr") or "").strip()
     if not re.fullmatch(r"1\d{10}", phone):
         return json_error("请输入正确的 11 位手机号")
+    allowed, reason = _sms_rate_allowed(phone)
+    if not allowed:
+        return json_error(reason, status=429)
     try:
         data = lrts_send_sms_code(
             phone,
@@ -5383,6 +5682,7 @@ def _cookies_to_string(cookies):
 @app.post("/api/qr/start")
 def api_qr_start():
     from core.qr_login import manager as qr_manager
+    qr_manager.cleanup(max_age=1800)  # 及时回收历史会话（含其中的 Cookie），防内存增长
     payload = request.get_json(silent=True) or {}
     platform = payload.get("platform", "").strip()
     if platform == "lrts":
@@ -5397,10 +5697,12 @@ def api_qr_start():
 @app.get("/api/qr/poll/<sid>")
 def api_qr_poll(sid):
     from core.qr_login import manager as qr_manager
+    qr_manager.cleanup(max_age=1800)
     session = qr_manager.get(sid)
     if not session:
         return json_error("会话不存在或已过期", 404)
     snap = session.snapshot()
+    cookie_saved = False
     if snap["status"] == "success" and snap.get("cookies"):
         cookie_str = _cookies_to_string(snap["cookies"])
         key = _PLATFORM_COOKIE_KEY.get(snap["platform"])
@@ -5411,18 +5713,25 @@ def api_qr_poll(sid):
                 cookie_manager.set_cookie(key, cookie_str)
                 search_manager.set_cookie(key, cookie_str)
                 snap["saved_to"] = str(cookie_manager.config_file)
+                cookie_saved = True
             except Exception as exc:
                 snap["save_error"] = str(exc)
+    # ⚠ 安全：Cookie 只落库、不回显。前端只需要登录状态与保存结果，
+    # 完整 Cookie 一旦经响应返回，拿到 sid 的任何同网段客户端都能偷走账号凭证。
+    if snap.get("cookies"):
+        snap["cookies"] = {"saved": bool(cookie_saved), "count": len(snap["cookies"])}
     return json_ok(session=snap)
 
 
 @app.get("/api/personal/qr/poll/<sid>")
 def api_personal_qr_poll(sid):
     from core.qr_login import manager as qr_manager
+    qr_manager.cleanup(max_age=1800)
     session = qr_manager.get(sid)
     if not session:
         return json_error("会话不存在或已过期", 404)
     snap = session.snapshot()
+    cookie_saved = False
     if snap["status"] == "success" and snap.get("cookies"):
         cookie_str = _cookies_to_string(snap["cookies"])
         key = PERSONAL_QR_COOKIE_KEYS.get(snap["platform"])
@@ -5432,8 +5741,11 @@ def api_personal_qr_poll(sid):
                     cookie_str = merge_ximalaya_credentials(cookie_manager.get_cookie(key), cookie_str)
                 cookie_manager.set_cookie(key, cookie_str)
                 snap["saved_to"] = str(cookie_manager.config_file)
+                cookie_saved = True
             except Exception as exc:
                 snap["save_error"] = str(exc)
+    if snap.get("cookies"):
+        snap["cookies"] = {"saved": bool(cookie_saved), "count": len(snap["cookies"])}
     return json_ok(session=snap)
 
 
@@ -6059,13 +6371,14 @@ def _load_qidian_audio_bookshelf(api, page_size=50, max_pages=100):
 
     for page in range(1, max_pages + 1):
         try:
+            from core.tls_policy import tls_verify
             response = api.qidian_session.get(
                 QIDIAN_BOOKSHELF_URL,
                 params={"page": page, "pageSize": page_size},
                 headers=QIDIAN_BOOKSHELF_HEADERS,
                 cookies=api.qidian_cookies or None,
                 timeout=15,
-                verify=False,
+                verify=tls_verify(),
             )
             response.raise_for_status()
         except requests.RequestException as exc:
@@ -6451,6 +6764,21 @@ def main():
     debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true")
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         start_background_services()
+    # 安全提示：监听非本机地址 + 默认口令/TLS 关闭时提醒（不阻断）
+    try:
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            for user in (auth_manager.data.get("users") or {}).values():
+                if isinstance(user, dict) and user.get("must_change_password"):
+                    logging.warning(
+                        "检测到尚未修改默认口令（auth.json must_change_password=true），"
+                        "且监听地址 %s 非仅本机，请尽快在「系统设置」中修改登录密码", host
+                    )
+                    break
+        from core.tls_policy import tls_verify as _tls_verify
+        if not _tls_verify():
+            logging.warning("TLS 证书校验当前关闭（AUDIOFLOW_TLS_VERIFY=1 可开启）")
+    except Exception:
+        pass
     logging.info("启动服务器: http://%s:%s  debug=%s", host, port, debug)
     try:
         from waitress import serve

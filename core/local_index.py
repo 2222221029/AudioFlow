@@ -121,6 +121,10 @@ def list_audio_files(directory: str, *, ttl: int = DEFAULT_TTL, use_cache: bool 
     if use_cache:
         with _CACHE_LOCK:
             _INDEX_CACHE[key] = (now, list(entries))
+            # 有界缓存：目录长期轮换时防止内存只增不减（TTL 之外再按条数淘汰）
+            if len(_INDEX_CACHE) > 256:
+                for stale_key in list(_INDEX_CACHE)[:-256]:
+                    _INDEX_CACHE.pop(stale_key, None)
     return entries
 
 

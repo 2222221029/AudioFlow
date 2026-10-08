@@ -687,7 +687,15 @@ class DownloadWorker(QThread):
             chapter_index=chapter_index,
             track_id=chapter_id,
         ):
-            return self._download_chapter_with_retry_impl(chapter, chapter_index)
+            # ⚠ 停止贯通：把本线程的取消钩子挂到 download_adapter 的 ContextVar 上，
+            # 这样 manager → session_to_file → chunked 的每一层下载循环都能感知
+            # 停止请求并立即中断在途传输（而非等整个文件下完）。
+            from core import download_adapter as _adapter
+            _adapter.set_cancel_check(lambda: self._is_stopped)
+            try:
+                return self._download_chapter_with_retry_impl(chapter, chapter_index)
+            finally:
+                _adapter.clear_cancel_check()
 
     def _download_chapter_with_retry_impl(self, chapter, chapter_index):
         """带自动重试的章节下载入口（在线程池中执行）。"""
@@ -1064,19 +1072,15 @@ class DownloadWorker(QThread):
                     file_path = existing_output
             # 音质升级（酷我听书追更：先出低码率 MP3、后补无损）必须绕过「文件已存在
             # 就跳过」的分支：同一章节本地已有低码率文件，直接下载会跳过，永远升不了
-            # 无损。这里先删除旧的同序号文件（不同扩展名），再走正常下载路径。
+            # 无损。⚠ 不再「先删旧文件再下载」：万一新文件下载失败，旧文件仍保留，
+            # 不会让用户同时丢掉旧文件和这一集的下载结果。新文件成功后按需清理旧档。
+            # （不同扩展名时是双文件并存；同一扩展名时由各下载器的 .part+原子替换覆盖。）
             upgrade_quality = bool(chapter.get('_upgrade_quality'))
-            if upgrade_quality and os.path.exists(file_path):
-                try:
-                    removed_size = os.path.getsize(file_path)
-                    os.remove(file_path)
-                    self._dbg(
-                        f"🔄 音质升级：删除旧文件 {os.path.basename(file_path)} "
-                        f"({removed_size / 1024 / 1024:.1f}MB) 以下载无损"
-                    )
-                except OSError as exc:
-                    self._dbg(f"⚠️ 音质升级删除旧文件失败: {exc}")
-            if os.path.exists(file_path):
+            stale_upgrade_file = ""
+            if upgrade_quality and os.path.exists(file_path) and os.path.getsize(file_path) > 1024:
+                stale_upgrade_file = file_path
+                self._dbg(f"🔄 音质升级：保留旧文件 {os.path.basename(file_path)}，下载新档位成功后替换")
+            if os.path.exists(file_path) and not upgrade_quality:
                 file_size = os.path.getsize(file_path)
                 if file_size > 1024:
                     size_mb = file_size / (1024 * 1024)
@@ -1335,19 +1339,53 @@ class DownloadWorker(QThread):
                     self._dbg("☁️ 下载云听FM音频中...")
                     import requests as _requests
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                    response = _requests.get(audio_url, stream=True, timeout=(10, 90))
-                    response.raise_for_status()
-                    total_size = int(response.headers.get('Content-Length') or 0)
-                    downloaded_size = 0
-                    progress_callback = self._make_progress_callback(chapter_index)
-                    with open(file_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=262144):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded_size += len(chunk)
-                                progress_callback(downloaded_size, total_size)
-                    success = True
-                    self._dbg("✅ 云听FM音频下载成功")
+                    # .part 临时文件 + 原子替换：中途失败/停止不残留可被误判为
+                    # 「已完成」的半截最终文件；完成后一次性 os.replace。
+                    part_path = file_path + ".part"
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                    response = None
+                    try:
+                        response = _requests.get(audio_url, stream=True, timeout=(10, 90))
+                        response.raise_for_status()
+                        total_size = int(response.headers.get('Content-Length') or 0)
+                        downloaded_size = 0
+                        progress_callback = self._make_progress_callback(chapter_index)
+                        # 进度节流：最多约 5 次/秒，避免 UI 信号风暴
+                        last_progress_report = 0.0
+                        with open(part_path, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=262144):
+                                if self._is_stopped:
+                                    chapter['_error'] = '下载已停止'
+                                    return False
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    now = time.time()
+                                    if now - last_progress_report >= 0.2 or downloaded_size >= total_size:
+                                        last_progress_report = now
+                                        progress_callback(downloaded_size, total_size)
+                        if downloaded_size <= 0:
+                            raise OSError("云听FM音频内容为空")
+                        os.replace(part_path, file_path)
+                        success = True
+                        self._dbg("✅ 云听FM音频下载成功")
+                    except TimeoutError:
+                        chapter['_error'] = '云听FM下载超时'
+                        return False
+                    except Exception as exc:
+                        chapter['_error'] = f'云听FM下载失败: {str(exc)[:120]}'
+                        return False
+                    finally:
+                        if response is not None:
+                            response.close()
+                        try:
+                            if os.path.exists(part_path):
+                                os.remove(part_path)
+                        except OSError:
+                            pass
                 elif self.platform == '起点听书':
                     self._dbg("📖 下载起点听书音频中...")
                     success = download_manager.download_qidian_audio(
@@ -1433,6 +1471,16 @@ class DownloadWorker(QThread):
                 return False
 
             if success:
+                # 音质升级成功后清理被替换的旧档文件（路径一致时下载器内部已覆盖，
+                # 只有扩展名不同的旧文件需要这里补删）
+                if stale_upgrade_file and os.path.abspath(stale_upgrade_file) != os.path.abspath(file_path):
+                    try:
+                        if os.path.exists(stale_upgrade_file):
+                            size_mb = os.path.getsize(stale_upgrade_file) / (1024 * 1024)
+                            os.remove(stale_upgrade_file)
+                            self._dbg(f"🔄 已清理升级前的旧档文件 ({size_mb:.1f}MB)")
+                    except OSError as exc:
+                        self._dbg(f"⚠️ 旧档文件清理失败（不影响本次结果）: {exc}")
                 self._dbg(f"✅ 下载成功: {chapter_title}")
                 return True
             else:

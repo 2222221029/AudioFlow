@@ -67,7 +67,16 @@ function useMediaSession(app) {
 export function MiniPlayer({app, mobile = false}) {
   const {player, setPlayer, audioRef} = app;
   useMediaSession(app);
-  if (!player.show) return null;
+
+  // 播放条固定在视口右下/底部：展开时给页面留出底部空间，避免遮住
+  // 章节列表最后一行的操作按钮（桌面端此前缺失该补偿）。
+  useEffect(() => {
+    const root = document.body;
+    if (player.show) root.classList.add('player-open');
+    else root.classList.remove('player-open');
+    return () => root.classList.remove('player-open');
+  }, [player.show]);
+
   const togglePlayback = () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -78,28 +87,25 @@ export function MiniPlayer({app, mobile = false}) {
     audioRef.current?.pause?.();
     setPlayer((prev) => ({...prev, show: false, playing: false}));
   };
-  if (mobile) {
-    return (
-      <div className="mini-player show">
-        <div className="mp-cover" style={player.cover ? {backgroundImage: `url("${player.cover}")`} : undefined} />
-        <div className="mp-info"><div className="mp-title">{player.title}</div><div className="mp-sub">{player.sub}</div></div>
-        <button className="mp-btn" onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章" aria-label="上一章"><Icon id="i-arrow-left" /></button>
-        <button className="mp-btn" onClick={togglePlayback} title={player.playing ? '暂停' : '播放'} aria-label={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
-        <button className="mp-btn" onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章" aria-label="下一章"><Icon id="i-arrow-right" /></button>
-        <button className="mp-btn close" onClick={close} aria-label="关闭播放器" title="关闭播放器"><Icon id="i-close" /></button>
-        <audio ref={audioRef} src={player.url} preload="metadata" playsInline />
-      </div>
-    );
-  }
+
+  // ⚠ <audio> 只保留一份且始终挂载：此前 mobile/desktop 各写一份，
+  //   切换外壳（桌面↔移动）会重建元素并中断正在播放的音频。
   return (
-    <div className="mini-player show">
-      <div className="mini-cover" style={player.cover ? {backgroundImage: `url("${player.cover}")`} : undefined} />
-      <div className="mini-info"><div className="mini-title">{player.title}</div><div className="mini-sub">{player.sub}</div></div>
-      <button className="mini-btn" onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章" aria-label="上一章"><Icon id="i-arrow-left" /></button>
-      <button className="mini-btn primary" onClick={togglePlayback} title={player.playing ? '暂停' : '播放'} aria-label={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
-      <button className="mini-btn" onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章" aria-label="下一章"><Icon id="i-arrow-right" /></button>
-      <button className="mini-btn close" onClick={close} aria-label="关闭播放器" title="关闭播放器"><Icon id="i-close" /></button>
-      <audio ref={audioRef} src={player.url} preload="metadata" playsInline />
-    </div>
+    <>
+      <audio ref={audioRef} src={player.url || undefined} preload="metadata" playsInline />
+      {player.show && (
+        <div className={mobile ? 'mini-player show' : 'mini-player show mini-player-desktop'}>
+          <div className={mobile ? 'mp-cover' : 'mini-cover'} style={player.cover ? {backgroundImage: `url("${player.cover}")`} : undefined} />
+          <div className={mobile ? 'mp-info' : 'mini-info'}>
+            <div className={mobile ? 'mp-title' : 'mini-title'}>{player.title}</div>
+            <div className={mobile ? 'mp-sub' : 'mini-sub'}>{player.sub}</div>
+          </div>
+          <button className={`${mobile ? 'mp-btn' : 'mini-btn'} prev`} onClick={() => app.actions.playAdjacentChapter?.(-1)} title="上一章" aria-label="上一章"><Icon id="i-arrow-left" /></button>
+          <button className={`${mobile ? 'mp-btn' : 'mini-btn'} primary`} onClick={togglePlayback} title={player.playing ? '暂停' : '播放'} aria-label={player.playing ? '暂停' : '播放'}><Icon id={player.playing ? 'i-pause' : 'i-play'} /></button>
+          <button className={`${mobile ? 'mp-btn' : 'mini-btn'}`} onClick={() => app.actions.playAdjacentChapter?.(1)} title="下一章" aria-label="下一章"><Icon id="i-arrow-right" /></button>
+          <button className={`${mobile ? 'mp-btn' : 'mini-btn'} close`} onClick={close} aria-label="关闭播放器" title="关闭播放器"><Icon id="i-close" /></button>
+        </div>
+      )}
+    </>
   );
 }

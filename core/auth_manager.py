@@ -44,7 +44,9 @@ class AuthManager:
             return
         username = os.getenv("AUDIOFLOW_DEFAULT_USERNAME", "admin").strip() or "admin"
         password = os.getenv("AUDIOFLOW_DEFAULT_PASSWORD", "admin")
-        users[username] = self._password_record(password, must_change=True)
+        # 只有使用内置弱口令 admin/admin 时才强制改密；
+        # 部署方显式配置了自定义默认口令时不再打扰。
+        users[username] = self._password_record(password, must_change=(password == "admin"))
         self.save()
 
     def _password_record(self, password, must_change=False):

@@ -346,9 +346,9 @@ def ensure_wfp_async(on_done: Optional[Callable[[dict], None]] = None,
     """
     if load_wfp():
         return "ready"
-    if not _SINGLE_FLIGHT.locked():
-        _SINGLE_FLIGHT.acquire()
-
+    # single-flight：非阻塞抢占，避免「先查 locked 再 acquire」的非原子竞态
+    # 导致两个线程同时进入生成流程（重复写 wfp 文件）。
+    if _SINGLE_FLIGHT.acquire(blocking=False):
         def _work():
             try:
                 result = ensure_wfp(wait=wait)

@@ -36,10 +36,37 @@ import re
 # Windows 与 Linux 都不安全的路径字符
 ILLEGAL_PATH_CHARS = ('<', '>', ':', '"', '/', '\\', '|', '?', '*')
 
+# Windows 保留设备名（含扩展名形式，如 CON.txt）：在 Windows 上无法创建，
+# 直接前置下划线即可安全落盘（不影响 Linux）。
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
 # 剪辑市场常见的营销拼接串分隔符（酷我等平台的专辑标题普遍带这类后缀）
 _MARKETING_SEPARATORS = ('|', '｜')
 
 _WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _hardened_segment(text: str, trim_trailing: bool = False) -> str:
+    """对已替换非法字符的片段做安全加固（保持既有产物不变，只补边界）。
+
+    * 拒绝 `..` / `.`（防止目录穿越）；
+    * 仅当调用方本身要 strip 时，去掉 Windows 上会被静默剥掉的尾随点/空格
+      （避免同名覆盖；strip=False 的旧契约产物保持逐字节不变）；
+    * Windows 保留设备名加下划线前缀。
+    注意：返回 str，调用方用 `或 fallback` 兜底空串。
+    """
+    if text in ("", ".", ".."):
+        return ""
+    if trim_trailing:
+        text = text.rstrip(". ")
+    if not text:
+        return ""
+    stem = text.split(".", 1)[0].upper()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        text = "_" + text
+    return text
 
 
 def sanitize_segment(
@@ -65,7 +92,7 @@ def sanitize_segment(
         text = text.replace(char, "_")
     if len(text) > max_len:
         text = text[:max_len]
-    return text or fallback
+    return _hardened_segment(text, trim_trailing=strip) or fallback
 
 
 def sanitize_download_folder_name(name, max_len: int = 200) -> str:

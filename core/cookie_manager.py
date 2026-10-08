@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -76,6 +77,7 @@ class CookieManager:
     """本地Cookie和设置管理器。"""
     
     def __init__(self):
+        self._lock = threading.RLock()
         self.config_dir = config_dir()
         self.config_file = self.config_dir / 'cookies.json'
         # 使用用户实际的下载目录，而不是测试目录
@@ -83,8 +85,17 @@ class CookieManager:
         self.download_dir_custom = False
         self.cookies = {}
         self.theme_settings = {}  # 添加主题设置存储
+        # ⚠ 安全：未显式配置 AUDIOFLOW_COOKIE_SECRET 时，自动生成并持久化
+        # 一份随机密钥（config/cookie.key，0600），让全平台登录 Cookie 默认加密
+        # 落盘；显式配置环境变量优先。这样既不需要用户手工配密钥，
+        # 也不会把 Cookie 明文长期留在磁盘上。
         self.encryption_enabled = bool(os.getenv("AUDIOFLOW_COOKIE_SECRET"))
         self._fernet = _fernet_from_secret(os.getenv("AUDIOFLOW_COOKIE_SECRET"))
+        if not self._fernet:
+            self._fernet, auto_key = self._load_or_create_keyfile()
+            if auto_key:
+                print("ℹ️ 未设置 AUDIOFLOW_COOKIE_SECRET，已自动生成 config/cookie.key 用于加密 Cookie")
+            self.encryption_enabled = bool(self._fernet)
         
         # 旧版本兼容字段：自用版不再请求或保存服务器代持Cookie。
         self.server_cookie_cache = {}
@@ -93,6 +104,38 @@ class CookieManager:
         self.requesting_cookies = {}
         
         self.load()
+
+    def _load_or_create_keyfile(self):
+        """返回 (Fernet, created_flag)。密钥文件 0600，丢失即无法解密历史 Cookie。"""
+        key_file = self.config_dir / "cookie.key"
+        try:
+            if key_file.exists():
+                return Fernet(key_file.read_bytes().strip()), False
+            key_file.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            tmp = key_file.with_suffix(".key.tmp")
+            tmp.write_bytes(key)
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, key_file)
+            try:
+                os.chmod(key_file, 0o600)
+            except OSError:
+                pass
+            return Fernet(key), True
+        except Exception as exc:
+            print(f"⚠️ Cookie 加密密钥初始化失败，Cookie 将以明文保存（请设置 AUDIOFLOW_COOKIE_SECRET）：{exc}")
+            return None, False
+
+    @staticmethod
+    def _harden_config_file_perms(path):
+        """收紧 cookies.json 权限：仅属主可读写（明文/密文都不应给其他用户读）。"""
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         
     def load(self):
         """加载Cookies和设置"""
@@ -130,39 +173,45 @@ class CookieManager:
             self.save()
             
     def save(self):
-        """保存Cookies和设置"""
-        try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            now = time.time()
-            data = {
-                'download_dir': self.download_dir,
-                'download_dir_custom': self.download_dir_custom,
-                'theme_settings': self.theme_settings,  # 保存主题设置
-                'updated_at': now,
-            }
-            if self._fernet:
-                data["cookies"] = {}
-                data["server_cookie_cache"] = {}
-                data["encrypted_cookies"] = self._encrypt_mapping(self.cookies)
-                data["encrypted_server_cookie_cache"] = self._encrypt_mapping(self.server_cookie_cache)
-                data["cookie_encrypted"] = True
-            else:
-                data["cookies"] = self.cookies
-                data["server_cookie_cache"] = self.server_cookie_cache
-                data["cookie_encrypted"] = False
-            tmp_file = self.config_file.with_suffix(self.config_file.suffix + ".tmp")
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
+        """保存Cookies和设置（线程安全：_lock 保证读改写不互踩）。"""
+        with self._lock:
+            try:
+                self.config_dir.mkdir(parents=True, exist_ok=True)
+                now = time.time()
+                data = {
+                    'download_dir': self.download_dir,
+                    'download_dir_custom': self.download_dir_custom,
+                    'theme_settings': self.theme_settings,  # 保存主题设置
+                    'updated_at': now,
+                }
+                if self._fernet:
+                    data["cookies"] = {}
+                    data["server_cookie_cache"] = {}
+                    data["encrypted_cookies"] = self._encrypt_mapping(self.cookies)
+                    data["encrypted_server_cookie_cache"] = self._encrypt_mapping(self.server_cookie_cache)
+                    data["cookie_encrypted"] = True
+                else:
+                    data["cookies"] = self.cookies
+                    data["server_cookie_cache"] = self.server_cookie_cache
+                    data["cookie_encrypted"] = False
+                tmp_file = self.config_file.with_suffix(self.config_file.suffix + ".tmp")
+                with open(tmp_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
                 try:
-                    os.fsync(f.fileno())
+                    os.chmod(tmp_file, 0o600)
                 except OSError:
                     pass
-            os.replace(tmp_file, self.config_file)
-            if os.getenv("AUDIOFLOW_DEBUG_API") == "1":
-                print("✅ 配置文件保存成功")
-        except Exception as e:
-            print(f"❌ 保存配置文件失败: {e}")
+                os.replace(tmp_file, self.config_file)
+                self._harden_config_file_perms(self.config_file)
+                if os.getenv("AUDIOFLOW_DEBUG_API") == "1":
+                    print("✅ 配置文件保存成功")
+            except Exception as e:
+                print(f"❌ 保存配置文件失败: {e}")
 
     def _encrypt_mapping(self, value):
         if not self._fernet:

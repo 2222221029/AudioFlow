@@ -1,14 +1,15 @@
 services:
   audioflow:
     # 国内网络注意：ghcr.io 的 blob 会 307 跳转到 pkg-containers.githubusercontent.com，
-    # 该域名在国内不可达 —— 现象就是拉取进度条爬到某个百分比后几乎不动（卡在 163MB
-    # 那个大层上永远下不完）。这里改走国内 ghcr 代理，实测 21MB/s。
-    # 若你的网络能直连 ghcr.io，把域名换回 ghcr.io 即可。
+    # 该域名在国内不可达 —— 现象就是拉取进度条爬到某个百分比后几乎不动。这里改走
+    # 国内 ghcr 代理（dockerproxy 实测 21MB/s；首次拉某 tag 时代理会回源 ghcr.io
+    # 缓存一次，之后秒级；若该代理不稳可把域名换成 ghcr.nju.edu.cn 等镜像）。
     #
-    # 这里固定到具体版本号（而不是 :latest）：飞牛的容器列表会直接显示这个 tag，
-    # 一眼能看出跑的是哪一版；升级时把下面这行的版本号改掉再 up -d 即可。
-    # 想自动跟随最新版，把版本号换成 latest 并保留 pull_policy: always。
-    image: ghcr.dockerproxy.net/2222221029/audioflow:1.0.32
+    # 推荐用法（避免每次在 NAS 上 --build 长时间重装依赖）：
+    #   1) 首次/升级：改下面版本号 → docker compose -f docker-compose.image.yml pull
+    #   2) 启动/更新容器：docker compose -f docker-compose.image.yml up -d
+    # 想自动跟随最新版：把版本号改成 latest 并保留 pull_policy: always。
+    image: ghcr.dockerproxy.net/2222221029/audioflow:1.0.47
     pull_policy: always
     container_name: audioflow
     ports:

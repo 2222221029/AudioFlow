@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -98,7 +99,7 @@ def looks_like_error_body(path: str, content_type: str = "", check_size: bool = 
         **内容级**判定（JSON 错误码 / HTML 错误页）不受此参数影响，永远生效。
     """
     try:
-        size = _strip_bytes_unit(__import__("os").path.getsize(path))
+        size = _strip_bytes_unit(os.path.getsize(path))
     except OSError:
         return False, ""
 
@@ -113,7 +114,7 @@ def looks_like_error_body(path: str, content_type: str = "", check_size: bool = 
         #   目录读不出 head，但它不是「下载了一半的空壳」，不能报成不完整；
         #   真·0 字节文件才是必须拦下的无效产物。
         try:
-            size_now = __import__("os").path.getsize(path)
+            size_now = os.path.getsize(path)
         except OSError:
             return False, ""
         if size_now == 0 and check_size:

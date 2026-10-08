@@ -3,7 +3,7 @@ import {useEffect, useRef} from 'react';
 import {Icon, IconSprite} from '../components/Icons.jsx';
 import {AppLogo} from '../components/AppLogo.jsx';
 import {MiniPlayer} from '../components/Player.jsx';
-import {useAudioFlowApp} from '../hooks/useAudioFlowApp.js';
+import {useAudioFlowApp} from '../hooks/useAudioFlowApp.jsx';
 import {
   AlbumDetail,
   CookiesPage,
@@ -70,7 +70,7 @@ export default function DesktopPage() {
           </div>
           <nav className="nav">
             {NAV.map(([id, icon, label]) => (
-              <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => switchPage(id)}>
+              <button key={id} className={`nav-item ${page === id ? 'active' : ''}`} onClick={() => switchPage(id)} aria-current={page === id ? 'page' : undefined}>
                 <Icon id={icon} />
                 <span>{label}</span>
               </button>
@@ -81,12 +81,12 @@ export default function DesktopPage() {
               <div><b>状态</b> <span className={`status-text-${statusClass}`}>{status} v{config.version || '-'}</span></div>
               <button className="service-retry-btn" type="button" disabled={serviceState === 'checking'} onClick={() => actions.checkServiceConnection({reload: true})} aria-label="重新检测服务连接" title="重新检测服务连接"><Icon id="i-refresh" className="icon icon-sm" /></button>
             </div>
-            <div style={{marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap'}}>
-              <span title="活跃">▶ {metrics.activeDownloads}</span>
-              <span title="已完成" style={{color: 'var(--success)'}}>✓ {metrics.completedDownloads}</span>
-              {metrics.failedDownloads > 0 && <span title="失败" style={{color: 'var(--danger)'}}>✗ {metrics.failedDownloads}</span>}
+            <div className="nav-foot-stats">
+              <span title="活跃任务">▶ {metrics.activeDownloads}</span>
+              <span title="已完成" className="is-ok">✓ {metrics.completedDownloads}</span>
+              {metrics.failedDownloads > 0 && <span title="失败" className="is-danger">✗ {metrics.failedDownloads}</span>}
             </div>
-            <div style={{marginTop: 8}}><a href="/?v=m" style={{color: 'var(--primary)', display: 'inline-flex', alignItems: 'center', gap: 4}}><Icon id="i-mobile" className="icon icon-sm" />切换移动版</a></div>
+            <a className="nav-foot-link" href="/?v=m"><Icon id="i-mobile" className="icon icon-sm" />切换移动版</a>
           </div>
         </aside>
 
@@ -94,10 +94,25 @@ export default function DesktopPage() {
           <header className="topbar">
             <div className="search-wrap">
               <span className="search-icon"><Icon id="i-search" /></span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && actions.doSearch()} className="search-input" placeholder="搜书名、主播、专辑 ID 或分享链接，回车搜索" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') actions.doSearch();
+                  // Esc 清空搜索词（搜索框通用习惯）
+                  else if (event.key === 'Escape' && query) {
+                    event.preventDefault();
+                    setQuery('');
+                  }
+                }}
+                className="search-input"
+                placeholder="搜书名、主播、专辑 ID 或分享链接，回车搜索"
+                aria-label="搜索有声书"
+                enterKeyHint="search"
+              />
             </div>
             <PlatformSelect platform={platform} setPlatform={setPlatform} />
-            <button className="btn btn-primary" disabled={busy.search} onClick={actions.doSearch}>{busy.search ? <span className="loading" /> : <Icon id="i-search" className="icon icon-sm" />}搜索</button>
+            <button className="btn btn-primary btn-search" disabled={busy.search} onClick={actions.doSearch}>{busy.search ? <span className="loading" /> : <Icon id="i-search" className="icon icon-sm" />}搜索</button>
           </header>
         )}
 
@@ -106,8 +121,8 @@ export default function DesktopPage() {
           {page === 'downloads' && <PageShell title="下载管理" subtitle="实时下载进度、失败重试、并发与目录" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadDownloads}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><DownloadsPage app={app} onNavigate={() => switchPage('search')} /></PageShell>}
           {page === 'subscriptions' && <PageShell title="订阅管理" subtitle="追更喜欢的专辑，新章节自动加入下载队列" action={<button className="btn btn-ghost btn-sm" onClick={() => actions.loadSubscriptions({refreshLocal: true})}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><SubscriptionsPage app={app} onNavigate={() => switchPage('search')} /></PageShell>}
           {page === 'personal' && <PageShell title="个人中心" subtitle="查看各平台的收听历史、收藏、订阅、已购"><PersonalPage app={app} /></PageShell>}
-          {page === 'cookies' && <PageShell title="账号管理" subtitle="为各平台提供登录态，支持扫码、浏览器抓取与手动粘贴" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadCookies}><Icon id="i-refresh" className="icon icon-sm" />刷新状态</button>}><CookiesPage app={app} /></PageShell>}
-          {page === 'notifications' && <PageShell title="通知系统" subtitle="配置下载、订阅等事件的外部推送渠道" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadNotifications}><Icon id="i-refresh" className="icon icon-sm" />刷新配置</button>}><NotificationsPage app={app} /></PageShell>}
+          {page === 'cookies' && <PageShell title="账号管理" subtitle="为各平台提供登录态，支持扫码、浏览器抓取与手动粘贴" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadCookies}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><CookiesPage app={app} /></PageShell>}
+          {page === 'notifications' && <PageShell title="通知系统" subtitle="配置下载、订阅等事件的外部推送渠道" action={<button className="btn btn-ghost btn-sm" onClick={actions.loadNotifications}><Icon id="i-refresh" className="icon icon-sm" />刷新</button>}><NotificationsPage app={app} /></PageShell>}
           {page === 'themes' && <PageShell title="主题外观" subtitle="切换桌面端与移动端共用的界面主题"><ThemesPage /></PageShell>}
           {page === 'settings' && <PageShell title="系统设置" subtitle="下载目录、音质偏好、账号密码、服务端日志"><SettingsPage app={app} /></PageShell>}
         </main>
@@ -135,7 +150,7 @@ function SearchPage({app}) {
 
   const handleHistoryClick = (keyword) => {
     setQuery(keyword);
-    setTimeout(actions.doSearch, 0);
+    actions.doSearch(keyword);
   };
 
   return (
@@ -155,21 +170,21 @@ function SearchPage({app}) {
         <div className="metric"><div className="metric-label">搜索结果</div><div className="metric-value">{results.length}</div><div className="metric-foot">本次返回条目</div></div>
         <div className="metric"><div className="metric-label">活跃下载</div><div className="metric-value">{metrics.activeDownloads}</div><div className="metric-foot">正在进行</div></div>
         <div className="metric"><div className="metric-label">已订阅</div><div className="metric-value">{subscriptions.length}</div><div className="metric-foot">自动追更专辑</div></div>
-        <button className={`metric metric-service state-${serviceState}`} type="button" onClick={() => actions.checkServiceConnection({reload: true})} disabled={serviceState === 'checking'} title="重新检测服务连接" aria-label={`服务端状态：${status}，重新检测连接`}><div className="metric-label">服务端</div><div className="metric-value" style={{fontSize: 18}}>{status}</div><div className="metric-foot">版本 {config.version || '-'} · 点击检测</div></button>
+        <button className={`metric metric-service state-${serviceState}`} type="button" onClick={() => actions.checkServiceConnection({reload: true})} disabled={serviceState === 'checking'} title="重新检测服务连接" aria-label={`服务端状态：${status}，重新检测连接`}><div className="metric-label">服务端</div><div className="metric-value metric-value-status">{status}</div><div className="metric-foot">版本 {config.version || '-'} · 点击检测</div></button>
       </div>
       <div className="results-grid">
-        <div className="glass" style={{overflow: 'hidden', display: 'flex', flexDirection: 'column'}}>
-          <div style={{padding: '14px 16px 6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
-            <strong style={{fontSize: 13.5}}>搜索结果</strong>
-            <span style={{fontSize: 11.5, color: 'var(--text-mute)'}}>{results.length ? `共 ${results.length} 条` : '输入关键词开始'}</span>
+        <div className="glass results-col">
+          <div className="panel-head">
+            <strong>搜索结果</strong>
+            <span className="panel-count">{results.length ? `共 ${results.length} 条` : '输入关键词开始'}</span>
           </div>
-          <div className="result-list glass-pad" style={{paddingTop: 6}}>
+          <div className="result-list glass-pad">
             {!results.length ? (
               <div className="empty"><Icon id="i-search" />请输入关键词后回车<br />例如：凡人修仙传 / 主播名 / 链接</div>
             ) : results.map((album, index) => <ResultCard key={`${album.platform}-${album.id || album.title}-${index}`} album={album} onOpen={() => actions.openAlbum(album)} />)}
           </div>
         </div>
-        <div className="glass glass-pad" style={{overflow: 'hidden', display: 'flex', flexDirection: 'column'}}>
+        <div className="glass glass-pad results-col">
           <AlbumDetail key={`${selectedAlbum?.platform || ''}-${selectedAlbum?.id || selectedAlbum?.title || 'empty'}`} app={app} />
         </div>
         <div className="glass glass-pad detail-aside">

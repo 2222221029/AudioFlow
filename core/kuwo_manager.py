@@ -17,7 +17,7 @@ from typing import List, Dict, Optional
 from urllib.parse import quote
 from requests.cookies import create_cookie
 
-from core import chunked_download, download_adapter
+from core import bounded_cache, chunked_download, download_adapter
 
 
 class KuwoManager:
@@ -58,9 +58,12 @@ class KuwoManager:
         except (TypeError, ValueError):
             self._page_size = 40
         
-        # 写死的 Secret 和 Cookie（无需算法和登录）
-        self._fixed_secret = "7363e89561110e6cb657c2fb7cedc85451a49cad02a8ce4d6bc236dce7ed52ce0144c917"
-        self._fixed_cookie_value = "P3c7p6fGhrbj7WyyYkmz5RRJbBMEak7B"
+        # 酷我媒体签名用的 Secret 与匿名 Cookie。
+        # ⚠ 安全：默认值是历史内置的共享匿名凭证（仅用于公开搜索/试听媒体签名），
+        # 不涉及个人账号；仍建议自建实例通过环境变量 KUWO_SECRET / KUWO_COOKIE
+        # 覆盖成自己的值，避免依赖共享凭证。
+        self._fixed_secret = str(os.environ.get("KUWO_SECRET", "") or "7363e89561110e6cb657c2fb7cedc85451a49cad02a8ce4d6bc236dce7ed52ce0144c917").strip()
+        self._fixed_cookie_value = str(os.environ.get("KUWO_COOKIE", "") or "P3c7p6fGhrbj7WyyYkmz5RRJbBMEak7B").strip()
         
         # 设置固定的 Cookie 到 session
         self._safe_set_cookie(
@@ -68,7 +71,8 @@ class KuwoManager:
             value=self._fixed_cookie_value,
             domain=".kuwo.cn"
         )
-        print("[酷我听书] 使用固定的 Cookie 和 Secret（无需登录）")
+        if not os.environ.get("KUWO_SECRET") and not os.environ.get("KUWO_COOKIE"):
+            print("[酷我听书] 使用内置匿名凭证（可用 KUWO_SECRET / KUWO_COOKIE 覆盖）")
 
     def _record_error(self, message: str, error_type: str = "download_failed"):
         self.last_error = str(message or "酷我下载失败")[:300]
@@ -122,6 +126,7 @@ class KuwoManager:
                 result["format"] = "mp3"
         with self._download_info_cache_lock:
             self._download_info_cache[probe_key] = {"time": now, "data": dict(result)}
+            bounded_cache.trim(self._download_info_cache, 512)
         return result
 
     def normalize_download_quality(self, quality: str = "", voice_config: Optional[Dict] = None) -> str:
@@ -743,6 +748,7 @@ class KuwoManager:
                         }
                         with self._download_info_cache_lock:
                             self._download_info_cache[cache_key] = {"time": now, "data": dict(result)}
+                            bounded_cache.trim(self._download_info_cache, 512)
                         return result
 
                 message = data.get('msg') or data.get('message') or '未返回音频地址'

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from typing import Callable, Dict, Optional
 
 import requests
@@ -34,6 +35,24 @@ from core.errors import ContentInvalidError, PermissionDenied, TransientError
 #: 默认超时：(连接, 读取)。读取超时即「相邻两次 socket 读的间隔」，
 #: 正好是空闲超时的语义。与各 manager 现有的 (10, 90) / 120 同量级。
 DEFAULT_TIMEOUT = (10, 90)
+
+#: 线程级取消钩子。DownloadWorker 在每个章节下载线程里设置
+#: `is_cancelled=lambda: worker._is_stopped`，使「暂停/停止」能中断在途
+#: 下载（chunked 分段、单流、甚至 CDN 大文件的逐块传输），而无需给
+#: 每个平台 manager 的 download_audio 都增加参数。
+_CANCEL_CHECK: ContextVar = ContextVar("audioflow_cancel_check", default=None)
+
+
+def set_cancel_check(check: Optional[Callable[[], bool]]) -> None:
+    _CANCEL_CHECK.set(check)
+
+
+def clear_cancel_check() -> None:
+    _CANCEL_CHECK.set(None)
+
+
+def current_cancel_check() -> Optional[Callable[[], bool]]:
+    return _CANCEL_CHECK.get()
 
 
 def session_to_file(
@@ -81,6 +100,9 @@ def session_to_file(
         )
 
     os.makedirs(os.path.dirname(os.path.abspath(save_path)) or ".", exist_ok=True)
+
+    if is_cancelled is None:
+        is_cancelled = current_cancel_check()
 
     try:
         outcome = cd.stream_to_file(

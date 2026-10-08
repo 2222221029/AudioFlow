@@ -2562,7 +2562,7 @@ class XimalayaManager:
             token_match = re.search(r'_token=\d+&([A-Z0-9]+)_', cookie_string)
             if token_match:
                 self.user_token = token_match.group(1)
-                print(f"🔐 提取到用户Token: {self.user_token[:20]}...")
+                print(f"🔐 已提取用户Token（长度 {len(self.user_token)}，内容不打印）")
                 
         except Exception as e:
             print(f"⚠️ 提取用户信息失败: {e}")

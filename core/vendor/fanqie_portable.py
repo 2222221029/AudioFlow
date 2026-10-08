@@ -1592,19 +1592,34 @@ def _subprocess_hide_kw() -> dict:
     return {"startupinfo": si, "creationflags": flag}
 
 
+FFMPEG_TIMEOUT_SECONDS = 300
+
+
+class FfmpegTimeout(TimeoutError):
+    """ffmpeg 子进程执行超时（单章解密/转码不应超过 5 分钟）。"""
+
+
 def _ffmpeg_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     # 在 ffmpeg 命令本体后插入 -threads 1，限制单进程线程数，避免多实例并发时打满 CPU
     if cmd and not any(a == "-threads" for a in cmd):
         exe, *rest = cmd
         cmd = [exe, "-threads", "1"] + rest
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **_subprocess_hide_kw(),
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=FFMPEG_TIMEOUT_SECONDS,
+            **_subprocess_hide_kw(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        # ⚠ 卡死的 ffmpeg 必须杀掉：不加超时的话，坏加密输入会让下载线程
+        # 永久挂起、任务永不结束（连「停止」也要等它）。
+        raise FfmpegTimeout(
+            f"ffmpeg 执行超过 {FFMPEG_TIMEOUT_SECONDS}s，已终止（{exc.cmd[:1] if exc.cmd else '?'}）"
+        ) from exc
 
 
 def _cdn_headers(http_headers: dict[str, str] | None) -> dict[str, str]:

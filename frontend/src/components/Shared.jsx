@@ -139,7 +139,7 @@ export function Modal({modal, onClose}) {
   if (!modal) return null;
   return (
     <div className="modal-backdrop show" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className={`modal ${modal.className || ''}`} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="audioflow-modal-title" aria-label="操作对话框" tabIndex={-1}>
+      <div className={`modal ${modal.className || ''}`} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="audioflow-modal-title" tabIndex={-1}>
         {modal.close !== false && (
           <button className="modal-close-btn" onClick={onClose} title="关闭" aria-label="关闭对话框">
             <Icon id="i-close" className="icon icon-sm" />
@@ -183,11 +183,11 @@ export function LoginModal({onSubmit, error, loading}) {
         </label>
         <label className="login-field">
           <span>密码</span>
-          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="默认密码 admin" />
+          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="请输入密码" />
         </label>
         <div className="login-error" role="alert" aria-live="polite">{error}</div>
         <button className="btn btn-primary login-submit" disabled={loading} type="submit">{loading ? '登录中...' : '登录'}</button>
-        <div className="login-hint">默认账号 admin，默认密码 admin。登录后请在系统设置中修改密码。</div>
+        <div className="login-hint">首次部署使用默认口令 admin；登录后系统会引导你修改密码。</div>
       </form>
     </div>
   );
@@ -195,23 +195,76 @@ export function LoginModal({onSubmit, error, loading}) {
 
 export function PlatformSelect({platform, setPlatform, mobile = false}) {
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const wrapRef = useRef(null);
+  const triggerRef = useRef(null);
+  const optionRefs = useRef([]);
   const selected = SEARCH_PLATFORMS.find((item) => item.value === platform) || SEARCH_PLATFORMS[0];
 
+  // 打开时把高亮定位到当前平台；关闭时清空
+  useEffect(() => {
+    if (open) {
+      const index = SEARCH_PLATFORMS.findIndex((item) => item.value === platform);
+      setActiveIndex(index >= 0 ? index : 0);
+    }
+  }, [open, platform]);
+
+  // 点击外部 / Esc 关闭
   useEffect(() => {
     if (!open) return undefined;
-    const close = (event) => {
+    const onPointerDown = (event) => {
       if (!wrapRef.current?.contains(event.target)) setOpen(false);
     };
-    document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [open]);
+
+  // 打开后让高亮项获得可见焦点（键盘用户可直接用方向键）
+  useEffect(() => {
+    if (open) optionRefs.current[activeIndex]?.focus();
+  }, [open, activeIndex]);
+
+  const commit = (index) => {
+    const item = SEARCH_PLATFORMS[index];
+    if (!item) return;
+    setPlatform(item.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const onMenuKeyDown = (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      setActiveIndex((prev) => (prev + delta + SEARCH_PLATFORMS.length) % SEARCH_PLATFORMS.length);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setActiveIndex(SEARCH_PLATFORMS.length - 1);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      commit(activeIndex);
+    }
+  };
 
   if (mobile) {
     return (
       <div className="chip-row" id="platformChips">
         {SEARCH_PLATFORMS.map((item) => (
-          <button key={item.value} type="button" className={`chip platform-chip ${platform === item.value ? 'active' : ''}`} onClick={() => setPlatform(item.value)}>
+          <button key={item.value} type="button" className={`chip platform-chip ${platform === item.value ? 'active' : ''}`} aria-pressed={platform === item.value} onClick={() => setPlatform(item.value)}>
             {item.value === 'all' ? <Icon id="i-layers" className="icon icon-sm" /> : <PlatformLogo value={item.value} name={item.label} className="platform-logo platform-logo-sm" />}
             <span>{item.label}</span>
           </button>
@@ -221,25 +274,39 @@ export function PlatformSelect({platform, setPlatform, mobile = false}) {
   }
   return (
     <div ref={wrapRef} className={`platform-select-wrap ${open ? 'open' : ''}`}>
-      <button type="button" className="platform-select" onClick={() => setOpen((value) => !value)} aria-haspopup="listbox" aria-expanded={open}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="platform-select"
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' && !open) {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`搜索平台：${selected.label}`}
+      >
         <span className="platform-name">
           {selected.value === 'all' ? <Icon id="i-layers" className="icon icon-sm" /> : <PlatformLogo value={selected.value} name={selected.label} className="platform-logo platform-logo-sm" />}
           <span>{selected.label}</span>
         </span>
         <Icon id="i-arrow-right" className="icon icon-sm" />
       </button>
-      <div className="platform-menu" role="listbox">
-        {SEARCH_PLATFORMS.map((item) => (
+      <div className="platform-menu" role="listbox" aria-label="选择搜索平台" onKeyDown={onMenuKeyDown}>
+        {SEARCH_PLATFORMS.map((item, index) => (
           <button
             key={item.value}
+            ref={(node) => { optionRefs.current[index] = node; }}
             type="button"
             role="option"
+            tabIndex={-1}
             aria-selected={platform === item.value}
-            className={`platform-option ${platform === item.value ? 'active' : ''}`}
-            onClick={() => {
-              setPlatform(item.value);
-              setOpen(false);
-            }}
+            className={`platform-option ${platform === item.value ? 'active' : ''} ${open && activeIndex === index ? 'is-active' : ''}`}
+            onMouseEnter={() => setActiveIndex(index)}
+            onClick={() => commit(index)}
           >
             <span className="platform-name">
               {item.value === 'all' ? <Icon id="i-layers" className="icon icon-sm" /> : <PlatformLogo value={item.value} name={item.label} className="platform-logo platform-logo-sm" />}
@@ -310,6 +377,40 @@ function BusyIcon({busy, icon}) {
   return busy ? <span className="loading" /> : <Icon id={icon} className="icon icon-sm" />;
 }
 
+/**
+ * 数字输入框：输入过程中保留原始字符串（不即时 clamp，避免"想输 100 却被夹成 10"、光标乱跳），
+ * 失焦/回车时才按 min/max 归一化；附带 inputMode 让移动端弹数字键盘。
+ */
+function NumberField({value, onCommit, min, max, disabled, className = 'field-input', ...rest}) {
+  const [draft, setDraft] = useState(String(value ?? ''));
+  useEffect(() => { setDraft(String(value ?? '')); }, [value]);
+  const clamp = (raw) => {
+    const parsed = Number.parseInt(String(raw), 10);
+    if (!Number.isFinite(parsed)) return Number(value ?? min ?? 0);
+    return Math.max(min, Math.min(max, parsed));
+  };
+  const commit = () => {
+    const next = clamp(draft);
+    setDraft(String(next));
+    if (next !== value) onCommit(next);
+  };
+  return (
+    <input
+      {...rest}
+      className={className}
+      type="number"
+      inputMode="numeric"
+      min={min}
+      max={max}
+      disabled={disabled}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value.replace(/[^\d]/g, ''))}
+      onBlur={commit}
+      onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commit(); event.currentTarget.blur(); } }}
+    />
+  );
+}
+
 function formatCheckTime(value, fallback = '从未') {
   if (!value) return fallback;
   const numeric = typeof value === 'number' || /^\d+(\.\d+)?$/.test(String(value));
@@ -361,48 +462,110 @@ function ChapterPageJump({page, totalPages, loading, onSelect}) {
 
 function ChapterToolbar({loading, busy, chapters, viewChapters, selectedChapterList, chapterPagination, chapterSort, setChapterSort, downloadRange, setDownloadRange, subscribed, actions}) {
   const [showRange, setShowRange] = useState(false);
+  const [showSelectMenu, setShowSelectMenu] = useState(false);
+  const selectMenuRef = useRef(null);
   const pg = chapterPagination || {page: 1, total_pages: 1, total: chapters.length, has_more: false};
   const totalPages = Math.max(1, Number(pg.total_pages) || 1);
   const totalKnown = pg.total_known !== false;
   const canNext = pg.has_more || pg.page < totalPages;
+  const hasChapters = Boolean(chapters.length);
+  const selectedCount = selectedChapterList.length;
+
+  useEffect(() => {
+    if (!showSelectMenu) return undefined;
+    const close = (event) => {
+      if (!selectMenuRef.current?.contains(event.target)) setShowSelectMenu(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [showSelectMenu]);
+
+  const runSelection = (fn) => {
+    setShowSelectMenu(false);
+    fn();
+  };
+
   return (
     <div className="chapter-toolbar">
-      {/* 主操作 */}
-      <button className="btn btn-primary btn-sm" disabled={busy.download || loading} onClick={() => actions.startDownload()}><BusyIcon busy={busy.download} icon="i-download" />下载选中</button>
-      <button className="btn btn-ghost btn-sm" disabled={busy.download || loading || !viewChapters.length} onClick={() => actions.startDownload([], {all: true})}><Icon id="i-bolt" className="icon icon-sm" />下载全部</button>
-      <button className="btn btn-ghost btn-sm" disabled={busy.subscribe || loading || subscribed} onClick={actions.subscribeAlbum}><BusyIcon busy={busy.subscribe} icon={subscribed ? 'i-check' : 'i-star'} />{subscribed ? '已订阅' : '订阅追更'}</button>
-      <div className="toolbar-sep" />
-      {/* 排序 */}
-      <div className="seg-control">
-        <button className={chapterSort === 'asc' ? 'active' : ''} disabled={loading || !chapters.length} onClick={() => setChapterSort('asc')}>正序</button>
-        <button className={chapterSort === 'desc' ? 'active' : ''} disabled={loading || !chapters.length} onClick={() => setChapterSort('desc')}>倒序</button>
+      {/* 主操作区：只保留一个主按钮 + 一个次按钮 + 订阅 */}
+      <div className="toolbar-group toolbar-actions">
+        <button className="btn btn-primary btn-sm" disabled={busy.download || loading} onClick={() => actions.startDownload()}>
+          {busy.download ? <span className="loading" /> : <Icon id="i-download" className="icon icon-sm" />}下载选中
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy.download || loading || !hasChapters} onClick={() => actions.startDownload([], {all: true})}>
+          <Icon id="i-bolt" className="icon icon-sm" />下载全部
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={busy.subscribe || loading || subscribed} onClick={actions.subscribeAlbum}>
+          {busy.subscribe ? <span className="loading" /> : <Icon id={subscribed ? 'i-check' : 'i-star'} className="icon icon-sm" />}{subscribed ? '已订阅' : '订阅追更'}
+        </button>
       </div>
-      {/* 选择操作 */}
-      <button className="btn btn-ghost btn-sm" disabled={loading || !chapters.length} onClick={() => actions.selectAllChapters(true)}>全选</button>
-      <button className="btn btn-ghost btn-sm" disabled={loading || !selectedChapterList.length} onClick={() => actions.selectAllChapters(false)}>清空</button>
-      <button className="btn btn-ghost btn-sm" disabled={loading || !chapters.length} onClick={actions.invertChapterSelection}>反选</button>
-      <span className="ch-summary">{loading ? '加载中...' : `${selectedChapterList.length}/${viewChapters.length}`}</span>
-      {(pg.total_pages > 1 || pg.has_more) && (
-        <div className="chapter-pager">
-          <button className="icon-btn" disabled={loading || pg.page <= 1} onClick={() => actions.loadChapterPage(pg.page - 1)} title="上一页" aria-label="上一页"><Icon id="i-arrow-left" /></button>
-          {totalKnown ? (
-            <>
-              <ChapterPageJump page={pg.page} totalPages={totalPages} loading={loading} onSelect={actions.loadChapterPage} />
-              <span className="chapter-page-total">/ {totalPages}</span>
-            </>
-          ) : <span className="chapter-page-unknown">第 {pg.page} 页 / 更多</span>}
-          <button className="icon-btn" disabled={loading || !canNext} onClick={() => actions.loadChapterPage(pg.page + 1)} title="下一页" aria-label="下一页"><Icon id="i-arrow-right" /></button>
+
+      <span className="toolbar-sep" />
+
+      {/* 选择区：常用的一键全选留出来，其余收进菜单 */}
+      <div className="toolbar-group toolbar-select">
+        <button className="btn btn-ghost btn-sm" disabled={loading || !hasChapters} onClick={() => actions.selectAllChapters(true)}>
+          <Icon id="i-check" className="icon icon-sm" />全选
+        </button>
+        <div className="select-more-wrap" ref={selectMenuRef}>
+          <button
+            type="button"
+            className={`icon-btn ${showSelectMenu ? 'active' : ''}`}
+            disabled={loading || !hasChapters}
+            aria-haspopup="menu"
+            aria-expanded={showSelectMenu}
+            title="更多选择操作"
+            aria-label="更多选择操作"
+            onClick={() => setShowSelectMenu((value) => !value)}
+          >
+            <Icon id="i-more" />
+          </button>
+          {showSelectMenu && (
+            <div className="select-more-menu" role="menu">
+              <button type="button" role="menuitem" disabled={!hasChapters} onClick={() => runSelection(actions.invertChapterSelection)}>反选</button>
+              <button type="button" role="menuitem" disabled={!hasChapters} onClick={() => runSelection(() => actions.selectAllChapters(false))}>清空选择</button>
+            </div>
+          )}
         </div>
-      )}
-      {/* 折叠：范围下载 */}
-      <button className="btn btn-ghost btn-sm" disabled={loading || !chapters.length} onClick={() => setShowRange((v) => !v)}>
-        <Icon id="i-list" className="icon icon-sm" />{showRange ? '收起范围' : '范围下载'}
-      </button>
+        <span className="ch-summary" title="已选 / 当前页章节数">{loading ? '加载中' : `${selectedCount}/${viewChapters.length}`}</span>
+      </div>
+
+      {/* 视图区：排序 + 范围下载 + 翻页 */}
+      <div className="toolbar-group toolbar-view">
+        <div className="seg-control" role="group" aria-label="章节排序">
+          <button className={chapterSort === 'asc' ? 'active' : ''} disabled={loading || !hasChapters} onClick={() => setChapterSort('asc')}>正序</button>
+          <button className={chapterSort === 'desc' ? 'active' : ''} disabled={loading || !hasChapters} onClick={() => setChapterSort('desc')}>倒序</button>
+        </div>
+        <button
+          type="button"
+          className={`btn btn-ghost btn-sm ${showRange ? 'is-active' : ''}`}
+          disabled={loading || !hasChapters}
+          aria-expanded={showRange}
+          onClick={() => setShowRange((value) => !value)}
+        >
+          <Icon id="i-list" className="icon icon-sm" />按范围
+        </button>
+        {(pg.total_pages > 1 || pg.has_more) && (
+          <div className="chapter-pager">
+            <button className="icon-btn" disabled={loading || pg.page <= 1} onClick={() => actions.loadChapterPage(pg.page - 1)} title="上一页" aria-label="上一页"><Icon id="i-arrow-left" /></button>
+            {totalKnown ? (
+              <>
+                <ChapterPageJump page={pg.page} totalPages={totalPages} loading={loading} onSelect={actions.loadChapterPage} />
+                <span className="chapter-page-total">/ {totalPages}</span>
+              </>
+            ) : <span className="chapter-page-unknown">第 {pg.page} 页 / 更多</span>}
+            <button className="icon-btn" disabled={loading || !canNext} onClick={() => actions.loadChapterPage(pg.page + 1)} title="下一页" aria-label="下一页"><Icon id="i-arrow-right" /></button>
+          </div>
+        )}
+      </div>
+
       {showRange && (
         <div className="range-control">
-          <input type="text" className="range-input" value={downloadRange} disabled={loading || !chapters.length} onChange={(event) => setDownloadRange(event.target.value)} placeholder="例：1-20, 25" />
-          <button className="btn btn-ghost btn-sm" disabled={loading || !chapters.length || !downloadRange.trim()} onClick={() => actions.applyDownloadRange('select')}>选中范围</button>
-          <button className="btn btn-primary btn-sm" disabled={busy.download || loading || !chapters.length || !downloadRange.trim()} onClick={() => actions.applyDownloadRange('download')}>下载范围</button>
+          <span className="range-hint">章节序号</span>
+          <input type="text" className="range-input" value={downloadRange} disabled={loading || !hasChapters} onChange={(event) => setDownloadRange(event.target.value)} placeholder="如 1-20, 25" />
+          <button className="btn btn-ghost btn-sm" disabled={loading || !hasChapters || !downloadRange.trim()} onClick={() => actions.applyDownloadRange('select')}>选中</button>
+          <button className="btn btn-primary btn-sm" disabled={busy.download || loading || !hasChapters || !downloadRange.trim()} onClick={() => actions.applyDownloadRange('download')}>下载</button>
+          <button className="icon-btn" onClick={() => setShowRange(false)} title="收起" aria-label="收起范围下载"><Icon id="i-close" /></button>
         </div>
       )}
     </div>
@@ -419,12 +582,22 @@ export function AlbumDetail({app, mobile = false}) {
   const loading = busy.album || busy.voice;
   const viewChapters = displayChapters || chapters;
   return (
-    <div className={mobile ? 'detail-content' : 'album-detail'} style={{display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1}}>
+    <div className={mobile ? 'detail-content' : 'album-detail'}>
       <div className={mobile ? 'detail-hero' : 'album-hero'}>
         <div className={mobile ? 'detail-cover' : 'album-cover'} style={cover ? {backgroundImage: `url("${cover}")`} : undefined}>{cover ? '' : <Icon id="i-music" />}</div>
         <div className={mobile ? 'detail-info' : 'album-info'}>
           <div className={mobile ? 'detail-title' : 'album-title'}>{selectedAlbum.title || '未知专辑'}</div>
-          <div className={mobile ? 'detail-meta' : 'album-meta'}><PlatformTag value={selectedAlbum.platform} /> {selectedAlbum.author || selectedAlbum.anchor || '未知作者'}<br />{albumEpisodeText(selectedAlbum)} · {selectedAlbum.status || '连载中'}</div>
+          <div className="album-subline">
+            <PlatformTag value={selectedAlbum.platform} />
+            <span className="album-author" title={selectedAlbum.author || selectedAlbum.anchor || ''}>{selectedAlbum.author || selectedAlbum.anchor || '未知作者'}</span>
+          </div>
+          <div className="album-metaline">
+            {Number(selectedAlbum.episodes || selectedAlbum.chapter_count || selectedAlbum.track_count || 0) > 0
+              ? <span>{albumEpisodeText(selectedAlbum)}</span>
+              : <span className="album-loading"><span className="loading" />章节加载中</span>}
+            <span className="album-dot">·</span>
+            <span>{selectedAlbum.status || '连载中'}</span>
+          </div>
           {(library.subscribed || libraryDownloaded > 0) && (
             <div className="album-library-state">
               {library.subscribed && <span className="library-badge subscribed"><Icon id="i-check" className="icon icon-sm" />已订阅</span>}
@@ -435,8 +608,30 @@ export function AlbumDetail({app, mobile = false}) {
       </div>
       {!!voices.length && (
         <div className={mobile ? 'detail-voice-bar' : 'voice-bar'}>
-          {voices.map((voice, index) => (
-            <button key={voice.id || voice.name || index} disabled={busy.voice} className={`chip ${selectedVoice === voice ? 'active' : ''}`} onClick={() => actions.changeVoice(voice)}>{voice.category ? `${voice.category} · ` : ''}{voice.name || voice.title || `音色 ${index + 1}`}</button>
+          {voices.length > 8 ? (
+            /* 音色很多时（如番茄畅听上百个）用下拉，避免一长条横向滚动条 */
+            <label className="voice-select">
+              <Icon id="i-layers" className="icon icon-sm" />
+              <span className="voice-select-label">音色</span>
+              <select
+                value={String(voices.indexOf(selectedVoice))}
+                disabled={busy.voice}
+                aria-label={`选择音色，共 ${voices.length} 个`}
+                onChange={(event) => {
+                  const picked = voices[Number(event.target.value)];
+                  if (picked) actions.changeVoice(picked);
+                }}
+              >
+                {voices.map((voice, index) => (
+                  <option key={voice.id || voice.name || index} value={String(index)}>
+                    {voice.category ? `${voice.category} · ` : ''}{voice.name || voice.title || `音色 ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+              <span className="voice-select-count">{voices.length} 个</span>
+            </label>
+          ) : voices.map((voice, index) => (
+            <button key={voice.id || voice.name || index} type="button" disabled={busy.voice} className={`chip ${selectedVoice === voice ? 'active' : ''}`} onClick={() => actions.changeVoice(voice)}>{voice.category ? `${voice.category} · ` : ''}{voice.name || voice.title || `音色 ${index + 1}`}</button>
           ))}
         </div>
       )}
@@ -517,6 +712,24 @@ export function AlbumDetail({app, mobile = false}) {
 
 export function DownloadsPage({app, onNavigate}) {
   const {downloads, downloadPagination, downloadStatusFilter, metrics, actions, setModal, closeModal, busy} = app;
+  const moreRef = useRef(null);
+  // <details> 原生不会「点外部关闭」，这里补上（并支持 Esc），与其它下拉行为一致
+  useEffect(() => {
+    const onPointerDown = (event) => {
+      const node = moreRef.current;
+      if (node?.open && !node.contains(event.target)) node.open = false;
+    };
+    const onKeyDown = (event) => {
+      const node = moreRef.current;
+      if (event.key === 'Escape' && node?.open) node.open = false;
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
   const confirmDelete = (id) => setModal({content: <ConfirmModal icon="i-trash" title="清除任务记录" message="只清除历史记录，不会删除已下载文件。" okText="清除" danger onClose={closeModal} onOk={() => { closeModal(); actions.deleteDownload(id); }} />});
   const confirmCleanup = (statuses) => setModal({content: <ConfirmModal icon="i-trash" title="批量清理任务" message="将清理符合条件的历史任务记录，不会删除已下载文件。" okText="清理" danger onClose={closeModal} onOk={() => { closeModal(); actions.cleanupDownloads(statuses); }} />});
   const openDetails = (id) => setModal({className: 'modal-wide', content: <DownloadTaskDetailModal taskId={id} />});
@@ -554,7 +767,7 @@ export function DownloadsPage({app, onNavigate}) {
         {hasRunning && <button className="btn btn-ghost btn-sm" disabled={busy['batchDownload:pause']} onClick={() => actions.batchControlDownloads('pause')}><BusyIcon busy={busy['batchDownload:pause']} icon="i-pause" />全部暂停</button>}
         </div>
         </div>
-        <details className="secondary-actions">
+        <details className="secondary-actions" ref={moreRef}>
           <summary><Icon id="i-more" className="icon icon-sm" />更多操作</summary>
           <div className="secondary-actions-menu">
         {hasStoppable && <button className="btn btn-danger btn-sm" disabled={busy['batchDownload:stop']} onClick={() => actions.batchControlDownloads('stop')}><BusyIcon busy={busy['batchDownload:stop']} icon="i-close" />全部停止</button>}
@@ -569,9 +782,9 @@ export function DownloadsPage({app, onNavigate}) {
           : downloads.map((task) => <TaskCard key={task.id} task={task} actions={actions} busy={busy} onDelete={confirmDelete} onDetails={openDetails} />)}
       </div>
       {pg.total_pages > 1 && (
-        <div className="glass glass-pad" style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px'}}>
+        <div className="glass glass-pad list-pager">
           <button className="btn btn-ghost btn-sm" disabled={pg.page <= 1} onClick={() => actions.loadDownloads(pg.page - 1)}><Icon id="i-arrow-left" className="icon icon-sm" />上一页</button>
-          <span style={{color: 'var(--text-dim)', fontSize: '13px'}}>第 {pg.page} / {pg.total_pages} 页 · 共 {pg.total} 条</span>
+          <span className="list-pager-info">第 {pg.page} / {pg.total_pages} 页 · 共 {pg.total} 条</span>
           <button className="btn btn-ghost btn-sm" disabled={pg.page >= pg.total_pages} onClick={() => actions.loadDownloads(pg.page + 1)}>下一页<Icon id="i-arrow-right" className="icon icon-sm" /></button>
         </div>
       )}
@@ -697,6 +910,7 @@ export function PersonalPage({app, mobile = false}) {
         platform={platformMeta}
         onSave={savePersonalCookie}
         onClose={app.closeModal}
+        onToast={app.actions?.showToast}
       />,
     });
   };
@@ -949,7 +1163,7 @@ function TaskCard({task, actions, busy, onDelete, onDetails}) {
         {canResume && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}resume`]} onClick={() => actions.controlDownload(task.id, 'resume')}><BusyIcon busy={busy[`${busyPrefix}resume`]} icon="i-play" />继续</button>}
         {canStop && <button className="btn btn-danger btn-tiny" disabled={busy[`${busyPrefix}stop`]} onClick={() => actions.controlDownload(task.id, 'stop')}><BusyIcon busy={busy[`${busyPrefix}stop`]} icon="i-close" />停止</button>}
         {canRetry && <button className="btn btn-primary btn-tiny" disabled={busy[`${busyPrefix}retry-failed`]} onClick={() => actions.controlDownload(task.id, 'retry-failed')}><BusyIcon busy={busy[`${busyPrefix}retry-failed`]} icon="i-refresh" />重试失败</button>}
-        {canDelete && <button className="btn btn-ghost btn-tiny task-record-action icon-action" title="清除记录" aria-label={`清除《${task.title || task.id}》任务记录`} onClick={() => onDelete(task.id)}><Icon id="i-trash" className="icon icon-sm" /></button>}
+        {canDelete && <button className="btn btn-ghost btn-tiny task-record-action icon-action danger" title="清除记录" aria-label={`清除《${task.title || task.id}》任务记录`} onClick={() => onDelete(task.id)}><Icon id="i-trash" className="icon icon-sm" /></button>}
       </div>
     </div>
   );
@@ -1043,7 +1257,7 @@ export function SubscriptionsPage({app, onNavigate}) {
           <span>最近同步：{personalSyncLastRun}</span>
           <span>上次新增：{Number(subscriptionScheduler.personal_sync_last_added || 0)}</span>
           <span>喜马拉雅默认：网页版接口</span>
-          {subscriptionScheduler.personal_sync_last_error && <span style={{color: 'var(--danger)'}}>同步错误：{subscriptionScheduler.personal_sync_last_error}</span>}
+          {subscriptionScheduler.personal_sync_last_error && <span className="text-danger">同步错误：{subscriptionScheduler.personal_sync_last_error}</span>}
         </div>
       </div>
       <div className="sub-grid">
@@ -1132,7 +1346,7 @@ export function SubscriptionsPage({app, onNavigate}) {
                 <div className="sub-actions">
                   <button className="btn btn-ghost btn-sm" disabled={checkBusy} onClick={() => actions.checkSubscription(sub.id, false)}><BusyIcon busy={checkBusy} icon="i-refresh" />检测</button>
                   <button className="btn btn-primary btn-sm" disabled={completeBusy} onClick={() => actions.checkSubscription(sub.id, true)}><BusyIcon busy={completeBusy} icon="i-download" />补全缺失</button>
-                  <button className="btn btn-ghost btn-sm sub-cancel-action icon-action" title="取消订阅" aria-label={`取消订阅《${title}》`} disabled={jobBusy} onClick={() => cancel(sub.id)}><Icon id="i-trash" className="icon icon-sm" /></button>
+                  <button className="btn btn-ghost btn-sm sub-cancel-action icon-action danger" title="取消订阅" aria-label={`取消订阅《${title}》`} disabled={jobBusy} onClick={() => cancel(sub.id)}><Icon id="i-trash" className="icon icon-sm" /></button>
                 </div>
               </div>
             </div>
@@ -1184,6 +1398,8 @@ export function SubscriptionsPage({app, onNavigate}) {
 
 function SubscriptionImportModal({actions, onClose}) {
   const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
   const onFile = (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
@@ -1192,6 +1408,7 @@ function SubscriptionImportModal({actions, onClose}) {
     reader.readAsText(file);
   };
   const doImport = async () => {
+    if (busy) return;
     let parsed;
     try {
       parsed = JSON.parse(text);
@@ -1199,11 +1416,14 @@ function SubscriptionImportModal({actions, onClose}) {
       actions.showToast('内容不是合法的 JSON', 'err');
       return;
     }
+    setBusy(true);
     try {
       await actions.importSubscriptions(parsed);
       onClose();
     } catch (error) {
       actions.showToast('导入失败：' + error.message, 'err');
+    } finally {
+      setBusy(false);
     }
   };
   return (
@@ -1211,15 +1431,18 @@ function SubscriptionImportModal({actions, onClose}) {
       <div className="modal-title"><Icon id="i-folder" />导入订阅</div>
       <div className="modal-sub">上传导出的 .json 文件或粘贴 JSON。按订阅合并（同名覆盖），章节会在首次检测时自动重新拉取。</div>
       <div className="modal-toolbar">
-        <label className="btn btn-ghost btn-sm" style={{cursor: 'pointer'}}>
+        {/* 用 button 触发隐藏 input：label 包 input 不可聚焦，键盘用户无法操作 */}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()} disabled={busy}>
           <Icon id="i-folder" className="icon icon-sm" />选择文件
-          <input type="file" accept="application/json,.json" onChange={onFile} style={{display: 'none'}} />
-        </label>
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} className="visually-hidden" tabIndex={-1} aria-hidden="true" />
       </div>
-      <textarea className="cookie-modal-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder='{"subscriptions": [ ... ]}' style={{minHeight: 160}} />
+      <textarea className="cookie-modal-textarea cookie-modal-textarea-lg" value={text} onChange={(event) => setText(event.target.value)} placeholder='{"subscriptions": [ ... ]}' />
       <div className="modal-actions">
-        <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
-        <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入</button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>取消</button>
+        <button className="btn btn-primary btn-sm" disabled={!text.trim() || busy} onClick={doImport}>
+          <BusyIcon busy={busy} icon="i-check" />导入
+        </button>
       </div>
     </>
   );
@@ -1328,6 +1551,8 @@ function CookiePlatformGroup({title, platforms, cookies, selectedKey, onSelect, 
 
 function CookieImportModal({actions, onClose}) {
   const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
   const onFile = (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
@@ -1336,6 +1561,7 @@ function CookieImportModal({actions, onClose}) {
     reader.readAsText(file);
   };
   const doImport = async () => {
+    if (busy) return;
     let parsed;
     try {
       parsed = JSON.parse(text);
@@ -1343,11 +1569,14 @@ function CookieImportModal({actions, onClose}) {
       actions.showToast('内容不是合法的 JSON', 'err');
       return;
     }
+    setBusy(true);
     try {
       await actions.importCookies(parsed);
       onClose();
     } catch (error) {
       actions.showToast('导入失败：' + error.message, 'err');
+    } finally {
+      setBusy(false);
     }
   };
   return (
@@ -1355,15 +1584,17 @@ function CookieImportModal({actions, onClose}) {
       <div className="modal-title"><Icon id="i-folder" />导入 Cookie</div>
       <div className="modal-sub">上传之前导出的 .json 文件，或直接粘贴 JSON（格式：{'{ "xmly": "...", "lrts": "..." }'}）。导入会覆盖同名平台的现有 Cookie。</div>
       <div className="modal-toolbar">
-        <label className="btn btn-ghost btn-sm" style={{cursor: 'pointer'}}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()} disabled={busy}>
           <Icon id="i-folder" className="icon icon-sm" />选择文件
-          <input type="file" accept="application/json,.json" onChange={onFile} style={{display: 'none'}} />
-        </label>
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} className="visually-hidden" tabIndex={-1} aria-hidden="true" />
       </div>
-      <textarea className="cookie-modal-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder='{"xmly": "...", "lrts": "..."}' style={{minHeight: 160}} />
+      <textarea className="cookie-modal-textarea cookie-modal-textarea-lg" value={text} onChange={(event) => setText(event.target.value)} placeholder='{"xmly": "...", "lrts": "..."}' />
       <div className="modal-actions">
-        <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
-        <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入</button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>取消</button>
+        <button className="btn btn-primary btn-sm" disabled={!text.trim() || busy} onClick={doImport}>
+          <BusyIcon busy={busy} icon="i-check" />导入
+        </button>
       </div>
     </>
   );
@@ -1390,11 +1621,10 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           <span className="cookie-platform-title">{platform.name}</span>
           {!noCookie && ok && info.account_name && <span className="cookie-account" title={info.account_id ? `${info.account_name} (${info.account_id})` : info.account_name}>{info.account_name}</span>}
           {!noCookie && ok && info.vip_label && !['普通用户', '未登录', ''].includes(info.vip_label) && (
-            <span title="喜马拉雅会员状态" style={{
-              fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, marginLeft: 4, whiteSpace: 'nowrap',
-              background: String(info.vip_label).includes('白金') ? 'linear-gradient(135deg,#d4d4d8,#a1a1aa)' : 'linear-gradient(135deg,#fbbf24,#d97706)',
-              color: '#fff',
-            }}>{info.vip_label}</span>
+            <span
+              className={`vip-badge ${String(info.vip_label).includes('白金') ? 'vip-badge-platinum' : 'vip-badge-gold'}`}
+              title="喜马拉雅会员状态"
+            >{info.vip_label}</span>
           )}
         </span>
         <span className={`cookie-status ${ok || noCookie ? 'cookie-yes' : 'cookie-no'}`}>{noCookie ? '免登录' : ok ? '已设置' : '未设置'}</span>
@@ -1427,7 +1657,7 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
           )}
           <div className="cookie-actions">
             {platform.qr && <button className="btn btn-primary btn-tiny" onClick={() => setModal({content: <QrLoginModal platform={platform} onDone={actions.loadCookies} onClose={closeModal} />})}><Icon id="i-qr" className="icon icon-sm" />{scanText}</button>}
-            {platform.key !== 'lrts' && <button className="btn btn-ghost btn-tiny" onClick={() => setModal({content: <CookieScriptModal platform={platform} onSave={(cookie) => actions.saveCookie(platform.key, cookie)} onClose={closeModal} />})}><Icon id="i-globe" className="icon icon-sm" />浏览器获取</button>}
+            {platform.key !== 'lrts' && <button className="btn btn-ghost btn-tiny" onClick={() => setModal({content: <CookieScriptModal platform={platform} onSave={(cookie) => actions.saveCookie(platform.key, cookie)} onClose={closeModal} onToast={actions.showToast} />})}><Icon id="i-globe" className="icon icon-sm" />浏览器获取</button>}
             {platform.key === 'xmly' && !info.has_wfp && (
               <button className="btn btn-ghost btn-tiny" disabled={busy.xmlyWfp} onClick={actions.generateXimalayaWfp}>
                 <BusyIcon busy={busy.xmlyWfp} icon="i-key" />生成网页指纹
@@ -1441,7 +1671,15 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
             onChange={(event) => setValue(event.target.value)}
             placeholder={textareaPlaceholder}
           />
-          <button className="btn btn-primary btn-tiny" disabled={busy[`cookie:${platform.key}`]} onClick={() => { actions.saveCookie(platform.key, value); setValue(''); }}>
+          <button
+            className="btn btn-primary btn-tiny"
+            disabled={busy[`cookie:${platform.key}`] || !value.trim()}
+            onClick={async () => {
+              // ⚠ 保存成功后才清空输入：此前无条件清空，失败即丢失用户粘贴的长 Cookie
+              const saved = await actions.saveCookie(platform.key, value);
+              if (saved !== false) setValue('');
+            }}
+          >
             <BusyIcon busy={busy[`cookie:${platform.key}`]} icon="i-check" />{saveText}
           </button>
         </>
@@ -1453,10 +1691,10 @@ function CookieCard({platform, info, actions, busy, setModal, closeModal}) {
 const LRTS_CAPTCHA_SCRIPT = 'https://turing.captcha.qcloud.com/TJCaptcha.js';
 let lrtsCaptchaScriptPromise = null;
 
-function loadLrtsCaptchaScript(scriptUrl = LRTS_CAPTCHA_SCRIPT) {
+function loadLrtsCaptchaScript(scriptUrl) {
+  const source = scriptUrl || LRTS_CAPTCHA_SCRIPT;
   if (globalThis.TencentCaptcha) return Promise.resolve();
   if (lrtsCaptchaScriptPromise) return lrtsCaptchaScriptPromise;
-  const source = scriptUrl === LRTS_CAPTCHA_SCRIPT ? scriptUrl : LRTS_CAPTCHA_SCRIPT;
   lrtsCaptchaScriptPromise = new Promise((resolve, reject) => {
     const existing = document.querySelector(`script[src="${source}"]`);
     const script = existing || document.createElement('script');
@@ -1704,10 +1942,10 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
             {error && <div className="field-hint err">{error}</div>}
             <div className="lrts-note">滑块由懒人听书官方腾讯验证码服务提供。登录成功后保存 App API 凭证。{scope === 'personal' ? '仅用于个人中心。' : ''}</div>
             <div className="modal-actions">
+              <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
               <button className="btn btn-primary btn-sm" disabled={loggingIn || phone.length !== 11 || !smsCode.trim() || !lrtsLoginState.sessionId} onClick={loginLrtsWithCode}>
                 <BusyIcon busy={loggingIn} icon="i-check" />登录并保存
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
             </div>
           </div>
         ) : (
@@ -1721,10 +1959,10 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
             {error && <div className="field-hint err">{error}</div>}
             <div className="lrts-note">这里保存的是懒人听书 App API 凭证，不会当作网页 Cookie 发送。{scope === 'personal' ? '仅用于个人中心。' : ''}</div>
             <div className="modal-actions">
+              <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
               <button className="btn btn-primary btn-sm" disabled={savingManualCredential || !manualCredential.trim()} onClick={saveLrtsManualCredential}>
                 <BusyIcon busy={savingManualCredential} icon="i-check" />保存凭证
               </button>
-              <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
             </div>
           </div>
         )}
@@ -1767,7 +2005,7 @@ function QrLoginModal({platform, scope = 'cookies', onDone, onClose}) {
   );
 }
 
-function CookieScriptModal({platform, onSave, onClose}) {
+function CookieScriptModal({platform, onSave, onClose, onToast}) {
   const [script, setScript] = useState('');
   const [loginUrl, setLoginUrl] = useState('');
   const [cookie, setCookie] = useState('');
@@ -1783,9 +2021,12 @@ function CookieScriptModal({platform, onSave, onClose}) {
       <div className="modal-sub">打开登录页完成登录后，在目标网站控制台运行脚本，再把 Cookie 粘贴到下方保存。</div>
       <div className="modal-toolbar">
         {loginUrl && <a className="btn btn-ghost btn-sm" href={loginUrl} target="_blank" rel="noopener noreferrer"><Icon id="i-extlink" className="icon icon-sm" />打开登录页</a>}
-        <button className="btn btn-primary btn-sm" onClick={() => navigator.clipboard?.writeText(script)}><Icon id="i-copy" className="icon icon-sm" />复制脚本</button>
+        <button className="btn btn-primary btn-sm" onClick={async () => {
+          try { await copyText(script); onToast?.('脚本已复制到剪贴板', 'ok'); }
+          catch (error) { onToast?.('复制失败：' + error.message, 'err'); }
+        }}><Icon id="i-copy" className="icon icon-sm" />复制脚本</button>
       </div>
-      <pre className="code" style={{maxHeight: 140}}>{script || '加载中...'}</pre>
+      <pre className="code code-sm">{script || '加载中...'}</pre>
       <textarea className="cookie-modal-textarea" value={cookie} onChange={(event) => setCookie(event.target.value)} placeholder="粘贴 Cookie 字符串" />
       <div className="modal-actions">
         <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
@@ -1931,39 +2172,43 @@ function WecomTemplates() {
       .catch((e) => setMsg(String(e)))
       .finally(() => { setSaving(false); setTimeout(() => setMsg(''), 2500); });
   };
-  const ipt = {width: '100%', background: 'var(--panel-hi)', border: '1px solid var(--border)', borderRadius: 8, padding: '7px 10px', color: 'var(--text)', fontSize: 12.5, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box'};
   return (
-    <div style={{marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14}}>
-      <div className="panel-head" style={{marginBottom: 8}}>
-        <h4 style={{fontSize: 14}}>企业微信 · 消息模板</h4>
+    <div className="wecom-templates">
+      <div className="panel-head">
+        <h4>企业微信 · 消息模板</h4>
         <div className="panel-actions">
           <button className="btn btn-ghost btn-tiny" onClick={() => setTemplates({...defaults})}>全部恢复默认</button>
           <button className="btn btn-primary btn-tiny" disabled={saving} onClick={save}><BusyIcon busy={saving} icon="i-check" />保存模板</button>
         </div>
       </div>
-      <div style={{fontSize: 12, color: 'var(--text-mute)', marginBottom: 10}}>
+      <p className="panel-hint">
         交互指令的卡片 / 文本内容。变量用 <code>{'{名称}'}</code> 占位，点下方变量可插入；留空则用默认。
-      </div>
+      </p>
       {loading ? <div className="empty small"><span className="loading" />加载中</div> : (
-        <div style={{display: 'flex', flexDirection: 'column', gap: 12}}>
+        <div className="wecom-template-list">
           {fields.map((f) => (
-            <div key={f.key}>
-              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4}}>
-                <label style={{fontSize: 12.5, fontWeight: 600}}>{f.label}</label>
-                {defaults[f.key] !== undefined && <button className="btn btn-ghost btn-tiny" style={{fontSize: 11}} onClick={() => setField(f.key, defaults[f.key])}>恢复默认</button>}
+            <div className="wecom-template-item" key={f.key}>
+              <div className="field-head">
+                <label>{f.label}</label>
+                {defaults[f.key] !== undefined && <button className="btn btn-ghost btn-tiny" onClick={() => setField(f.key, defaults[f.key])}>恢复默认</button>}
               </div>
               <textarea
+                className="wecom-template-input"
                 value={templates[f.key] ?? ''}
                 onChange={(e) => setField(f.key, e.target.value)}
                 rows={(f.key.includes('desc') || f.key.includes('item')) ? 2 : 1}
                 placeholder={defaults[f.key] || ''}
-                style={ipt}
               />
               {f.vars && f.vars.length > 0 && (
-                <div style={{display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4}}>
+                <div className="var-row">
                   {f.vars.map((v) => (
-                    <code key={v} onClick={() => setField(f.key, (templates[f.key] ?? '') + `{${v}}`)}
-                      style={{fontSize: 11, padding: '1px 6px', borderRadius: 5, background: 'var(--pre-bg)', border: '1px solid var(--border)', color: 'var(--primary)', cursor: 'pointer'}}>{`{${v}}`}</code>
+                    <button
+                      type="button"
+                      key={v}
+                      className="wecom-var-btn"
+                      onClick={() => setField(f.key, (templates[f.key] ?? '') + `{${v}}`)}
+                      title={`插入变量 {${v}}`}
+                    >{`{${v}}`}</button>
                   ))}
                 </div>
               )}
@@ -1971,7 +2216,7 @@ function WecomTemplates() {
           ))}
         </div>
       )}
-      {msg && <div style={{marginTop: 8, fontSize: 12, color: msg === '已保存' ? 'var(--success)' : 'var(--danger)'}}>{msg}</div>}
+      {msg && <div className={`save-msg ${msg === '已保存' ? 'ok' : 'err'}`}>{msg}</div>}
     </div>
   );
 }
@@ -2052,6 +2297,8 @@ function NotificationChannelFields({type, config, onConfig}) {
 
 function BackupImportModal({actions, onClose}) {
   const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
   const onFile = (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
@@ -2060,6 +2307,7 @@ function BackupImportModal({actions, onClose}) {
     reader.readAsText(file);
   };
   const doImport = async () => {
+    if (busy) return;
     let parsed;
     try {
       parsed = JSON.parse(text);
@@ -2067,11 +2315,14 @@ function BackupImportModal({actions, onClose}) {
       actions.showToast('内容不是合法的 JSON', 'err');
       return;
     }
+    setBusy(true);
     try {
       await actions.importBackup(parsed);
       onClose();
     } catch (error) {
       actions.showToast('导入失败：' + error.message, 'err');
+    } finally {
+      setBusy(false);
     }
   };
   return (
@@ -2079,15 +2330,17 @@ function BackupImportModal({actions, onClose}) {
       <div className="modal-title"><Icon id="i-folder" />导入全量备份</div>
       <div className="modal-sub">上传导出的备份 .json 文件或粘贴内容。会恢复 Cookie + 订阅 + 订阅设置（同名覆盖），章节首次检测时重新拉取。</div>
       <div className="modal-toolbar">
-        <label className="btn btn-ghost btn-sm" style={{cursor: 'pointer'}}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()} disabled={busy}>
           <Icon id="i-folder" className="icon icon-sm" />选择文件
-          <input type="file" accept="application/json,.json" onChange={onFile} style={{display: 'none'}} />
-        </label>
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} className="visually-hidden" tabIndex={-1} aria-hidden="true" />
       </div>
-      <textarea className="cookie-modal-textarea" value={text} onChange={(event) => setText(event.target.value)} placeholder="粘贴 audioflow-backup-*.json 的内容" style={{minHeight: 160}} />
+      <textarea className="cookie-modal-textarea cookie-modal-textarea-lg" value={text} onChange={(event) => setText(event.target.value)} placeholder="粘贴 audioflow-backup-*.json 的内容" />
       <div className="modal-actions">
-        <button className="btn btn-ghost btn-sm" onClick={onClose}>取消</button>
-        <button className="btn btn-primary btn-sm" disabled={!text.trim()} onClick={doImport}>导入恢复</button>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={busy}>取消</button>
+        <button className="btn btn-primary btn-sm" disabled={!text.trim() || busy} onClick={doImport}>
+          <BusyIcon busy={busy} icon="i-check" />导入恢复
+        </button>
       </div>
     </>
   );
@@ -2156,8 +2409,8 @@ export function SettingsPage({app}) {
           <div className="settings-section-head"><div><h4>下载设置</h4><span>常用的保存位置、音质与下载性能</span></div></div>
           <div className="settings-grid">
             <div className="field-row settings-span-2"><label className="field-label">下载目录</label><input className="field-input" value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="/path/to/downloads" /></div>
-            <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 64K">M4A 64K（番茄畅听）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option><option value={XMLY_PC_INTERFACE}>喜马拉雅电脑版 · 自动最佳</option><option value="PC 256K">PC 256K（电脑版最高档）</option><option value="PC 128K">PC 128K（电脑版 HQ）</option></select></div>
-            <div className="field-row"><label className="field-label">并发线程数</label><input className="field-input" type="number" min="1" max="64" value={downloadThreads} onChange={(e) => setDownloadThreads(Math.max(1, Math.min(64, parseInt(e.target.value) || 1)))} placeholder="1-64" /></div>
+            <div className="field-row"><label className="field-label">默认音质</label><select className="field-select" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="M4A 24K">M4A 24K（省流档）</option><option value="M4A 64K">M4A 64K（标准低码率）</option><option value="M4A 96K">M4A 96K（标准）</option><option value="M4A 128K">M4A 128K（高品质）</option><option value="无损真人录制">无损 / 真人录制（平台最高）</option><option value={XMLY_WEB_INTERFACE}>喜马拉雅网页版 · 自动最佳</option><option value={XMLY_PC_INTERFACE}>喜马拉雅电脑版 · 自动最佳</option><option value="PC 256K">PC 256K（电脑版最高档）</option><option value="PC 128K">PC 128K（电脑版 HQ）</option><option value="PC 64K">PC 64K（电脑版标准）</option><option value="PC 24K">PC 24K（电脑版省流）</option></select><span className="field-hint">喜马拉雅专辑的实际音质以专辑页「下载接口 / 音质」的选择为准；此处用于其余平台。</span></div>
+            <div className="field-row"><label className="field-label">并发线程数</label><NumberField value={downloadThreads} onCommit={setDownloadThreads} min={1} max={64} placeholder="1-64" aria-label="并发线程数" /></div>
           </div>
         </div>
 
@@ -2168,17 +2421,17 @@ export function SettingsPage({app}) {
             <div className="settings-grid">
               <div className="settings-toggle-row"><label className="check-row"><input type="checkbox" checked={organizeByPlatformEnabled} onChange={(e) => setOrganizeByPlatformEnabled(e.target.checked)} /><span>按平台创建文件夹</span></label><small>下载目录 / 平台 / 专辑</small></div>
               <div className="settings-toggle-row"><label className="check-row"><input type="checkbox" checked={splitChaptersEnabled} onChange={(e) => setSplitChaptersEnabled(e.target.checked)} /><span>按数量拆分文件夹</span></label><small>适合章节很多的专辑</small></div>
-              <div className="field-row"><label className="field-label">每个文件夹</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="10000" value={chaptersPerFolder} disabled={!splitChaptersEnabled} onChange={(e) => setChaptersPerFolder(Math.max(1, Math.min(10000, parseInt(e.target.value) || 200)))} /><span className="field-suffix">个文件</span></div></div>
+              <div className="field-row"><label className="field-label">每个文件夹</label><div className="field-row-inline"><NumberField value={chaptersPerFolder} onCommit={setChaptersPerFolder} min={1} max={10000} disabled={!splitChaptersEnabled} aria-label="每个文件夹的章节数" /><span className="field-suffix">个文件</span></div></div>
               <div className="field-row"><label className="field-label">文件名前缀</label><select className="field-select" value={filenamePrefixFormat} onChange={(e) => setFilenamePrefixFormat(e.target.value)}><option value="0001-">0001-章节名</option><option value="001-">001-章节名</option><option value="01-">01-章节名</option><option value="1-">1-章节名</option><option value="0001.">0001.章节名</option><option value="001.">001.章节名</option><option value="01.">01.章节名</option><option value="1.">1.章节名</option><option value="none">不添加序号前缀</option></select></div>
             </div>
           </div>
           <div className="settings-section settings-maintenance">
             <div className="settings-section-head"><div><h4>记录维护</h4><span>限制历史记录占用的空间</span></div></div>
             <div className="settings-grid">
-              <div className="field-row"><label className="field-label">下载记录保留</label><div className="field-row-inline"><input className="field-input" type="number" min="10" max="10000" value={taskHistoryMaxKeep} onChange={(e) => setTaskHistoryMaxKeep(Math.max(10, Math.min(10000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span><input className="field-input" type="number" min="1" max="3650" value={taskHistoryMaxAgeDays} onChange={(e) => setTaskHistoryMaxAgeDays(Math.max(1, Math.min(3650, parseInt(e.target.value) || 1)))} /><span className="field-suffix">天</span></div></div>
-              <div className="field-row"><label className="field-label">详情压缩</label><div className="field-row-inline"><input className="field-input" type="number" min="0" max="3650" value={taskDetailRetentionDays} onChange={(e) => setTaskDetailRetentionDays(Math.max(0, Math.min(3650, parseInt(e.target.value) || 0)))} /><span className="field-suffix">天后</span><input className="field-input" type="number" min="1" max="1000" value={taskFailureChapterLimit} onChange={(e) => setTaskFailureChapterLimit(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))} /><span className="field-suffix">条失败</span></div></div>
-              <div className="field-row"><label className="field-label">记录文件上限</label><div className="field-row-inline"><input className="field-input" type="number" min="1" max="1024" value={taskHistoryMaxMB} onChange={(e) => setTaskHistoryMaxMB(Math.max(1, Math.min(1024, parseInt(e.target.value) || 1)))} /><span className="field-suffix">MB</span></div></div>
-              <div className="field-row"><label className="field-label">后台任务记录</label><div className="field-row-inline"><input className="field-input" type="number" min="10" max="5000" value={backgroundEventsMaxKeep} onChange={(e) => setBackgroundEventsMaxKeep(Math.max(10, Math.min(5000, parseInt(e.target.value) || 10)))} /><span className="field-suffix">条</span></div></div>
+              <div className="field-row"><label className="field-label">下载记录保留</label><div className="field-row-inline"><NumberField value={taskHistoryMaxKeep} onCommit={setTaskHistoryMaxKeep} min={10} max={10000} aria-label="下载记录保留条数" /><span className="field-suffix">条</span><NumberField value={taskHistoryMaxAgeDays} onCommit={setTaskHistoryMaxAgeDays} min={1} max={3650} aria-label="下载记录保留天数" /><span className="field-suffix">天</span></div></div>
+              <div className="field-row"><label className="field-label">详情压缩</label><div className="field-row-inline"><NumberField value={taskDetailRetentionDays} onCommit={setTaskDetailRetentionDays} min={0} max={3650} aria-label="详情压缩天数" /><span className="field-suffix">天后</span><NumberField value={taskFailureChapterLimit} onCommit={setTaskFailureChapterLimit} min={1} max={1000} aria-label="失败章节保留条数" /><span className="field-suffix">条失败</span></div></div>
+              <div className="field-row"><label className="field-label">记录文件上限</label><div className="field-row-inline"><NumberField value={taskHistoryMaxMB} onCommit={setTaskHistoryMaxMB} min={1} max={1024} aria-label="记录文件上限 MB" /><span className="field-suffix">MB</span></div></div>
+              <div className="field-row"><label className="field-label">后台任务记录</label><div className="field-row-inline"><NumberField value={backgroundEventsMaxKeep} onCommit={setBackgroundEventsMaxKeep} min={10} max={5000} aria-label="后台任务记录条数" /><span className="field-suffix">条</span></div></div>
             </div>
           </div>
         </details>
@@ -2191,7 +2444,7 @@ export function SettingsPage({app}) {
       <div className="glass glass-pad settings-card">
         <div className="panel-head"><h4>备份与恢复</h4></div>
         <div className="cookie-desc">一个文件打包全部 Cookie + 订阅 + 订阅设置，换机/重装时一键恢复。文件含明文登录凭证，请妥善保管。</div>
-        <div className="cookie-toolbar" style={{marginTop: 10}}>
+        <div className="cookie-toolbar cookie-toolbar-gap">
           <button className="btn btn-ghost btn-sm" onClick={doExportBackup}><Icon id="i-download" className="icon icon-sm" />导出全量备份</button>
           <button className="btn btn-primary btn-sm" disabled={busy.importBackup} onClick={() => setModal({content: <BackupImportModal actions={actions} onClose={closeModal} />})}><Icon id="i-folder" className="icon icon-sm" />导入备份</button>
         </div>
@@ -2268,7 +2521,7 @@ function DiagnosticsPanel({config, diagnostics, loading, onLoad}) {
   );
 }
 
-function PasswordModal({onSubmit, onClose}) {
+export function PasswordModal({onSubmit, onClose, notice = ''}) {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -2283,7 +2536,7 @@ function PasswordModal({onSubmit, onClose}) {
   return (
     <>
       <div className="modal-title"><Icon id="i-key" />修改登录密码</div>
-      <div className="modal-sub">默认密码为 admin。修改成功后会自动退出登录，请使用新密码重新进入。</div>
+      <div className="modal-sub">{notice || '修改成功后会自动退出登录，请使用新密码重新进入。'}</div>
       <div className="field-row"><label className="field-label">当前密码</label><input className="field-input" type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} /></div>
       <div className="field-row"><label className="field-label">新密码</label><input className="field-input" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="至少 6 位" /></div>
       {tooShort && <div className="field-hint err">密码不能少于 6 位</div>}

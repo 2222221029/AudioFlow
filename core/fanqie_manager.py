@@ -21,6 +21,7 @@ from collections import Counter
 from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs, unquote
 from .time_api import get_timestamp_ms_str
+from .tls_policy import tls_verify, warn_if_verification_disabled
 
 try:
     import urllib3
@@ -149,6 +150,7 @@ class FanqieManager:
         self.last_output_path: Optional[str] = None
         # 高码率档被服务端降级时只提醒一次，避免每章刷屏
         self._hq_degraded_warned = False
+        warn_if_verification_disabled("番茄畅听")
     
     def search_books(self, keyword: str, max_pages: int = 3) -> List[Dict]:
         """搜索书籍 - 优化版本，减少请求次数提升速度
@@ -182,7 +184,7 @@ class FanqieManager:
                     headers=self.headers,
                     json=request_body,
                     timeout=8,  # 减少超时时间，加快失败响应
-                    verify=False  # 禁用SSL验证，避免证书验证失败
+                    verify=tls_verify()  # 禁用SSL验证，避免证书验证失败
                 )
                 
                 print(f"📊 响应状态: {response.status_code}")
@@ -504,7 +506,7 @@ class FanqieManager:
                     headers=self.headers,
                     json=body,
                     timeout=8,
-                    verify=False,
+                    verify=tls_verify(),
                 )
                 if response.status_code != 200:
                     break
@@ -970,7 +972,7 @@ class FanqieManager:
             
             # 直接发送请求（不使用X-Gorgon签名，不使用多域名尝试）
             try:
-                response = requests.get(api_url, params=params, headers=headers, timeout=15, verify=False)
+                response = requests.get(api_url, params=params, headers=headers, timeout=15, verify=tls_verify())
                 print(f"📥 原始API响应: HTTP {response.status_code}")
             except Exception as e:
                 print(f"❌ 原始API请求失败: {e}")
@@ -1067,7 +1069,7 @@ class FanqieManager:
                         headers_no_compression = headers.copy()
                         headers_no_compression.pop('Accept-Encoding', None)
                         try:
-                            response2 = requests.get(self.audio_url, params=params, headers=headers_no_compression, timeout=15, verify=False)
+                            response2 = requests.get(self.audio_url, params=params, headers=headers_no_compression, timeout=15, verify=tls_verify())
                             if response2.status_code == 200:
                                 try:
                                     data = response2.json()
@@ -1138,133 +1140,6 @@ class FanqieManager:
             traceback.print_exc()
             return None
     
-    def _get_audio_url_new_api(self, chapter_id: str) -> Optional[str]:
-        """使用新API获取音频URL"""
-        try:
-            print("📡 使用新API获取音频URL")
-            print(f"   章节ID: {chapter_id}")
-            
-            # 新API地址
-            api_url = f"https://api.cenguigui.cn/api/tomato/changdunovel/?id={chapter_id}"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'application/json, text/plain, */*',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                'Connection': 'keep-alive'
-            }
-            
-            print("📤 发送新API请求...")
-            print(f"   URL: {api_url}")
-            print(f"   请求头: {headers}")
-            
-            response = requests.get(api_url, headers=headers, timeout=15)
-            
-            print(f"📥 收到新API响应: HTTP {response.status_code}")
-            print(f"   响应内容长度: {len(response.content)} 字节")
-            
-            if response.status_code == 200 and response.text:
-                try:
-                    data = response.json()
-                    print(f"   JSON解析成功: {data}")
-                    
-                    # 检查返回码
-                    if data.get('code') == 200 and 'data' in data:
-                        # 获取音频URL
-                        audio_url = data['data'].get('url')
-                        if audio_url:
-                            print("✅ 新API获取音频URL成功!")
-                            print(f"   音频URL: {audio_url[:100]}...")
-                            return audio_url
-                        else:
-                            print("❌ 新API响应中没有找到音频URL")
-                            print(f"   完整响应: {data}")
-                    else:
-                        print(f"❌ 新API返回错误 (code={data.get('code')})")
-                        print(f"   错误信息: {data.get('msg', '未知错误')}")
-                        
-                except json.JSONDecodeError as e:
-                    print(f"❌ 新API JSON解析失败: {e}")
-                    print(f"   响应内容: {response.text[:500] if response.text else 'None'}")
-            else:
-                print(f"❌ 新API请求失败: {response.status_code}")
-                print(f"   响应内容: {response.text[:500] if response.text else 'None'}")
-            
-            return None
-            
-        except Exception as e:
-            print(f"❌ 新API获取音频URL异常: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def _get_audio_url_third_party(self, chapter_id: str) -> Optional[str]:
-        """使用第三方API获取音频URL"""
-        try:
-            print("📡 使用第三方API获取音频URL")
-            print(f"   章节ID: {chapter_id}")
-            
-            # 第三方API地址
-            api_url = "https://v1.gyks.cf/content"
-            params = {
-                "item_id": str(chapter_id),
-                "source": "番茄",
-                "tab": "听书",
-                "version": "4.6.29"
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'application/json, text/plain, */*',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                'Connection': 'keep-alive'
-            }
-            
-            print("📤 发送第三方API请求...")
-            print(f"   URL: {api_url}")
-            print(f"   参数: {params}")
-            print(f"   请求头: {headers}")
-            
-            response = requests.get(api_url, params=params, headers=headers, timeout=15)
-            
-            print(f"📥 收到第三方API响应: HTTP {response.status_code}")
-            print(f"   响应内容长度: {len(response.content)} 字节")
-            
-            if response.status_code == 200 and response.text:
-                try:
-                    data = response.json()
-                    print(f"   JSON解析成功: {data}")
-                    
-                    # 检查返回码
-                    if data.get('code', -1) == 0:
-                        # 获取音频URL
-                        audio_url = data.get('content') or data.get('url') or data.get('audio_url') or data.get('play_url')
-                        if audio_url:
-                            print("✅ 第三方API获取音频URL成功!")
-                            print(f"   音频URL: {audio_url[:100]}...")
-                            return audio_url
-                        else:
-                            print("❌ 第三方API响应中没有找到音频URL")
-                            print(f"   完整响应: {data}")
-                    else:
-                        print(f"❌ 第三方API返回错误 (code={data.get('code')})")
-                        print(f"   错误信息: {data.get('msg', '未知错误')}")
-                        
-                except json.JSONDecodeError as e:
-                    print(f"❌ 第三方API JSON解析失败: {e}")
-                    print(f"   响应内容: {response.text[:500] if response.text else 'None'}")
-            else:
-                print(f"❌ 第三方API请求失败: {response.status_code}")
-                print(f"   响应内容: {response.text[:500] if response.text else 'None'}")
-            
-            return None
-            
-        except Exception as e:
-            print(f"❌ 第三方API获取音频URL异常: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
     def _get_play_dict(self, chapter_id: str, voice_name: str | Dict = "无损真人录制") -> Optional[Dict]:
         """从 playinfo/ API 拿原始 play dict（含 is_encrypt / main_url / backup_url）。
         复用 _get_audio_url_original 的请求逻辑，但返回整个 play 对象而非只有 URL。
@@ -1305,7 +1180,7 @@ class FanqieManager:
             }
             resp = requests.get(
                 "https://reading.snssdk.com/reading/reader/audio/playinfo/",
-                params=params, headers=headers, timeout=15, verify=False,
+                params=params, headers=headers, timeout=15, verify=tls_verify(),
             )
             if resp.status_code != 200:
                 return None
@@ -1413,27 +1288,40 @@ class FanqieManager:
             }
             
             print("🍅 下载番茄音频，使用专用请求头")
+            # ⚠ .part 临时文件 + 最后 os.replace：失败/中断不留半截文件，
+            # 避免残留的 >10KB 半截文件被上层「文件已存在」规则永久跳过。
+            part_path = f"{save_path}.part"
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
             response = self.session.get(url, headers=headers, stream=True, timeout=30)
-            if response.status_code == 200:
-                total_size = int(response.headers.get('Content-Length') or 0)
-                downloaded_size = 0
-                with open(save_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=262144):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            if progress_callback:
-                                progress_callback(downloaded_size, total_size)
-                
-                import os
-                file_size = os.path.getsize(save_path)
-                if file_size > 1024 * 10:  # 大于10KB认为下载成功
-                    print(f"✅ 下载成功: {file_size // 1024}KB")
-                    return True
-                else:
-                    os.remove(save_path)
+            try:
+                if response.status_code == 200:
+                    total_size = int(response.headers.get('Content-Length') or 0)
+                    downloaded_size = 0
+                    with open(part_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=262144):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                if progress_callback:
+                                    progress_callback(downloaded_size, total_size)
+                    
+                    file_size = os.path.getsize(part_path)
+                    if file_size > 1024 * 10:  # 大于10KB认为下载成功
+                        os.replace(part_path, save_path)
+                        print(f"✅ 下载成功: {file_size // 1024}KB")
+                        return True
                     return False
-            return False
+                return False
+            finally:
+                response.close()
+                try:
+                    if os.path.exists(part_path):
+                        os.remove(part_path)
+                except OSError:
+                    pass
         except Exception as e:
             print(f"❌ 下载异常: {e}")
             return False
@@ -1537,7 +1425,9 @@ class FanqieManager:
         try:
             data = client.audio_toneinfo(bid) or {}
             if isinstance(data, dict):
+                from core.bounded_cache import trim as _trim_cache
                 self._tone_info_cache[bid] = data
+                _trim_cache(self._tone_info_cache, 256)
                 print(
                     f"✅ 番茄畅听动态音色: 真人 {len(data.get('audio_tones') or [])} 个, "
                     f"AI {len(data.get('tts_tones') or [])} 个"
@@ -1623,7 +1513,9 @@ class FanqieManager:
                 fallback.setdefault("download_book_id", bid)
                 voices.append(fallback)
 
+        from core.bounded_cache import trim as _trim_cache
         self._voices_cache[bid] = voices
+        _trim_cache(self._voices_cache, 256)
         return voices
 
     def resolve_voice_config(self, book_id: str, voice_config: Optional[Dict] = None) -> Optional[Dict]:

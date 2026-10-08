@@ -335,6 +335,8 @@ class QimaoManager:
             ):
                 if key:
                     self._search_cache[key] = item
+        from core.bounded_cache import trim as _trim_cache
+        _trim_cache(self._search_cache, 200)
         print(
             f"✅ 七猫听书: 书籍 {len(book_items)} + 听书 {len(listen_items)}"
             f" → 交错 {before} → 去重 {len(merged)}"
@@ -444,6 +446,8 @@ class QimaoManager:
                 for key in (str(item.get("id") or ""), bid):
                     if key:
                         self._search_cache[key] = item
+                from core.bounded_cache import trim as _trim_cache
+                _trim_cache(self._search_cache, 200)
                 return item
         except Exception:
             pass

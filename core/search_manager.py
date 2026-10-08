@@ -5,6 +5,7 @@ from .ximalaya_manager import XimalayaManager
 from .lrts_manager import LRTSManager
 from .fanqie_manager import FanqieManager
 from .qtfm_manager import QtfmManager
+from .tls_policy import tls_verify, warn_if_verification_disabled
 from src.features.qidian.audio_system import QidianAudioSystem, normalize_qidian_cookies
 
 
@@ -22,7 +23,8 @@ class SearchManager:
         # 🔧 为起点听书创建持久的session和headers
         import requests
         self.qidian_session = requests.Session()
-        self.qidian_session.verify = False
+        self.qidian_session.verify = tls_verify()
+        warn_if_verification_disabled("起点听书")
         self.qidian_headers = {}
         
         # 🔧 为兼容download_worker.py，添加session别名指向qidian_session
@@ -363,8 +365,8 @@ class SearchManager:
             
             print(f"📖 正在获取详情: album_id={album_id}")
             print(f"   qidian_cookies 字段: {list(self.qidian_cookies.keys())}")
-            print(f"   ywguid: {self.qidian_cookies.get('ywguid', 'N/A')[:20] if self.qidian_cookies.get('ywguid') else 'N/A'}...")
-            print(f"   ywkey: {self.qidian_cookies.get('ywkey', 'N/A')[:20] if self.qidian_cookies.get('ywkey') else 'N/A'}...")
+            print(f"   ywguid: {'已配置（内容不打印）' if self.qidian_cookies.get('ywguid') else 'N/A'}")
+            print(f"   ywkey: {'已配置（内容不打印）' if self.qidian_cookies.get('ywkey') else 'N/A'}")
             
             system = QidianAudioSystem(self.qidian_cookies)
             detail = system.get_audio_detail(album_id)
@@ -542,7 +544,7 @@ class SearchManager:
             get_resp = self.qidian_session.get(
                 url,
                 timeout=60,
-                verify=False,
+                verify=tls_verify(),
                 allow_redirects=True,
                 stream=True,
                 headers={
@@ -599,7 +601,7 @@ class SearchManager:
                 headers=self.qidian_headers or None,
                 cookies=self.qidian_cookies or None,
                 timeout=10,
-                verify=False,
+                verify=tls_verify(),
             )
             data = response.json()
             
@@ -652,7 +654,7 @@ class SearchManager:
             print(f"   Params: {params}")
             print(f"   Cookies: {list(self.qidian_cookies.keys()) if self.qidian_cookies else '空'}")
             if self.qidian_cookies:
-                print(f"   关键cookies: ywguid={self.qidian_cookies.get('ywguid', 'N/A')[:20] if self.qidian_cookies.get('ywguid') else 'N/A'}")
+                print(f"   关键cookies: ywguid={'已配置（内容不打印）' if self.qidian_cookies.get('ywguid') else 'N/A'}")
             
             # 使用更新的headers，而不是仅使用qidian_headers
             response = self.qidian_session.get(
@@ -661,7 +663,7 @@ class SearchManager:
                 headers=headers,
                 cookies=self.qidian_cookies,
                 timeout=10,
-                verify=False
+                verify=tls_verify()
             )
             
             print(f"📤 API响应状态码: {response.status_code}")
@@ -764,9 +766,9 @@ class SearchManager:
         if self.qidian_cookies:
             print(f"   cookies字段数: {len(self.qidian_cookies)}")
             print(f"   cookies字段名: {list(self.qidian_cookies.keys())}")
-            print(f"   ywguid: {self.qidian_cookies.get('ywguid', 'N/A')[:30] if self.qidian_cookies.get('ywguid') else 'N/A'}")
-            print(f"   ywkey: {self.qidian_cookies.get('ywkey', 'N/A')[:30] if self.qidian_cookies.get('ywkey') else 'N/A'}")
-            print(f"   ywOpenId: {self.qidian_cookies.get('ywOpenId', 'N/A')[:30] if self.qidian_cookies.get('ywOpenId') else 'N/A'}")
+            print(f"   ywguid: {'已配置（内容不打印）' if self.qidian_cookies.get('ywguid') else 'N/A'}")
+            print(f"   ywkey: {'已配置（内容不打印）' if self.qidian_cookies.get('ywkey') else 'N/A'}")
+            print(f"   ywOpenId: {'已配置（内容不打印）' if self.qidian_cookies.get('ywOpenId') else 'N/A'}")
         
         print("\n2️⃣ Session状态:")
         print(f"   qidian_session: {self.qidian_session}")

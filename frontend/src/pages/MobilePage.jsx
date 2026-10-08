@@ -3,7 +3,7 @@ import {useEffect, useMemo, useState} from 'react';
 import {Icon, IconSprite} from '../components/Icons.jsx';
 import {AppLogo} from '../components/AppLogo.jsx';
 import {MiniPlayer} from '../components/Player.jsx';
-import {useAudioFlowApp} from '../hooks/useAudioFlowApp.js';
+import {useAudioFlowApp} from '../hooks/useAudioFlowApp.jsx';
 import {isStandalonePwa, promptInstall, setupInstallPrompt} from '../utils/pwa.js';
 import {
   AlbumDetail,
@@ -70,10 +70,19 @@ function MobileHeader({app, installable, switchView, searchAndShowResults}) {
         {mobileView === 'subscriptions' && <button className="native-chip-btn" onClick={() => actions.loadSubscriptions({refreshLocal: true})}><Icon id="i-refresh" />刷新</button>}
         {mobileView === 'cookies' && <button className="native-chip-btn" onClick={actions.loadCookies}><Icon id="i-refresh" />刷新</button>}
         {mobileView === 'notifications' && <button className="native-chip-btn" onClick={actions.loadNotifications}><Icon id="i-refresh" />刷新</button>}
-        {mobileView === 'settings' && <button className="native-chip-btn" onClick={actions.loadDiagnostics}><Icon id="i-refresh" />诊断</button>}
+        {mobileView === 'settings' && <button className="native-chip-btn" onClick={actions.loadDiagnostics}><Icon id="i-refresh" />刷新</button>}
         {mobileView === 'more' && (installable || !isStandalonePwa()) && (
-          <button className="native-chip-btn" onClick={installable ? promptInstall : undefined}><Icon id="i-mobile" />安装</button>
-        )}
+          <button
+            className="native-chip-btn"
+            onClick={() => {
+              if (installable && promptInstall) {
+                promptInstall();
+              } else {
+                app.actions.showToast?.('浏览器未提供安装入口，请通过菜单「添加到主屏幕 / 安装应用」安装', 'ok');
+              }
+            }}
+          ><Icon id="i-mobile" />安装</button>
+      )}
       </div>
 
       {mobileView === 'discover' && (
@@ -100,7 +109,7 @@ function DiscoverView({app, switchView, searchAndShowResults}) {
   const {query, setQuery, results, actions, metrics, subscriptions, status, busy, searchHistory} = app;
   const handleHistoryClick = (keyword) => {
     setQuery(keyword);
-    setTimeout(actions.doSearch, 0);
+    actions.doSearch(keyword);
   };
   const quickStats = [
     ['搜索结果', results.length],
@@ -249,7 +258,7 @@ export default function MobilePage() {
 
   const searchAndShowResults = () => {
     setMobileView('discover');
-    setTimeout(actions.doSearch, 0);
+    actions.doSearch();
   };
 
   return (

@@ -13,7 +13,8 @@ from datetime import datetime
 
 
 SENSITIVE_PATTERNS = [
-    re.compile(r"((?:x[-_]?tk|access[_-]?token|csrf[_-]?token|token|cookie|secret[_-]?key|signature|sign)\s*[:=]\s*)([^,;&\s'\"]+)", re.I),
+    re.compile(r"((?:x[-_]?tk|access[_-]?token|csrf[_-]?token|token|cookie|secret[_-]?key|signature|authorization)\s*[:=]\s*)([^,;&\s'\"]+)", re.I),
+    re.compile(r"\b(bearer|access[_-]?token|x[-_]?tk|cookie|secret)\b\s+([A-Za-z0-9._~+/=-]{8,})", re.I),
     re.compile(r"((?:https?://)[^\s'\"]{24,})", re.I),
 ]
 
