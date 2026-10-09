@@ -3738,7 +3738,11 @@ _PLATFORM_AUDIO_HOST_HINTS = {
     "番茄听书": ("fanqienovel.com", "snssdk.com", "byteimg.com", "toutiao.com", "bytedance.com"),
     "七猫听书": ("qimao.com", "qimao.tv", "qimaoapi.com"),
     "蜻蜓FM": ("qtfm.cn", "qingting.fm", "qtfm.com"),
-    "云听FM": ("radio.cn", "cnr.cn", "yunting.cn"),
+    # 云听FM：ytmedia.radio.cn 的对象实际存放在阿里云 OSS
+    # yunting-bj-radio-client bucket（同一 key，匿名可读），播放直链会解析到
+    # 源站域名规避 CDN 403 风控 —— 白名单同步放行该 bucket 精确域名。
+    "云听FM": ("radio.cn", "cnr.cn", "yunting.cn",
+               "yunting-bj-radio-client.oss-cn-beijing.aliyuncs.com"),
     "起点听书": ("qidian.com", "qdmobi.com"),
     "酷我听书": ("kuwo.cn", "kuwo.com"),
     "网易云听书": ("music.163.com", "music.126.net", "netease.com"),
@@ -4744,6 +4748,14 @@ def api_player_url():
             url = info.get("url") if info else None
         elif platform == "云听FM":
             url = request.args.get("direct_url", "")
+            # CDN（ytmedia.radio.cn）对 NAS 出口 IP 常有 403 风控，播放也受影响；
+            # 解析到阿里云 OSS 源站域名（同一 object key，匿名可读，见 yuntu_manager）。
+            if url:
+                try:
+                    from core.yuntu_manager import YunTuManager
+                    url = YunTuManager.resolve_media_url(str(url), prefer="origin")
+                except Exception:
+                    pass
         elif platform == "起点听书":
             audio_dict = search_manager.search_manager.get_qidian_audio_url(album_id, chapter_id)
             if audio_dict and "default" in audio_dict:

@@ -21,6 +21,8 @@ import hashlib
 import unittest
 from unittest import mock
 
+import requests
+
 from core.yuntu_manager import YunTuManager
 
 WEB_KEY = "f0fc4c668392f9f9a447e48584c214ee"
@@ -382,6 +384,185 @@ class YunTuAggregationTest(unittest.TestCase):
 
         manager.yuntu_manager.search_books.assert_not_called()
         self.assertEqual(books[0]["id"], "16100096126610")
+
+
+class YunTuMediaOriginFallbackTest(unittest.TestCase):
+    """音频 CDN 403 风控 → 源站 OSS 兜底（2026-10-09 修复）。
+
+    现象：倚天屠龙记（592 集）批量下载 100+ 集 403 Forbidden（ytmedia.radio.cn）。
+    根因：CDN（openresty 网关）对单出口 IP 批量拉流阈值封禁，触发后所有
+    URL 恒 403，与 UA/Referer/Cookie 无关；对象在阿里云 OSS 源站完好
+    （同 key 匿名直连 200，支持 Range，字节数一致）。
+    """
+
+    CDN_URL = "https://ytmedia.radio.cn/file/202408/06/09/44895954045ee0c509c4a26b9728483b30e8bc5h.mp3"
+    ORIGIN_URL = (
+        "https://yunting-bj-radio-client.oss-cn-beijing.aliyuncs.com"
+        "/file/202408/06/09/44895954045ee0c509c4a26b9728483b30e8bc5h.mp3"
+    )
+
+    def setUp(self):
+        # 类级冷却状态是共享的，逐用例复位
+        YunTuManager._cdn_403_streak = 0
+        YunTuManager._cdn_403_until = 0.0
+
+    def tearDown(self):
+        YunTuManager._cdn_403_streak = 0
+        YunTuManager._cdn_403_until = 0.0
+
+    def test_resolve_media_url_keeps_path_verbatim_and_swaps_host(self):
+        # 路径逐字节保留（含 %2F 编码，实测源站两种形态均可）
+        ccyt = "https://ytmedia.radio.cn/CCYT%2F2022%2F08%2F18%2F16607872339bee19e9f74829c6e4668b62c724635ah.mp3"
+        resolved = YunTuManager.resolve_media_url(ccyt, prefer="origin")
+        self.assertTrue(resolved.startswith("https://yunting-bj-radio-client.oss-cn-beijing.aliyuncs.com/CCYT%2F"))
+        self.assertIn("16607872339bee19e9f74829c6e4668b62c724635ah.mp3", resolved)
+
+    def test_resolve_media_url_passthrough_non_cdn(self):
+        url = "https://example.com/media/a.mp3"
+        self.assertEqual(YunTuManager.resolve_media_url(url, prefer="origin"), url)
+
+    def test_candidates_cdn_first_then_origin(self):
+        candidates = YunTuManager._audio_candidate_urls(self.CDN_URL)
+        self.assertEqual(candidates[0], self.CDN_URL)
+        self.assertEqual(candidates[1], self.ORIGIN_URL)
+
+    def test_candidates_origin_first_during_cooldown(self):
+        with mock.patch.object(YunTuManager, "_cdn_cooldown_active", return_value=True):
+            candidates = YunTuManager._audio_candidate_urls(self.CDN_URL)
+        self.assertEqual(candidates[0], self.ORIGIN_URL)
+
+    def test_mark_cdn_403_triggers_global_cooldown_after_threshold(self):
+        for _ in range(YunTuManager.CDN_403_COOLDOWN_THRESHOLD):
+            YunTuManager._mark_cdn_403()
+        self.assertTrue(YunTuManager._cdn_cooldown_active())
+        # 冷却中 resolve 默认走源站
+        self.assertEqual(
+            YunTuManager.resolve_media_url(self.CDN_URL),
+            self.ORIGIN_URL,
+        )
+
+    def test_clear_cdn_403_resets_streak_and_cooldown(self):
+        YunTuManager._mark_cdn_403()
+        YunTuManager._clear_cdn_403()
+        self.assertFalse(YunTuManager._cdn_cooldown_active())
+        self.assertEqual(YunTuManager.resolve_media_url(self.CDN_URL), self.CDN_URL)
+
+    def test_download_audio_falls_back_to_origin_on_cdn_403(self):
+        """CDN 403 → 冷却计数 +1，并立刻换源站成功。"""
+        manager = YunTuManager()
+        http_error = requests.HTTPError("403 Client Error: Forbidden for url: ...")
+        http_error.response = mock.Mock(status_code=403)
+
+        def fake_session_to_file(*, url, save_path, **kwargs):
+            if url.startswith("https://ytmedia.radio.cn/"):
+                raise http_error
+            self.assertEqual(url, self.ORIGIN_URL)
+            with open(save_path, "wb") as fh:
+                fh.write(b"ID3" + b"\x00" * 4096)
+            return save_path
+
+        with mock.patch("core.yuntu_manager.download_adapter.session_to_file", side_effect=fake_session_to_file):
+            ok = manager.download_audio(self.CDN_URL, "/tmp/yt_fallback.mp3")
+
+        self.assertTrue(ok)
+        self.assertEqual(YunTuManager._cdn_403_streak, 1)
+        self.assertEqual(manager.last_error, "")
+        self.assertFalse(manager.last_error_type)
+
+    def test_download_audio_marks_rate_limited_when_both_fail(self):
+        """CDN 与源站都失败 → last_error_type=rate_limited 供上层冷却重试。"""
+        manager = YunTuManager()
+        cdn_error = requests.HTTPError("403 Client Error: Forbidden")
+        cdn_error.response = mock.Mock(status_code=403)
+        origin_error = requests.ConnectionError("read timed out")
+
+        def fake_session_to_file(*, url, save_path, **kwargs):
+            raise cdn_error if url.startswith("https://ytmedia.radio.cn/") else origin_error
+
+        with mock.patch("core.yuntu_manager.download_adapter.session_to_file", side_effect=fake_session_to_file):
+            ok = manager.download_audio(self.CDN_URL, "/tmp/yt_both_fail.mp3")
+
+        self.assertFalse(ok)
+        self.assertIn("rate_limited", manager.last_error_type)
+        self.assertIn("云听FM下载失败", manager.last_error)
+
+    def test_download_audio_restricted_when_both_sources_404(self):
+        """两个候选都 404（对象真缺失）→ restricted，上层不再盲目重试。"""
+        manager = YunTuManager()
+        missing = requests.HTTPError("404 Client Error: Not Found")
+        missing.response = mock.Mock(status_code=404)
+
+        with mock.patch("core.yuntu_manager.download_adapter.session_to_file", side_effect=missing):
+            ok = manager.download_audio(self.CDN_URL, "/tmp/yt_missing.mp3")
+
+        self.assertFalse(ok)
+        self.assertEqual(manager.last_error_type, "restricted")
+        # 没有 403 → 不该计入 CDN 风控冷却
+        self.assertEqual(YunTuManager._cdn_403_streak, 0)
+
+    def test_origin_404_while_cdn_blocked_stays_retryable(self):
+        """CDN 正被风控时的源站 404 不能判死：对象可能在 CDN 的另一个 bucket。"""
+        manager = YunTuManager()
+        blocked = requests.HTTPError("403 Client Error: Forbidden")
+        blocked.response = mock.Mock(status_code=403)
+        missing = requests.HTTPError("404 Client Error: Not Found")
+        missing.response = mock.Mock(status_code=404)
+
+        def fake_session_to_file(*, url, save_path, **kwargs):
+            raise blocked if url.startswith("https://ytmedia.radio.cn/") else missing
+
+        with mock.patch("core.yuntu_manager.download_adapter.session_to_file", side_effect=fake_session_to_file):
+            ok = manager.download_audio(self.CDN_URL, "/tmp/yt_ambig.mp3")
+
+        self.assertFalse(ok)
+        self.assertEqual(manager.last_error_type, "rate_limited")
+
+    def test_download_audio_empty_url_short_circuits(self):
+        manager = YunTuManager()
+        with mock.patch("core.yuntu_manager.download_adapter.session_to_file") as session_to_file:
+            ok = manager.download_audio("", "/tmp/yt_empty.mp3")
+        self.assertFalse(ok)
+        session_to_file.assert_not_called()
+
+    def test_download_audio_uses_segmented_adapter(self):
+        """与其它平台一致：走 download_adapter 分段并行下载通道。"""
+        manager = YunTuManager()
+
+        def fake_session_to_file(*, url, save_path, **kwargs):
+            self.assertTrue(kwargs.get("allow_segmented"))
+            with open(save_path, "wb") as fh:
+                fh.write(b"ID3" + b"\x00" * 4096)
+            return save_path
+
+        with mock.patch("core.yuntu_manager.download_adapter.session_to_file", side_effect=fake_session_to_file) as stf:
+            ok = manager.download_audio(self.CDN_URL, "/tmp/yt_adapter.mp3")
+        self.assertTrue(ok)
+        stf.assert_called_once()
+
+
+class YunTuWorkerWiringTest(unittest.TestCase):
+    """download_worker 云听分支接线（不再裸 requests 单流直拉 CDN）。"""
+
+    def _worker(self):
+        from core.download_worker import DownloadWorker
+
+        worker = DownloadWorker.__new__(DownloadWorker)
+        worker.platform = "云听FM"
+        worker.task_id = "web-test"
+        worker.album_id = "17097974899240"
+        worker.quality = "标准"
+        worker.voice_config = None
+        worker.download_dir = "/tmp"
+        worker._dbg = lambda *a, **k: None
+        return worker
+
+    def test_worker_dispatches_to_manager_download_audio(self):
+        import inspect
+
+        source = inspect.getsource(type(self._worker())._download_single_chapter)
+        self.assertIn("download_manager.download_audio", source)
+        # 旧的裸 requests 直拉分支已移除
+        self.assertNotIn("_requests.get(audio_url", source)
 
 
 if __name__ == "__main__":

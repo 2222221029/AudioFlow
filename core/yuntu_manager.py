@@ -18,11 +18,15 @@
 import requests
 import hashlib
 import os
+import re
+import threading
 import time
 from urllib.parse import quote
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlsplit, urlunsplit, urlparse, parse_qs
 from typing import List, Dict, Optional
 from .time_api import get_timestamp_ms_str
+
+from core import chunked_download, download_adapter
 
 
 class YunTuManager:
@@ -39,9 +43,31 @@ class YunTuManager:
     # 搜索Tab配置（/search/searchTab/allByProductId）：2=专辑/1=主播/3=单集/4=电台/5=栏目/6=精选
     SEARCH_PATH = "/search/search/findSearchResourceList"
 
+    # ------------------------------------------------------------------
+    # 音频 CDN 403（风控）与源站兜底
+    # ------------------------------------------------------------------
+    # ⚠ ytmedia.radio.cn（OSS 前置 CDN，openresty 网关）对批量化拉流有阈值式
+    #   封禁：同一出口 IP 触发后，**所有 URL 恒 403**（含此前成功过的 URL、
+    #   换 UA / 带 Referer / 首页 Cookie 都无效，实测持续数分钟以上）。
+    #   源站 OSS（阿里云 bucket）可匿名直连且无该封禁：全专辑 592 集 URL
+    #   逐一验证源站 20/20 成功、CDN 同期 0/3 成功；且支持 Range（206）与
+    #   HEAD，字节数与 CDN 一致 —— 大专辑应优先源站直拉。
+    #   key 规则：CDN 路径即 OSS object key，逐字节原样保留（含 %2F 编码）。
+    CDN_MEDIA_HOST = "ytmedia.radio.cn"
+    ORIGIN_MEDIA_HOST = "yunting-bj-radio-client.oss-cn-beijing.aliyuncs.com"
+    # CDN 连续 403 达到阈值 → 全局冷却（所有下载线程共享，冷却期间直接走源站）
+    CDN_403_COOLDOWN_THRESHOLD = int(os.getenv("AUDIOFLOW_YUNTING_CDN_403_THRESHOLD", "3") or "3")
+    CDN_403_COOLDOWN_SECONDS = float(os.getenv("AUDIOFLOW_YUNTING_CDN_403_COOLDOWN", "300") or "300")
+    _cdn_lock = threading.Lock()
+    _cdn_403_streak = 0
+    _cdn_403_until = 0.0
+
     def __init__(self):
         self.base_url = "https://ytmsout.radio.cn"
         self.secret_key = "f0fc4c668392f9f9a447e48584c214ee"
+        # 最近一次 download_audio 的失败原因与归类（rate_limited/restricted/transient）
+        self.last_error = ""
+        self.last_error_type = ""
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -861,3 +887,172 @@ class YunTuManager:
             return None
         
         return self.get_album_info(album_id)
+
+    # ------------------------------------------------------------------
+    # 音频下载（CDN 403 风控 → 源站 OSS 兜底）
+    # ------------------------------------------------------------------
+    @classmethod
+    def _cdn_cooldown_active(cls) -> bool:
+        """CDN 全局冷却是否仍在生效。"""
+        return time.time() < cls._cdn_403_until
+
+    @classmethod
+    def _mark_cdn_403(cls) -> None:
+        """记录一次 CDN 403；连续达到阈值进入全局冷却（所有线程共享）。"""
+        with cls._cdn_lock:
+            cls._cdn_403_streak += 1
+            if cls._cdn_403_streak >= cls.CDN_403_COOLDOWN_THRESHOLD:
+                cls._cdn_403_until = time.time() + cls.CDN_403_COOLDOWN_SECONDS
+                cls._cdn_403_streak = 0
+                print(
+                    f"   🧊 云听FM CDN 连续 403 达到阈值，全局冷却 "
+                    f"{int(cls.CDN_403_COOLDOWN_SECONDS)}s（期间直接走源站 OSS）"
+                )
+
+    @classmethod
+    def _clear_cdn_403(cls) -> None:
+        """CDN 成功一次即清零计数（冷却结束后的首次成功同样走这里）。"""
+        with cls._cdn_lock:
+            cls._cdn_403_streak = 0
+
+    @classmethod
+    def resolve_media_url(cls, url: str, prefer: str = "auto") -> str:
+        """把云听媒体 URL 解析到实际可用的下载域名。
+
+        :param prefer:
+            - ``"auto"``：冷却未生效走 CDN（快、命中边缘节点），冷却中走源站；
+            - ``"origin"``：强制源站 OSS（CDN 已被 403 风控时的兜底）。
+
+        key 规则（2026-10 实测，报告《存储与直链》章节）：
+        - ``/file/202408/...h.mp3`` 与旧存储 ``/CCYT%2F2022%2F...`` 形态：
+          只换 host、路径与 query **逐字节原样保留**（``%2F`` 不解码）——
+          实测源站两种形态均 200，解码反而多余且易错。
+        非 ytmedia.radio.cn 的 URL 原样返回（未来换域名时不误伤）。
+        """
+        raw = str(url or "").strip()
+        if not raw:
+            return raw
+        parts = urlsplit(raw)
+        if (parts.hostname or "").lower() != cls.CDN_MEDIA_HOST:
+            return raw
+        if prefer == "origin" or cls._cdn_cooldown_active():
+            return urlunsplit((parts.scheme, cls.ORIGIN_MEDIA_HOST, parts.path, parts.query, ""))
+        return raw
+
+    @classmethod
+    def _audio_candidate_urls(cls, url: str) -> List[str]:
+        """按优先级去重后的候选 URL：冷却中源站在前，否则 CDN 在前。"""
+        candidates = []
+        origin = cls.resolve_media_url(url, prefer="origin")
+        cdn = cls.resolve_media_url(url, prefer="auto")
+        if cls._cdn_cooldown_active():
+            candidates = [origin, cdn]
+        else:
+            candidates = [cdn, origin]
+        seen = set()
+        ordered = []
+        for u in candidates:
+            if u and u not in seen:
+                seen.add(u)
+                ordered.append(u)
+        return ordered
+
+    @staticmethod
+    def _media_error_status(exc: BaseException) -> Optional[int]:
+        """从下载异常里取 HTTP 状态码。
+
+        ⚠ `download_adapter` 把分级异常翻译成 `requests.HTTPError` 时，
+        `PermissionDenied` 没带 `status_code`（response 是 None），状态只留在
+        文案里（"CDN 拒绝访问（HTTP 403）"）—— 这里两头都兜。
+        """
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        try:
+            if status is not None:
+                return int(status)
+        except (TypeError, ValueError):
+            pass
+        match = re.search(r"HTTP\s*(\d{3})", str(exc))
+        return int(match.group(1)) if match else None
+
+    def download_audio(self, url: str, save_path: str, progress_callback=None) -> bool:
+        """下载云听音频到 ``save_path``。
+
+        ## 403 风控修复（2026-10-09，倚天屠龙记 592 集里 100+ 集失败）
+
+        根因：`ytmedia.radio.cn` 对单出口 IP 的批量化拉流有阈值式封禁，
+        触发后该 IP 的**所有**媒体请求恒 403（openresty 页），与 UA / Referer /
+        Cookie / Range 均无关，短间隔重试只会继续失败。对象本身在阿里云 OSS
+        源站上完好（同一 key 匿名直连 200，Content-Length 一致，支持 Range）。
+        处置：候选序列 [CDN, 源站 OSS] 逐个试；CDN 403/429 → 计入全局冷却
+        （默认连续 3 次 → 冷却 300s，期间所有线程直接走源站），并立刻换源站重试。
+
+        ## 对外契约（与其它平台 manager 的 download_audio 一致）
+
+        * 空 URL 直接返回 False（不建目录、不发请求）；
+        * 成功判定仍是 `> 1024` 字节；
+        * 失败打印 `[云听FM] 下载失败: {exc}` 并返回 False；
+        * 失败不留任何半截文件（`.part` 一并清理）；
+        * `last_error` / `last_error_type` 供上层归类重试：
+          - `rate_limited`：CDN 风控（冷却后重试有意义）；
+          - `restricted`：源站也报 401/404/410/451（真缺失/无权限，重试白搭）；
+          - `transient`：网络瞬时错误。
+        """
+        if not url:
+            return False
+        candidates = self._audio_candidate_urls(url)
+        last_error: Optional[BaseException] = None
+        saw_cdn_403 = False
+        saw_permission = False
+        for index, candidate in enumerate(candidates):
+            host = urlsplit(candidate).hostname or ""
+            try:
+                final_path = download_adapter.session_to_file(
+                    session=self.session,
+                    url=candidate,
+                    save_path=save_path,
+                    headers={"User-Agent": self.session.headers.get("User-Agent", "")},
+                    progress_callback=progress_callback,
+                    allow_segmented=True,
+                    timeout=(10, 180),
+                    # 云听接口自报 fileSize，但 403 页/空响应场景下探测更稳，
+                    # 保持默认探测逻辑。
+                    probe_threshold=0,
+                )
+                size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+                if size > 1024:
+                    if host == self.CDN_MEDIA_HOST:
+                        # CDN 能成 = 风控解除，清零计数
+                        self._clear_cdn_403()
+                    return True
+                last_error = RuntimeError(f"下载的内容无效（{host} 仅 {size} 字节）")
+            except Exception as exc:  # noqa: BLE001 - 与既有 download_audio 契约一致
+                last_error = exc
+                status = self._media_error_status(exc)
+                if host == self.CDN_MEDIA_HOST and status in (403, 429):
+                    saw_cdn_403 = True
+                    self._mark_cdn_403()
+                elif status in (401, 404, 410, 451):
+                    saw_permission = True
+            # 仍有候选（例如 CDN 被风控 → 源站兜底）就继续换源，全失败才落错
+            if index + 1 < len(candidates):
+                continue
+            break
+
+        chunked_download.clean_part_files(str(save_path))
+        try:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+        except OSError:
+            pass
+        message = str(last_error) if last_error is not None else "未知原因"
+        if saw_cdn_403:
+            self.last_error_type = "rate_limited"
+        elif saw_permission:
+            self.last_error_type = "restricted"
+        else:
+            self.last_error_type = "transient"
+        self.last_error = f"云听FM下载失败: {message}"[:300]
+        print(f"[云听FM] 下载失败: {message}")
+        return False

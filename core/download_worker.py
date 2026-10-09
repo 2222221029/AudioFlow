@@ -387,6 +387,12 @@ class DownloadWorker(QThread):
                 lrts_workers = int(os.getenv("LRTS_DOWNLOAD_THREADS", "3") or "3")
                 max_workers = max(1, min(3, lrts_workers, total_chapters))
                 print(f"📚 懒人听书下载并发: {max_workers}（可用 LRTS_DOWNLOAD_THREADS=1-3 调整；URL 解析自动节流防风控）")
+            if self.platform == '云听FM':
+                # ytmedia.radio.cn 对单 IP 批量拉流有阈值封禁（恒 403），
+                # 并发压小一些延缓触发；manager 内部还有 CDN→源站 OSS 兜底。
+                yunting_workers = int(os.getenv("YUNTING_DOWNLOAD_THREADS", "6") or "6")
+                max_workers = max(1, min(16, yunting_workers, total_chapters))
+                print(f"☁️ 云听FM下载并发: {max_workers}（可用 YUNTING_DOWNLOAD_THREADS=1-16 调整；CDN 403 自动切源站 OSS）")
             if self.platform == '番茄畅听':
                 # 高码率档（默认，pv_player=-1）是未加密 MP3 纯 HTTP 直通，不需要 ffmpeg、
                 # 不占 CPU，而且 CDN 对单连接限速（实测单流仅 5~10MB/s）→ 必须多路并发才跑得满带宽。
@@ -1337,55 +1343,25 @@ class DownloadWorker(QThread):
                     )
                 elif self.platform == '云听FM':
                     self._dbg("☁️ 下载云听FM音频中...")
-                    import requests as _requests
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                    # .part 临时文件 + 原子替换：中途失败/停止不残留可被误判为
-                    # 「已完成」的半截最终文件；完成后一次性 os.replace。
-                    part_path = file_path + ".part"
-                    try:
-                        os.remove(part_path)
-                    except OSError:
-                        pass
-                    response = None
-                    try:
-                        response = _requests.get(audio_url, stream=True, timeout=(10, 90))
-                        response.raise_for_status()
-                        total_size = int(response.headers.get('Content-Length') or 0)
-                        downloaded_size = 0
-                        progress_callback = self._make_progress_callback(chapter_index)
-                        # 进度节流：最多约 5 次/秒，避免 UI 信号风暴
-                        last_progress_report = 0.0
-                        with open(part_path, 'wb') as f:
-                            for chunk in response.iter_content(chunk_size=262144):
-                                if self._is_stopped:
-                                    chapter['_error'] = '下载已停止'
-                                    return False
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    now = time.time()
-                                    if now - last_progress_report >= 0.2 or downloaded_size >= total_size:
-                                        last_progress_report = now
-                                        progress_callback(downloaded_size, total_size)
-                        if downloaded_size <= 0:
-                            raise OSError("云听FM音频内容为空")
-                        os.replace(part_path, file_path)
-                        success = True
-                        self._dbg("✅ 云听FM音频下载成功")
-                    except TimeoutError:
-                        chapter['_error'] = '云听FM下载超时'
-                        return False
-                    except Exception as exc:
-                        chapter['_error'] = f'云听FM下载失败: {str(exc)[:120]}'
-                        return False
-                    finally:
-                        if response is not None:
-                            response.close()
-                        try:
-                            if os.path.exists(part_path):
-                                os.remove(part_path)
-                        except OSError:
-                            pass
+                    # 2026-10-09 修复：不再裸 requests 单流直拉 CDN。
+                    # ytmedia.radio.cn 对批量拉流有 IP 阈值封禁（恒 403），
+                    # manager.download_audio 内部做「CDN 403 → 全局冷却 → 源站
+                    # OSS 兜底」，并沿用统一的分段并行下载通道。
+                    success = download_manager.download_audio(
+                        audio_url, file_path,
+                        progress_callback=self._make_progress_callback(chapter_index),
+                    )
+                    if not success:
+                        chapter['_error'] = (
+                            str(getattr(download_manager, 'last_error', '') or '').strip()
+                            or '云听FM下载失败'
+                        )[:200]
+                        # rate_limited / restricted / transient —— 交给上层
+                        # `_errors.should_retry` 决定要不要继续重试
+                        error_type = str(getattr(download_manager, 'last_error_type', '') or '').strip()
+                        if error_type:
+                            chapter['_error_type'] = error_type
                 elif self.platform == '起点听书':
                     self._dbg("📖 下载起点听书音频中...")
                     success = download_manager.download_qidian_audio(
