@@ -40,7 +40,7 @@ class EnhancedSearchManager:
 
     KEYWORD_SEARCH_PLATFORMS = (
         '喜马拉雅', '懒人听书', '番茄畅听', '番茄听书', '七猫听书',
-        '酷我听书', '起点听书', '蜻蜓FM', '网易云听书', '荔枝FM',
+        '酷我听书', '起点听书', '蜻蜓FM', '网易云听书', '荔枝FM', '云听FM',
     )
     SEARCH_CACHE_TTL = 120
     SEARCH_CACHE_MAX_ITEMS = 64
@@ -52,6 +52,7 @@ class EnhancedSearchManager:
         '酷我听书': 60,
         '起点听书': 50,
         '网易云听书': 60,
+        '云听FM': 40,
     }
     SEARCH_PAGE_LIMITS = {
         '番茄畅听': 2,
@@ -357,6 +358,8 @@ class EnhancedSearchManager:
                     return book, self.lrts_manager.get_book_detail(album_id)
                 if platform == "起点听书":
                     return book, self.search_manager.get_qidian_detail(album_id)
+                if platform == "云听FM":
+                    return book, self.yuntu_manager.get_album_detail(album_id)
             except Exception as exc:
                 print(f"⚠️ {platform} 详情补全失败 {album_id}: {exc}")
             return book, None
@@ -367,7 +370,7 @@ class EnhancedSearchManager:
                 book, detail = future.result()
                 if not isinstance(detail, dict):
                     continue
-                for key in ("title", "author", "cover", "description", "category", "status"):
+                for key in ("title", "author", "cover", "description", "category", "status", "plays"):
                     value = detail.get(key)
                     if value and (not book.get(key) or str(book.get(key)).strip() in ("未知", "未知作者")):
                         book[key] = value
@@ -577,7 +580,12 @@ class EnhancedSearchManager:
                     detail = self.yuntu_manager.search_by_link_or_id(value)
                     books = [detail] if detail else []
                 else:
-                    books = self.yuntu_manager.search_books(value, page=0, page_size=20)
+                    # 2026-10 接入云听 App 通道搜索接口（签名复现），关键词搜索可用
+                    books = self.yuntu_manager.search_books(
+                        value, page=0, page_size=self.SEARCH_RESULT_LIMITS[platform]
+                    )
+                    # 云听搜索条目不返回主播名，沿用与其他平台一致的小批量详情补全
+                    self._enrich_search_result_details(list(books or []), platform, limit=8)
             else:
                 return []
             results = self._normalize_search_books(books, platform)
@@ -657,7 +665,8 @@ class EnhancedSearchManager:
             # 仍需融合排序（见下方 all 分支）。
             return self._dedupe_search_results(list(results or []))
 
-        # 云听关键词能力不稳定，聚合搜索不调它；单独选择云听时仍保留链接/ID能力。
+        # 云听FM 的 App 通道搜索接口签名已在 2026-10 复现，关键词搜索稳定，
+        # 因此纳入聚合搜索（历史注释称其「能力不稳定」，已失效）。
         grouped = {}
         with ThreadPoolExecutor(max_workers=min(8, len(self.KEYWORD_SEARCH_PLATFORMS))) as pool:
             futures = {
@@ -675,11 +684,11 @@ class EnhancedSearchManager:
         return self._rank_search_results(keyword_stripped, results)
     
     def search_by_id(self, book_id: str, platform: str = 'all') -> List[Dict]:
-        """通过ID搜索书籍（支持喜马拉雅、懒人听书、番茄畅听）"""
+        """通过ID搜索书籍（支持喜马拉雅、懒人听书、番茄畅听等）"""
         if platform == 'all':
             id_platforms = (
                 '喜马拉雅', '懒人听书', '番茄畅听', '番茄听书',
-                '七猫听书', '酷我听书', '蜻蜓FM', '网易云听书',
+                '七猫听书', '酷我听书', '蜻蜓FM', '网易云听书', '云听FM',
             )
             grouped = {}
             with ThreadPoolExecutor(max_workers=len(id_platforms)) as pool:

@@ -15,7 +15,13 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
         manager._keyword_search_cache_lock = threading.Lock()
         return manager
 
-    def test_all_keyword_search_excludes_yuntu_and_preserves_platform_order(self):
+    def test_all_keyword_search_includes_yuntu_and_preserves_platform_order(self):
+        """云听FM 的 App 通道搜索签名已复现（2026-10），纳入聚合搜索。
+
+        历史用例断言聚合搜索「不调云听」，因为当时关键词搜索接口不可用；
+        现在 `/search/search/findSearchResourceList` 已可独立调用，
+        平台顺序断言保持不变。
+        """
         manager = self.manager()
         called = []
 
@@ -26,7 +32,7 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
         manager._search_platform_cached = MethodType(fake_search, manager)
         results = manager.search_books("测试", "all")
 
-        self.assertNotIn("云听FM", called)
+        self.assertIn("云听FM", called)
         self.assertEqual(called and set(called), set(manager.KEYWORD_SEARCH_PLATFORMS))
         self.assertEqual([item["platform"] for item in results], list(manager.KEYWORD_SEARCH_PLATFORMS))
 
@@ -194,6 +200,8 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
         manager.kuwo_manager = mock.Mock()
         manager.search_manager = mock.Mock()
         manager.netease_manager = mock.Mock()
+        manager.yuntu_manager = mock.Mock()
+        manager._enrich_search_result_details = mock.Mock()
         for provider in (
             manager.ximalaya_manager,
             manager.lrts_manager,
@@ -204,6 +212,8 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
             provider.search_albums.return_value = []
             provider.search_books.return_value = []
             provider.search_qidian.return_value = []
+        manager.yuntu_manager.search_books.return_value = []
+        manager.yuntu_manager.search_by_link_or_id.return_value = None
 
         for platform in EnhancedSearchManager.SEARCH_RESULT_LIMITS:
             manager._search_platform_impl("目标书名", platform)
@@ -217,6 +227,7 @@ class EnhancedSearchPerformanceTest(unittest.TestCase):
             "目标书名", page_size=50, enrich_details=False
         )
         manager.netease_manager.search_books.assert_called_once_with("目标书名", limit=60)
+        manager.yuntu_manager.search_books.assert_called_once_with("目标书名", page=0, page_size=40)
 
     def test_search_coverage_expands_paginated_provider_candidates(self):
         manager = self.manager()

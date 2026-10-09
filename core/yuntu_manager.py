@@ -3,7 +3,16 @@
 
 """
 云听FM管理器
-支持通过分享链接/专辑ID获取专辑信息和章节列表
+支持关键词搜索专辑（App通道签名已逆向复现），以及分享链接/专辑ID获取专辑信息和章节列表
+
+搜索接口（2026-10 逆向成果，接口/云听/搜索接口分析报告.md）：
+    GET https://ytmsout.radio.cn/search/search/findSearchResourceList
+        ?keyWord=<词>&searchTabId=<tab>&contentType=<int>&pageNo=<int>&sortType=<int>
+    - pageNo 为 0 基（第 0 页是首页，实测 page=1 起恒空，这是网关分页语义）
+    - searchTabId: 2=专辑(见 /search/searchTab/allByProductId)；'' 为综合tab
+    - productId 公共头决定服务端数据域，缺失时 totalNum 恒 0
+    签名: MD5(参数按key排序 k=v 以&连接 + '&timestamp=' + 毫秒 + '&key=' + APP_SALT).upper()
+          无参数时: MD5('timestamp=' + 毫秒 + '&key=' + APP_SALT)
 """
 
 import requests
@@ -18,7 +27,18 @@ from .time_api import get_timestamp_ms_str
 
 class YunTuManager:
     """云听FM API管理器"""
-    
+
+    # ms 网关 App 通道（搜索模块盐，ApiConfig.SECRET_KEY_MAP.search 逆向所得）
+    APP_SALT = "68e251be8b49f462be367df22b212ee3"
+    # 云听安卓产品线标识；缺失时服务端数据域为空（totalNum 恒 0）
+    APP_PRODUCT_ID = "1605403829833195520"
+    APP_VERSION_ID = "7.9.0.24845"
+    # 设备指纹：网关只校验「存在且非空」，任意唯一值均可；支持环境变量覆盖
+    APP_EQUIPMENT_ID = os.getenv("AUDIOFLOW_YUNTING_EQUIPMENT_ID") or "3663906640007"
+    APP_UUID = os.getenv("AUDIOFLOW_YUNTING_UUID") or "c7b2c22a-4b1b-4fc1-a09b-4543ab660b5a"
+    # 搜索Tab配置（/search/searchTab/allByProductId）：2=专辑/1=主播/3=单集/4=电台/5=栏目/6=精选
+    SEARCH_PATH = "/search/search/findSearchResourceList"
+
     def __init__(self):
         self.base_url = "https://ytmsout.radio.cn"
         self.secret_key = "f0fc4c668392f9f9a447e48584c214ee"
@@ -38,49 +58,99 @@ class YunTuManager:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         print("✅ 云听FM管理器初始化完成")
-    
+
     def md5_sign(self, text: str) -> str:
         """计算MD5签名"""
         return hashlib.md5(text.encode('utf-8')).hexdigest().upper()
-    
+
     def sort_params(self, params: dict) -> str:
         """按key排序参数"""
         sorted_keys = sorted(params.keys())
         return '&'.join([f'{k}={params[k]}' for k in sorted_keys])
 
-    def app_sign(self, params: dict) -> str:
-        """
-        云听App侧接口签名。
+    # ------------------------------------------------------------------
+    # App 通道（ms 网关裸路径）签名与请求
+    # ------------------------------------------------------------------
+    def _app_sign(self, params: Optional[Dict], timestamp: str) -> str:
+        """App 通道签名。
 
-        APK中可见的扫码/统计工具使用 HQUDKOQSAKOQJDJ123GJH 作为query签名key。
-        搜索接口主体被加固隐藏，这里只作为App搜索候选接口的兼容签名。
+        - 有参数：MD5(按key排序的 k=v 以&连接 + '&timestamp=' + ts + '&key=' + 盐).upper()
+        - 无参数：MD5('timestamp=' + ts + '&key=' + 盐)，无前导 &
         """
-        app_key = "HQUDKOQSAKOQJDJ123GJH"
-        query = "&".join(
-            f"{key}={quote(str(params[key]), safe='')}"
-            for key in params
-            if key not in ("sign", "secret") and params[key] is not None
-        )
-        sign_text = f"{query}&key={app_key}" if query else f"key={app_key}"
-        return hashlib.md5(sign_text.encode("utf-8")).hexdigest()
+        if params:
+            base = self.sort_params(params)
+            text = f"{base}&timestamp={timestamp}&key={self.APP_SALT}"
+        else:
+            text = f"timestamp={timestamp}&key={self.APP_SALT}"
+        return self.md5_sign(text)
 
-    def _request_json(self, path: str, params: dict, signed: bool = True) -> Optional[Dict]:
-        """请求云听接口并返回JSON。"""
-        url = f"{self.base_url}{path}"
-        query_params = dict(params)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 12; CloudSound/7.7.1) AppleWebKit/537.36",
-            "Accept": "application/json, text/plain, */*",
+    def _app_headers(self, timestamp: str, sign: str) -> Dict:
+        """App 公共头（HeaderCommonParamsInterceptor 注入的 16 项）。"""
+        return {
+            'User-Agent': 'okhttp/4.10.0',
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            'boxModel': '2509FPN0BC',
+            'productId': self.APP_PRODUCT_ID,
+            'hardNo': '9',
+            'appSourceType': '1',
+            'channel': 'cnrradio',
+            'equipmentId': self.APP_EQUIPMENT_ID,
+            'uuid': self.APP_UUID,
+            'userId': '',
+            'equipmentType': '1',
+            'yaud': f'com.shinyv.cnr_{self.APP_EQUIPMENT_ID}',
+            'versionId': self.APP_VERSION_ID,
+            'appSourceId': '1',
+            'platformCode': 'XIAOMI',
+            'cid': '',
+            'timestamp': timestamp,
+            'sign': sign,
         }
-        if signed:
-            query_params["sign"] = self.app_sign(query_params)
+
+    def _app_get(self, path: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """请求 App 通道接口并返回 JSON，网关错误转成带原因的 RuntimeError。"""
+        query_params = {k: v for k, v in (params or {}).items() if v is not None}
+        # 每次请求使用唯一毫秒时间戳：网关有「重复访问随机数」(1051) 防护
+        timestamp = get_timestamp_ms_str()
+        sign = self._app_sign(query_params, timestamp)
+        url = f"{self.base_url}{path}"
         try:
-            response = self.session.get(url, params=query_params, headers=headers, timeout=20)
-            response.raise_for_status()
-            return response.json()
+            response = self.session.get(
+                url, params=query_params, headers=self._app_headers(timestamp, sign), timeout=20
+            )
+            if response.status_code == 404:
+                raise RuntimeError(f"云听FM接口路由不存在: {path}")
+            result = response.json()
+        except RuntimeError:
+            raise
         except Exception as exc:
-            print(f"⚠️ 云听FM接口请求失败: {path}, {exc}")
-            return None
+            raise RuntimeError(f"云听FM接口请求失败: {path} - {exc}")
+
+        if isinstance(result, dict):
+            code = result.get("code")
+            if code == 0:
+                return result
+            message = str(result.get("message") or result.get("desc") or "")
+            raise RuntimeError(f"云听FM接口返回错误(code={code}): {message}")
+        raise RuntimeError(f"云听FM接口返回格式异常: {path}")
+
+    def _search_page(self, keyword: str, search_tab_id: str, content_type: str, page_no: int) -> List[Dict]:
+        """调用主搜索接口取一页原始条目（pageNo 0 基）。"""
+        params = {
+            "keyWord": keyword,
+            "searchTabId": search_tab_id,
+            "contentType": content_type,
+            "pageNo": str(max(0, int(page_no))),
+            "sortType": "0",
+        }
+        result = self._app_get(self.SEARCH_PATH, params)
+        data = (result or {}).get("data") or {}
+        items = data.get("data") or []
+        if os.getenv("AUDIOFLOW_DEBUG_API") == "1":
+            print(f"🔍 云听FM搜索 tab={search_tab_id!r} ct={content_type} page={params['pageNo']}"
+                  f" total={data.get('totalNum')} n={len(items)}")
+        return [item for item in items if isinstance(item, dict)]
 
     def _extract_list_items(self, payload) -> List[Dict]:
         """从不同云听响应结构中提取列表。"""
@@ -122,21 +192,23 @@ class YunTuManager:
             or ""
         )
         subtitle = item.get("subtitle") or item.get("desSimple") or item.get("descriptionSimple") or ""
-        author = item.get("ownerName") or item.get("author") or item.get("anchorName") or item.get("announcer") or ""
+        author = (
+            item.get("ownerNickName")
+            or item.get("ownerName")
+            or item.get("author")
+            or item.get("anchorName")
+            or item.get("announcer")
+            or ""
+        )
         episodes = item.get("childCount") or item.get("songCount") or item.get("programCount") or item.get("singleCount") or 0
         plays = item.get("listenCount") or item.get("listenNum") or item.get("playCount") or 0
 
         end_flag = item.get("endFlag")
-        if end_flag in (1, "1", True):
-            status = "完结"
-        elif end_flag in (0, "0", False):
-            status = "连载中"
-        else:
-            status = "连载中"
+        status = "已完结" if end_flag in (1, "1", True) else "连载中"
 
         return {
             "id": str(album_id),
-            "title": str(title),
+            "title": str(title).strip(),
             "author": str(author),
             "cover": cover,
             "episodes": episodes,
@@ -152,11 +224,15 @@ class YunTuManager:
 
     def search_books(self, keyword: str, page: int = 0, page_size: int = 20) -> List[Dict]:
         """
-        关键词搜索云听FM。
+        关键词搜索云听FM专辑。
 
-        APK中确认调用链为 ListeningApiService.listenSearch(String keyword, int pageIndex)，
-        但接口定义被加固隐藏。这里按App候选接口探测并归一化返回；若服务端仍返回
-        参数不合法/无数据，则返回空列表，不影响链接或ID搜索。
+        走 App 通道主搜索接口 `/search/search/findSearchResourceList`（签名已复现）：
+        1. 先请求「专辑」tab（searchTabId=2 & contentType=1）——官方 App 的专辑列表；
+        2. 专辑 tab 没有可用条目时回落「综合」tab：直接取其中的专辑条目，并把命中的
+           单集按 albumId 聚合后补详情转成专辑（综合tab常把有声书按单集返回）。
+
+        page 为接口 0 基页码（实测 pageNo>=1 恒空，这是该网关的分页语义）；
+        page_size 为返回条数上限。失败时返回空列表，不影响链接/ID搜索。
         """
         kw = (keyword or "").strip()
         if not kw:
@@ -168,38 +244,85 @@ class YunTuManager:
             album_info = self.get_album_info(album_id)
             return [album_info] if album_info else []
 
-        candidates = [
-            ("/listening/listenSearch", {"keyword": kw, "pageIndex": page}),
-            ("/search/listenSearch", {"keyword": kw, "pageIndex": page}),
-            ("/search/search", {"keyword": kw, "pageIndex": page}),
-            ("/search/content", {"keyword": kw, "pageIndex": page}),
-            ("/search/all", {"keyword": kw, "pageIndex": page}),
-            ("/listening/listenSearch", {"keyword": kw, "pageNo": page, "pageSize": page_size}),
-        ]
+        limit = max(1, int(page_size or 20))
+        books: List[Dict] = []
+        seen = set()
 
-        for path, params in candidates:
-            result = self._request_json(path, params, signed=True)
-            if not result:
-                continue
-            code = str(result.get("code", result.get("rt", "")))
-            message = str(result.get("message", result.get("desc", "")))
-            if code not in ("", "0", "1") and ("参数不合法" in message or "验签" in message):
-                print(f"⚠️ 云听FM App搜索候选不可用: {path} - {message}")
-                continue
-
-            raw_items = self._extract_list_items(result.get("data", result))
-            books = []
-            for item in raw_items:
+        def collect(items: List[Dict]) -> int:
+            added = 0
+            for item in items or []:
+                if str(item.get("contentType")) not in ("1", "1.0"):
+                    continue
                 book = self._normalize_search_item(item)
-                if book:
-                    books.append(book)
-            if books:
-                print(f"✅ 云听FM关键词搜索找到 {len(books)} 个结果")
-                return books
+                if not book or book["id"] in seen:
+                    continue
+                seen.add(book["id"])
+                books.append(book)
+                added += 1
+            return added
+
+        try:
+            collect(self._search_page(kw, "2", "1", page))
+        except Exception as exc:
+            print(f"⚠️ 云听FM专辑搜索失败: {exc}")
+
+        if books:
+            print(f"✅ 云听FM关键词搜索找到 {len(books)} 个结果（专辑tab）")
+            return books[:limit]
+
+        # 兜底：综合tab（同样 0 基，返回混合内容类型）
+        try:
+            mixed = self._search_page(kw, "", "0", 0)
+        except Exception as exc:
+            print(f"⚠️ 云听FM综合搜索失败: {exc}")
+            mixed = []
+
+        collect(mixed)
+        singles = [
+            item for item in mixed
+            if str(item.get("contentType")) == "3" and (item.get("albumId") or item.get("parentId"))
+        ]
+        if singles and len(books) < limit:
+            books.extend(self._albums_from_singles(singles, seen, limit - len(books)))
+        if books:
+            print(f"✅ 云听FM关键词搜索找到 {len(books)} 个结果（综合tab兜底）")
+            return books[:limit]
 
         print("⚠️ 云听FM关键词搜索暂未返回可用结果，仍可使用分享链接或专辑ID搜索")
         return []
-    
+
+    def _albums_from_singles(self, singles: List[Dict], seen: set, budget: int) -> List[Dict]:
+        """把综合tab命中的单集按所属专辑去重后补专辑详情，转成专辑条目。"""
+        albums: List[Dict] = []
+        pending: List[tuple] = []
+        for item in singles:
+            parent = str(item.get("albumId") or item.get("parentId") or "")
+            if not parent or parent in seen:
+                continue
+            seen.add(parent)
+            pending.append((parent, item))
+        for parent, item in pending[:max(0, budget)]:
+            detail = None
+            try:
+                detail = self.get_album_detail(parent)
+            except Exception as exc:
+                print(f"⚠️ 云听FM专辑详情补全失败 {parent}: {exc}")
+            if detail and detail.get("id"):
+                if not detail.get("title") or detail["title"] == "未知专辑":
+                    detail["title"] = str(item.get("title") or detail["title"])
+                if not detail.get("cover"):
+                    detail["cover"] = item.get("image") or ""
+                if not detail.get("plays"):
+                    detail["plays"] = item.get("listenCount") or 0
+                albums.append(detail)
+                continue
+            # 详情不可用时退化为所属专辑ID的条目（仍能进入章节/下载流程）
+            book = self._normalize_search_item(item)
+            if book:
+                book["id"] = parent
+                albums.append(book)
+        return albums
+
     def parse_url_or_id(self, input_str: str) -> Optional[str]:
         """
         解析输入（可以是分享链接或专辑ID）
@@ -239,16 +362,31 @@ class YunTuManager:
     def get_album_info(self, album_id: str) -> Optional[Dict]:
         """
         通过专辑ID获取专辑信息（仅搜索结果，不含章节）
-        
+
         返回格式与其他平台统一
         """
         try:
-            # 先获取一页数据以提取专辑信息
+            # 先取专辑详情（标题/封面/作者/状态），失败再从分集列表提取
+            detail = self.get_album_detail(album_id)
+            if detail and detail.get('title') not in (None, '', '未知专辑'):
+                return {
+                    'id': album_id,
+                    'title': detail.get('title', '未知专辑'),
+                    'author': detail.get('author') or '未知作者',
+                    'cover': detail.get('cover', ''),
+                    'episodes': detail.get('episodes', 0),
+                    'plays': detail.get('plays', 0),
+                    'status': detail.get('status', '连载中'),
+                    'platform': '云听FM',
+                    'description': detail.get('description', ''),
+                }
+
+            # 详情不可用时获取一页分集数据以提取专辑信息
             album_info, _ = self.get_album_singles(album_id, page_no=0, page_size=1)
-            
+
             if not album_info:
                 return None
-            
+
             # 转换为统一格式
             return {
                 'id': album_id,
@@ -257,40 +395,40 @@ class YunTuManager:
                 'cover': album_info.get('albumCover', ''),
                 'episodes': album_info.get('total', 0),
                 'plays': 0,  # 云听API不返回播放量
-                'status': '完结',  # 默认完结
+                'status': '已完结',  # 默认完结
                 'platform': '云听FM',
                 'description': f"共{album_info.get('total', 0)}集"
             }
-            
+
         except Exception as e:
             print(f"❌ 获取专辑信息失败: {e}")
             return None
-    
+
     def get_album_detail(self, album_id: str) -> Optional[Dict]:
         """
-        获取专辑详细信息（包括封面）
-        尝试调用其他API获取专辑封面
+        获取专辑详细信息（含封面/主播/状态）。
+
+        ## 调用方式（2026-10 逆向修正）
+
+        `/web/` 通道单参数 GET 的真实形态是「路径后缀 + 无参数签名」：
+        `GET /web/appAlbum/detail/<albumId>`，sign = MD5('timestamp='+毫秒+'&key='+key)。
+        旧实现用 `?id=<albumId>` + 参数签名，网关收下但服务端查不到资源（data 恒 null）。
+
+        返回统一字段（id/title/author/cover/episodes/plays/status/description），
+        同时保留 albumTitle/albumCover/total 等旧键，兼容 get_album_singles 等既有调用。
         """
         try:
-            # 使用参考文件中的正确API路径和参数
             url = f"{self.base_url}/web/appAlbum/detail/{album_id}"
-            
+
+            # 无参数签名（路径后缀形态不携带 query 业务参数）
             timestamp = get_timestamp_ms_str()
-            data = {
-                "id": str(album_id)  # 使用正确的参数名
-            }
-            
-            # 计算签名
-            params_str = self.sort_params(data)
-            sign_text = params_str + f"&timestamp={timestamp}&key={self.secret_key}"
-            sign = self.md5_sign(sign_text)
-            
+            sign = self.md5_sign(f"timestamp={timestamp}&key={self.secret_key}")
+
             if os.getenv("AUDIOFLOW_DEBUG_API") == "1":
                 print("🔍 云听FM签名生成调试已启用（敏感字段已隐藏）")
-                print(f"   参数字段: {list(data.keys())}")
                 print(f"   时间戳: {timestamp}")
                 print(f"   签名结果: {sign[:8]}***")
-            
+
             headers = {
                 "Content-Type": "application/json",
                 "equipmentId": "0000",
@@ -298,38 +436,69 @@ class YunTuManager:
                 "timestamp": timestamp,
                 "sign": sign
             }
-            
-            response = self.session.get(url, params=data, headers=headers, timeout=30)
+
+            response = self.session.get(url, headers=headers, timeout=30)
             result = response.json()
-            
+
             if os.getenv("AUDIOFLOW_DEBUG_API") == "1":
                 print(f"🔍 专辑详情API响应字段: {list(result.keys()) if isinstance(result, dict) else type(result)}")
-            
+
             if result.get('code') == 0:
-                album_data = result.get('data', {})
+                album_data = result.get('data') or {}
                 if album_data:
-                    return {
-                        'albumId': album_id,
-                        'albumTitle': album_data.get('name', '未知专辑'),  # 使用正确的字段名
-                        'albumCover': album_data.get('image', ''),  # 使用正确的字段名
-                        'author': album_data.get('author', '未知作者'),
-                        'description': album_data.get('des', ''),  # 使用正确的字段名
-                        'desSimple': album_data.get('desSimple', ''),
-                        'total': album_data.get('total', 0)
-                    }
-                else:
-                    print("⚠️ 专辑详情API返回空数据，尝试其他方法获取封面")
-                    # 尝试使用发现的图片API
-                    return self._try_get_cover_from_image_api(album_id)
+                    return self._normalize_album_detail(album_id, album_data)
+                print("⚠️ 专辑详情API返回空数据，尝试其他方法获取封面")
+                # 尝试使用发现的图片API
+                return self._try_get_cover_from_image_api(album_id)
             else:
                 print(f"❌ 专辑详情API返回错误: {result.get('message', '未知错误')}")
                 # 尝试使用发现的图片API
                 return self._try_get_cover_from_image_api(album_id)
-                
+
         except Exception as e:
             print(f"❌ 获取专辑详情失败: {e}")
             return None
-    
+
+    def _normalize_album_detail(self, album_id: str, album_data: Dict) -> Dict:
+        """把 /web/appAlbum/detail 的 data 转成统一字段 + 旧键兼容。"""
+        anchors = album_data.get('anchorList') or []
+        anchor_names = []
+        for anchor in anchors:
+            if isinstance(anchor, dict):
+                name = anchor.get('nickName') or anchor.get('name') or ''
+                if name:
+                    anchor_names.append(str(name))
+        author = (
+            album_data.get('ownerNickName')
+            or '、'.join(anchor_names)
+            or album_data.get('author')
+            or ''
+        )
+        episodes = album_data.get('childCount') or album_data.get('total') or 0
+        end_flag = album_data.get('endFlag')
+        title = album_data.get('name') or '未知专辑'
+        description = album_data.get('des') or album_data.get('desSimple') or ''
+        return {
+            # 统一字段（与搜索结果一致，供详情补全/前端使用）
+            'id': str(album_id),
+            'title': str(title),
+            'author': str(author or ''),
+            'cover': album_data.get('image') or '',
+            'episodes': episodes,
+            'plays': album_data.get('listenCount') or 0,
+            'status': '已完结' if end_flag in (1, '1', True) else '连载中',
+            'description': description,
+            'platform': '云听FM',
+            # 旧键（get_album_singles / search_by_link_or_id 依赖）
+            'albumId': str(album_id),
+            'albumTitle': str(title),
+            'albumCover': album_data.get('image') or '',
+            'des': description,
+            'desSimple': album_data.get('desSimple') or '',
+            'total': episodes,
+            'pageTotal': album_data.get('pageTotal'),
+        }
+
     def _try_get_cover_from_image_api(self, album_id: str) -> Optional[Dict]:
         """
         尝试使用发现的图片API获取封面
