@@ -3329,6 +3329,10 @@ def api_search():
     platform = request.args.get("platform", "all").strip() or "all"
     if not keyword:
         return json_error("请输入搜索关键词")
+    # 防御：前端若把事件对象/字典直接拼进查询串，关键词会变成 "[object Object]"，
+    # 上游会按字面量 "object" 搜索并返回无关结果（也会污染搜索历史）。此处直接拒绝。
+    if keyword.lower() in ("[object object]", "object object"):
+        return json_error("搜索关键词无效，请重新输入")
     results = [
         annotate_album_library(normalize_album(item))
         for item in search_manager.search_books(keyword, platform)

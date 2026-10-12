@@ -112,7 +112,7 @@ export default function DesktopPage() {
               />
             </div>
             <PlatformSelect platform={platform} setPlatform={setPlatform} />
-            <button className="btn btn-primary btn-search" disabled={busy.search} onClick={actions.doSearch}>{busy.search ? <span className="loading" /> : <Icon id="i-search" className="icon icon-sm" />}搜索</button>
+            <button className="btn btn-primary btn-search" disabled={busy.search} onClick={() => actions.doSearch()}>{busy.search ? <span className="loading" /> : <Icon id="i-search" className="icon icon-sm" />}搜索</button>
           </header>
         )}
 
@@ -149,8 +149,10 @@ function SearchPage({app}) {
   const platformCount = AGGREGATE_SEARCH_PLATFORMS.length;
 
   const handleHistoryClick = (keyword) => {
-    setQuery(keyword);
-    actions.doSearch(keyword);
+    const text = String(keyword || '').trim();
+    if (!text || text === '[object Object]') return;
+    setQuery(text);
+    actions.doSearch(text);
   };
 
   return (

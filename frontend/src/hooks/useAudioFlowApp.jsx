@@ -36,14 +36,25 @@ function mergeAlbumState(current, incoming) {
 }
 
 function loadSearchHistory() {
-  try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]');
+    if (!Array.isArray(raw)) return [];
+    // 兼容历史脏数据：只保留字符串，剔除 "[object Object]" 等事件对象序列化残留
+    return raw
+      .map((item) => (typeof item === 'string' ? item : String(item?.keyword ?? item?.text ?? item?.value ?? '') || ''))
+      .map((item) => item.trim())
+      .filter((item) => item && item !== '[object Object]')
+      .slice(0, MAX_SEARCH_HISTORY);
+  } catch { return []; }
 }
 function saveSearchHistory(list) {
   try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list)); } catch {}
 }
 function pushSearchHistory(keyword) {
-  const list = loadSearchHistory().filter((item) => item !== keyword);
-  list.unshift(keyword);
+  const text = typeof keyword === 'string' ? keyword.trim() : '';
+  if (!text || text === '[object Object]') return;
+  const list = loadSearchHistory().filter((item) => item !== text);
+  list.unshift(text);
   saveSearchHistory(list.slice(0, MAX_SEARCH_HISTORY));
 }
 function loadCachedList(key) {
@@ -429,9 +440,15 @@ export function useAudioFlowApp() {
   }, []);
 
   const doSearch = useCallback(async (keywordOverride) => {
-    // 支持显式传关键词（历史记录/分享链接直达），避免依赖 setQuery 的异步时序
-    const keyword = String(keywordOverride ?? query).trim();
-    if (!keyword) {
+    // 支持显式传关键词（历史记录/分享链接直达），避免依赖 setQuery 的异步时序。
+    // 注意：doSearch 常被直接用作 onClick/onKeyDown 处理器，此时 keywordOverride
+    // 收到的是 React 合成事件（对象），String() 后会变成字面量 "[object Object]"，
+    // 既污染搜索历史又会让后端按 "object" 搜索。这里只接受字符串/数字。
+    const override = typeof keywordOverride === 'string' || typeof keywordOverride === 'number'
+      ? keywordOverride
+      : '';
+    const keyword = String(override || query || '').trim();
+    if (!keyword || keyword === '[object Object]') {
       showToast('请输入关键词', 'err');
       return;
     }

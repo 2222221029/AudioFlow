@@ -108,8 +108,10 @@ function MobileHeader({app, installable, switchView, searchAndShowResults}) {
 function DiscoverView({app, switchView, searchAndShowResults}) {
   const {query, setQuery, results, actions, metrics, subscriptions, status, busy, searchHistory} = app;
   const handleHistoryClick = (keyword) => {
-    setQuery(keyword);
-    actions.doSearch(keyword);
+    const text = String(keyword || '').trim();
+    if (!text || text === '[object Object]') return;
+    setQuery(text);
+    actions.doSearch(text);
   };
   const quickStats = [
     ['搜索结果', results.length],
