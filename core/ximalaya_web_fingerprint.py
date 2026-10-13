@@ -61,6 +61,24 @@ def load_wfp() -> str:
     return ""
 
 
+def clear_wfp() -> bool:
+    """删除已落盘的 wfp（openId），存在并删除成功返回 True。
+
+    用于退出/删除喜马拉雅账号时的凭证联动清理：wfp 属于网页通道的
+    本环境指纹（落盘 ``config/ximalaya_wfp.json``），删除账号后残留会让
+    账号管理页继续显示「网页指纹：已就绪」。删除不影响功能 —— 下次
+    下载或保存 Cookie 时 ``ensure_wfp_async`` 会自动重新生成。
+    """
+    try:
+        path = wfp_path()
+        if path.exists():
+            path.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def get_wfp_status() -> dict:
     """读取 wfp 状态（可安全回显）：``{"ready": bool, "error": str, "source": str}``。"""
     wfp = load_wfp()

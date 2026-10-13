@@ -21,7 +21,7 @@ import requests
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 
 from core.auth_manager import AuthManager
-from core.cookie_manager import CookieManager
+from core.cookie_manager import CookieManager, normalize_cookie_platform
 from core.download_worker import DownloadWorker
 from core.enhanced_search_manager import EnhancedSearchManager
 from core.notification_manager import NotificationManager
@@ -5281,7 +5281,33 @@ def api_delete_cookie(platform):
         search_manager.set_cookie(platform, "")
     except Exception:
         pass
-    return json_ok(deleted=True, platform=platform, config_file=str(cookie_manager.config_file))
+    # 喜马拉雅三端凭证联动清理：删除网页 Cookie 时，同步清掉独立的移动端
+    # V4 凭证（cookies.json 的 xmly_mobile 字段）与网页指纹
+    # （config/ximalaya_wfp.json），否则退出账号后账号管理页仍会显示
+    # 「移动版 V4：本地出票就绪」「网页指纹：已就绪」。
+    # 设备 UUID（config/ximalaya_device_uuid）属于本机指纹且文档要求
+    # 持久化复用、不含账号信息，故保留。
+    cleared_extras = []
+    if normalize_cookie_platform(platform) == "xmly":
+        if cookie_manager.get_cookie(MOBILE_CREDENTIAL_PLATFORM):
+            cookie_manager.delete_cookie(MOBILE_CREDENTIAL_PLATFORM)
+            cleared_extras.append("移动端V4凭证")
+        try:
+            search_manager.set_ximalaya_mobile_credentials({})
+        except Exception:
+            pass
+        try:
+            from core.ximalaya_web_fingerprint import clear_wfp
+            if clear_wfp():
+                cleared_extras.append("网页指纹")
+        except Exception:
+            pass
+    return json_ok(
+        deleted=True,
+        platform=platform,
+        cleared=cleared_extras,
+        config_file=str(cookie_manager.config_file),
+    )
 
 
 _COOKIE_EXPORT_PLATFORMS = [
@@ -5491,7 +5517,29 @@ def api_delete_personal_cookie(platform):
 @app.post("/api/cookies/clear")
 def api_clear_cookies():
     cookie_manager.clear_all_cookies()
-    return json_ok(cleared=True, config_file=str(cookie_manager.config_file))
+    # 内存态与派生凭证联动清理：否则进程重启前下载器仍持有旧 Cookie，
+    # 且喜马拉雅网页指纹（config/ximalaya_wfp.json）会残留「已就绪」状态。
+    cleared_extras = []
+    for p in ("xmly", "lrts", "qidian", "qtfm", "netease"):
+        try:
+            search_manager.set_cookie(p, "")
+        except Exception:
+            pass
+    try:
+        search_manager.set_ximalaya_mobile_credentials({})
+    except Exception:
+        pass
+    try:
+        from core.ximalaya_web_fingerprint import clear_wfp
+        if clear_wfp():
+            cleared_extras.append("网页指纹")
+    except Exception:
+        pass
+    return json_ok(
+        cleared=True,
+        cleared_extras=cleared_extras,
+        config_file=str(cookie_manager.config_file),
+    )
 
 
 # LRTS SMS credential login -------------------------------------------------
