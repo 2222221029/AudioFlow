@@ -255,6 +255,12 @@ class XimalayaDownloadManager:
     _MOBILE_V4_MAX_COOLDOWN_SECONDS = _positive_env_float(
         "XIMALAYA_V4_MAX_COOLDOWN_SECONDS", 3600.0, _MOBILE_V4_COOLDOWN_SECONDS
     )
+    # local 票据连续被拒时的固定短冷却（不参与指数升级）：见
+    # _mark_mobile_v4_rate_limited 的实测注释 —— 票据维度的限流靠换票解决，
+    # 换票仍拒则是系统性故障，长冷却只会卡住全部 worker。
+    _MOBILE_V4_LOCAL_COOLDOWN_SECONDS = _positive_env_float(
+        "XIMALAYA_V4_LOCAL_COOLDOWN_SECONDS", 2.0, 0.5
+    )
 
     # Android `libencrypt.so` URL decryption (PlayUrlUtil/EncryptUtil path).
     # The V2 constants were verified byte-for-byte against the 9.4.52.3 APK:
@@ -1088,15 +1094,46 @@ class XimalayaDownloadManager:
             time.sleep(wait)
 
     @classmethod
-    def _mark_mobile_v4_rate_limited(cls):
+    def _mark_mobile_v4_rate_limited(cls, cooldown_seconds: float = 0.0):
+        """记录一次 V4 限流，并设置全局冷却窗口。
+
+        ## 实测模型（2026-10，A/B/C 三组对照）
+
+        V4 的 ``ret=1001`` **按 x-tk 票据计数**，与 device_id / uid / IP 都无关：
+
+        * A 组：同一票据连发 8 次 → ``OK OK OK 1001 1001 1001 1001 1001``
+          —— 每票恰好 3 次额度，第 4 次起恒被拒，且连发期间无任何恢复
+          （用户侧压到 330+ 次仍未放行，故**不存在时间窗**）。
+        * B 组：device_id 不变、每次换新票 × 30 → 30/30 全过。
+        * C 组：每次全新 device_id + 新票 × 30 → 30/30 全过，与 B 完全一致。
+
+        结论：换票即重置额度，device_id 不在计数键里。用户侧 700 连发
+        「每次换全新身份」100% 成功，同账号同 IP 无任何墙。
+
+        因此冷却策略按票据来源区分：
+
+        * **bridge 真机票**：票不能随意重签，撞 1001 只能等 —— 保留原有
+          指数冷却（``_MOBILE_V4_COOLDOWN_SECONDS`` 起，封顶 3600s）。
+        * **local 本地票**：每次请求都已重签新票（见
+          ``_refresh_mobile_credentials_from_provider``），此时仍 1001 说明
+          是**系统性拒绝**（签名密钥失效、凭证过期或账号被标记），等待无法
+          解决，长冷却只会卡住全部 worker。故传 ``cooldown_seconds`` 使用
+          固定短冷却，不做指数升级。
+
+        :param cooldown_seconds: 传大于 0 的值则使用该固定冷却时长，
+            不参与指数升级；传 0 走原有指数退避。
+        """
         with cls._MOBILE_V4_REQUEST_LOCK:
             cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS += 1
             cls._MOBILE_V4_SUCCESS_STREAK = 0
-            exponent = min(max(cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS - 1, 0), 5)
-            cooldown = min(
-                cls._MOBILE_V4_COOLDOWN_SECONDS * (2 ** exponent),
-                cls._MOBILE_V4_MAX_COOLDOWN_SECONDS,
-            )
+            if cooldown_seconds > 0:
+                cooldown = min(cooldown_seconds, cls._MOBILE_V4_MAX_COOLDOWN_SECONDS)
+            else:
+                exponent = min(max(cls._MOBILE_V4_CONSECUTIVE_RATE_LIMITS - 1, 0), 5)
+                cooldown = min(
+                    cls._MOBILE_V4_COOLDOWN_SECONDS * (2 ** exponent),
+                    cls._MOBILE_V4_MAX_COOLDOWN_SECONDS,
+                )
             cls._MOBILE_V4_RATE_LIMITED_UNTIL = max(
                 cls._MOBILE_V4_RATE_LIMITED_UNTIL,
                 time.monotonic() + cooldown,
@@ -1431,9 +1468,12 @@ class XimalayaDownloadManager:
     ) -> Tuple[Optional[dict], Optional[Dict[str, str]]]:
         """Issue a paced V4 request sequence with bounded control concurrency.
 
-        ``ret=-3`` and locally signed ``ret=1001`` are transient gates observed
-        on the App endpoint. Retry them with a fresh ticket and signature while
-        allowing other chapters to use intervening request slots.
+        ``ret=-3`` 与本地签名票据的 ``ret=1001`` 都按瞬时门处理。实测（见
+        ``_mark_mobile_v4_rate_limited`` 的 A/B/C 三组注释）：限流按 x-tk
+        票据计数，每票 3 次额度，换新票立即重置 —— 因此 local 模式下 1001
+        的正确响应就是换一张新票据重试，本方法每个 transient attempt 都会
+        重签票据（``_refresh_mobile_credentials_from_provider`` 的
+        ``force_fresh=True``）。
         """
         data = {}
         transient_code = ""
@@ -1942,10 +1982,9 @@ class XimalayaDownloadManager:
                     message = "移动端登录凭证已失效或请求头不完整，请从已登录 App 重新抓取同一次请求的完整请求头"
                 elif str(data.get("ret")) == "1001":
                     if getattr(self, "_last_mobile_ticket_source", "") == "local":
-                        message = (
-                            "本地 V4 凭证验证触发临时风控，账号登录通常仍然有效；"
-                            f"程序将降低请求速率并在冷却后重试（服务端：{message}）"
-                        )
+                        # local 票每次请求均已重签（见 _mark_mobile_v4_rate_limited
+                        # 实测注释），精确的排查引导由下方 ret_code 分支覆盖。
+                        message = f"本地 V4 票据被拒（服务端：{message}）"
                     else:
                         message = (
                             f"V4 请求协议校验失败（已尝试 device={','.join(attempted_devices)}）；"
@@ -1953,8 +1992,25 @@ class XimalayaDownloadManager:
                         )
                 ret_code = str(data.get("ret"))
                 if ret_code == "1001":
-                    cooldown = self._mark_mobile_v4_rate_limited()
-                    message = f"{message}；全局冷却 {cooldown:.0f} 秒后重新取票"
+                    if getattr(self, "_last_mobile_ticket_source", "") == "local":
+                        # local 模式每次请求都已重签全新 x-tk。按实测的票据计数
+                        # 模型（每票 3 次额度、换票即重置），连续 12 次新票仍被拒
+                        # 不可能是速率问题，而是签名/凭证被系统性拒绝 —— 长冷却
+                        # 无法解决，固定短冷却兜底并明确引导排查凭证。
+                        cooldown = self._mark_mobile_v4_rate_limited(
+                            self._MOBILE_V4_LOCAL_COOLDOWN_SECONDS
+                        )
+                        message = (
+                            "本地 V4 票据已连续换新 "
+                            f"{self._MOBILE_V4_TRANSIENT_ATTEMPTS} 次仍被服务端拒绝；"
+                            "实测限流按票据计数（每票 3 次额度、换票即重置），"
+                            "连续失败属于签名或凭证问题而非速率问题，"
+                            "请重新扫码更新 App 登录凭证或检查账号状态"
+                        )
+                    else:
+                        # bridge 真机票不可重签，只能按指数冷却等待放行。
+                        cooldown = self._mark_mobile_v4_rate_limited()
+                        message = f"{message}；全局冷却 {cooldown:.0f} 秒后重新取票"
                 self._record_error(
                     f"喜马拉雅{profile['name']}接口拒绝请求: {message} (ret={data.get('ret')})",
                     status_code=401 if ret_code == "50" else None,
